@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="gpuinfo_mali_experimental">Integración Mali-G615 experimental: importa el controlador Linux PanVK; Steam aún no está validado en este dispositivo</string>
+    <string name="mali_display_driver">Vulkan del sistema (Mali)</string>
+    <string name="mali_driver_needed">Mali: falta el controlador Vulkan Linux importado. Importa el paquete experimental PanVK en Controladores GPU → Avanzado → Controlador del entorno Linux y selecciónalo.</string>
+    <string name="mali_integration_hint">Mali-G615 experimental: importa y selecciona PanVK como controlador del entorno Linux. Para la pantalla se usa Vulkan del sistema. Empieza a 1280×720; desactiva HDR y generación de fotogramas. Los juegos no están validados.</string>
+</resources>

@@ -131,7 +131,11 @@ internal fun GpuDriversPanel(s: GpuDriversState, a: GpuDriversActions, onAdvance
     var showAll by rememberSaveable { mutableStateOf(false) }
     Column(verticalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth().padding(top = 12.dp)) {
         DeviceCard(s)
-        if (!s.unsupported) {
+        if (s.gpuFamily == "Arm Mali") {
+            Text(stringResource(R.string.mali_integration_hint), fontSize = 13.sp,
+                color = colors.onSurfaceVariant, modifier = Modifier.padding(vertical = 8.dp))
+        }
+        if (!s.unsupported && s.gpuFamily != "Arm Mali") {
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 ModeCard(Icons.Outlined.AutoAwesome, stringResource(R.string.common_auto), stringResource(R.string.gpu_auto_hint), s.auto, Modifier.weight(1f)) { a.onAuto(true) }
                 ModeCard(Icons.Outlined.Tune, stringResource(R.string.mode_suspend_manual), stringResource(R.string.gpu_manual_hint), !s.auto, Modifier.weight(1f)) { a.onAuto(false) }

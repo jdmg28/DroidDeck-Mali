@@ -957,7 +957,9 @@ class SessionActivity : ComponentActivity(), SurfaceHolder.Callback {
         // Turnip, not the system Adreno driver: importing the dma-bufs gamescope commits needs
         // VK_EXT_image_drm_format_modifier, which the system driver does not implement.
         val turnip = TurnipDriver(this)
-        val driverId = if (CompositorHost.isStarted) null else turnip.install()
+        // A Linux/glibc PanVK is NEVER loaded into this Android/Bionic process.
+        // Even a stale manual Turnip selection is ignored on Mali.
+        val driverId = if (CompositorHost.isStarted || com.droiddeck.launcher.core.DeviceSupport.mali()) null else turnip.install()
 
         // The output size belongs to the session, not to the Surface: gamescope's display is
         // sized once when the session starts and cannot change. A foldable recreates the Surface

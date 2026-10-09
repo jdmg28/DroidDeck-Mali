@@ -1,5 +1,5 @@
 /*
- * GEM handle emulation for the KGSL device presented as a DRM render node.
+ * GEM token emulation for KGSL or Mali kbase presented as a proxy render node.
  *
  * Compositors and Mesa validate or convert dma-bufs with PRIME ioctls on the render node; KGSL
  * has no GEM. Handles only serve as tokens to these callers, so a table of duplicated dma-buf
@@ -35,18 +35,31 @@ struct handle_entry {
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 static struct handle_entry handle_entries[MAX_HANDLES];
 static uint32_t next_handle = 1;
-static dev_t kgsl_dev;
-static int kgsl_state; /* 0 unknown, 1 known, -1 absent */
+/* Testing can override these nodes; production uses the real Android GPU devices. */
+#ifndef BL_KGSL_NODE
+#define BL_KGSL_NODE "/dev/kgsl-3d0"
+#endif
+#ifndef BL_MALI_NODE
+#define BL_MALI_NODE "/dev/mali0"
+#endif
+static dev_t gpu_devices[2];
+static int gpu_count;
+static int gpu_nodes_read;
 
-static int is_kgsl(int fd) {
+static int is_proxy_gpu(int fd) {
   struct stat st;
   pthread_mutex_lock(&lock);
-  if (kgsl_state == 0) {
-    kgsl_state = stat("/dev/kgsl-3d0", &st) == 0 ? 1 : -1;
-    kgsl_dev = st.st_rdev;
+  if (!gpu_nodes_read) {
+    const char *nodes[] = {BL_KGSL_NODE, BL_MALI_NODE};
+    for (unsigned i = 0; i < sizeof(nodes) / sizeof(*nodes); ++i)
+      if (stat(nodes[i], &st) == 0 && S_ISCHR(st.st_mode)) gpu_devices[gpu_count++] = st.st_rdev;
+    gpu_nodes_read = 1;
   }
+  int match = 0;
+  if (fstat(fd, &st) == 0 && S_ISCHR(st.st_mode))
+    for (int i = 0; i < gpu_count; ++i) match |= st.st_rdev == gpu_devices[i];
   pthread_mutex_unlock(&lock);
-  return kgsl_state > 0 && fstat(fd, &st) == 0 && S_ISCHR(st.st_mode) && st.st_rdev == kgsl_dev;
+  return match;
 }
 
 static void *real(const char *name) {
@@ -110,7 +123,7 @@ static uint32_t alloc_handle_locked(void) {
 }
 
 int drmPrimeFDToHandle(int fd, int prime_fd, uint32_t *handle) {
-  if (!is_kgsl(fd)) {
+  if (!is_proxy_gpu(fd)) {
     int (*fn)(int, int, uint32_t *) = (int (*)(int, int, uint32_t *)) real("drmPrimeFDToHandle");
     return fn ? fn(fd, prime_fd, handle) : -ENOSYS;
   }
@@ -142,7 +155,7 @@ int drmPrimeFDToHandle(int fd, int prime_fd, uint32_t *handle) {
 }
 
 int drmPrimeHandleToFD(int fd, uint32_t handle, uint32_t flags, int *prime_fd) {
-  if (!is_kgsl(fd)) {
+  if (!is_proxy_gpu(fd)) {
     int (*fn)(int, uint32_t, uint32_t, int *) = (int (*)(int, uint32_t, uint32_t, int *)) real("drmPrimeHandleToFD");
     return fn ? fn(fd, handle, flags, prime_fd) : -ENOSYS;
   }
@@ -172,7 +185,7 @@ static int release_handle(int fd, uint32_t handle) {
 }
 
 int drmCloseBufferHandle(int fd, uint32_t handle) {
-  if (!is_kgsl(fd)) {
+  if (!is_proxy_gpu(fd)) {
     int (*fn)(int, uint32_t) = (int (*)(int, uint32_t)) real("drmCloseBufferHandle");
     return fn ? fn(fd, handle) : -ENOSYS;
   }
@@ -190,7 +203,7 @@ int drmCloseBufferHandle(int fd, uint32_t handle) {
  * judder replaying old frames in No Man's Sky on an Adreno 840 even with no handle released.
  */
 __attribute__((visibility("hidden"))) int bl_drm_gem_close(int fd, unsigned long request, void *arg, int *rc) {
-  if (request != GEM_CLOSE || !arg || !is_kgsl(fd)) {
+  if (request != GEM_CLOSE || !arg || !is_proxy_gpu(fd)) {
     return 0;
   }
   if (release_handle(fd, ((struct gem_close *) arg)->handle)) {

@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="gpuinfo_mali_experimental">Experimental Mali-G615 integration: import the PanVK Linux driver; Steam on this device is not validated</string>
+    <string name="mali_display_driver">System Vulkan (Mali)</string>
+    <string name="mali_driver_needed">Mali: no imported Linux Vulkan driver. Import the experimental PanVK package under GPU drivers → Advanced → Runtime driver, then select it.</string>
+    <string name="mali_integration_hint">Experimental Mali-G615: import and select PanVK as the Runtime driver. The Display driver uses system Vulkan. Start at 1280×720; keep HDR and frame generation off. Games are not validated.</string>
+</resources>

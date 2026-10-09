@@ -10,13 +10,23 @@ import java.io.File
  *
  * The runtime draws with Turnip, an Adreno driver. On Mali, Xclipse and PowerVR the compositor
  * gets no usable Vulkan device and a session comes up as sound over a black screen - a failure
- * with nothing in it to read. The app cannot fix that, so it says so before the download rather
- * than after it. Adreno is recognised by what only Qualcomm's stack has: the KGSL node, or the
+ * with nothing in it to read. The stock app cannot fix that. This experimental build adds Mali detection
+ * and an explicitly imported PanVK-kbase path; it does not replace any vendor driver. Adreno is recognised by what only Qualcomm's stack has: the KGSL node, or the
  * vendor's own Vulkan driver at its usual path.
  */
 object DeviceSupport {
     fun adreno(): Boolean =
         File("/sys/class/kgsl/kgsl-3d0").exists() || File("/vendor/lib64/hw/vulkan.adreno.so").exists()
+
+    /** Detection is not proof that the stock kbase ABI/permissions allow PanVK. */
+    @JvmStatic
+    fun mali(): Boolean = !adreno() && (
+        File("/dev/mali0").exists() || File("/sys/class/misc/mali0").exists() ||
+        File("/vendor/lib64/hw/vulkan.mali.so").exists() ||
+        File("/vendor/lib64/egl/libGLES_mali.so").exists())
+
+    /** The Mali-G615 experiment targets Android 15/16; other non-Adreno devices remain refused. */
+    fun canTry(): Boolean = adreno() || (Build.VERSION.SDK_INT >= 35 && mali())
 
     /** The chip as the device names it, for the card that explains the refusal. */
     fun gpuName(context: Context): String {

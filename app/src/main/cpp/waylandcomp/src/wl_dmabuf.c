@@ -217,6 +217,9 @@ static dev_t dmabuf_render_node(void) {
     static const char *nodes[] = {"/dev/dri/renderD128", "/dev/dri/renderD129", "/dev/dri/card0"};
     struct stat st;
     if (g_no_render_node) return 0;
+    /* Match the kbase node aliased by the guest and reported by the G615 ICD adapter.
+     * This is a compatibility identity, not a claim of real KMS/DRM support. */
+    if (!stat("/dev/mali0", &st) && S_ISCHR(st.st_mode)) return st.st_rdev;
     for (size_t i = 0; i < sizeof(nodes) / sizeof(nodes[0]); i++)
         if (!stat(nodes[i], &st) && S_ISCHR(st.st_mode)) return st.st_rdev;
     return 0;

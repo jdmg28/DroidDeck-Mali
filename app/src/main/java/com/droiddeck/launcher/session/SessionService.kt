@@ -319,6 +319,17 @@ class SessionService : Service() {
             return
         }
 
+        if (com.droiddeck.launcher.core.DeviceSupport.mali() &&
+            (android.os.Build.VERSION.SDK_INT < 35 ||
+             LinuxVulkanDriver.resolveIcdPath(this, SessionPrefs.linuxDriver(this)) == null ||
+             !LinuxVulkanDriverManager(this).isMaliRuntimeDriver(SessionPrefs.linuxDriver(this)))) {
+            Log.e(TAG, getString(com.droiddeck.launcher.R.string.mali_driver_needed))
+            android.os.Handler(android.os.Looper.getMainLooper()).post {
+                android.widget.Toast.makeText(this, getString(com.droiddeck.launcher.R.string.mali_driver_needed), android.widget.Toast.LENGTH_LONG).show()
+            }
+            stopSession(-1)
+            return
+        }
         val root = LinuxRuntime.rootDir(this)
         val sessionRoot = LinuxRuntime.sessionRoot(this).apply { mkdirs() }
         val runtimeDir = File(filesDir, ".wayland-rt").apply { mkdirs() }
@@ -592,7 +603,14 @@ class SessionService : Service() {
         guest.add("MESA_LOADER_DRIVER_OVERRIDE=zink")
         guest.add("GALLIUM_DRIVER=zink")
         guest.add("LIBGL_KOPPER_DRI2=true")
-        LinuxRuntime.vulkanIcd(this)?.let { guest.add("VK_ICD_FILENAMES=" + it.path) }
+        val mali = com.droiddeck.launcher.core.DeviceSupport.mali()
+        if (!mali) LinuxRuntime.vulkanIcd(this)?.let { guest.add("VK_ICD_FILENAMES=" + it.path) }
+        if (mali) {
+            guest.add("BL_GPU_FAMILY=mali")
+            // Hardware rendering, initially presented by CPU/SHM WSI for compatibility.
+            guest.add("PANVK_KBASE_DRI3=0")
+            guest.add("LIBGL_KOPPER_DISABLE=false")
+        }
         // An imported glibc Turnip, when one is set (by the user, or by Auto): the session script
         // checks the manifest and its library from inside and points the loader at it with
         // VK_DRIVER_FILES, so the runtime's own driver above stays untouched and is what a bad
@@ -605,7 +623,7 @@ class SessionService : Service() {
         // Downloads holds the value verbatim ("sysmem", "sysmem,deck_emu"); with nothing there, an
         // imported driver from the A710/A720/A722 legs gets "sysmem" on its own, which is what both
         // its authors advise for those GPUs and what nothing else in the list needs.
-        tuDebug(linuxDriverId)?.let { guest.add("TU_DEBUG=$it") }
+        if (!mali) tuDebug(linuxDriverId)?.let { guest.add("TU_DEBUG=$it") }
         // Zink renders the client's UI (Chromium -> ANGLE -> Zink -> Turnip). Lazy descriptors is
         // the mode Zink recommends where the driver has no descriptor buffer, and what Ludashi ships
         // by default for its Zink path; a switch here because on one Fold the menus run at 14 fps.
@@ -630,7 +648,7 @@ class SessionService : Service() {
         // 16 MB at a time instead of 128 KB, and every brk(2) is a proot stop too.
         guest.add("GLIBC_TUNABLES=glibc.pthread.rseq=0:glibc.malloc.top_pad=16777216")
         if (SessionState.mode == MODE_STEAM) guest.add("BL_STEAMDECK=" + (if (SessionPrefs.steamDeckMode(this)) "1" else "0"))
-        if (SessionState.mode == MODE_STEAM) guest.add("BL_MANGOAPP=" + (if (SessionPrefs.mangoapp(this)) "1" else "0"))
+        if (SessionState.mode == MODE_STEAM) guest.add("BL_MANGOAPP=" + (if (!mali && SessionPrefs.mangoapp(this)) "1" else "0"))
         if (steamHere) guest.add("BL_STEAM_CHANNEL=" + SessionPrefs.steamChannel(this))
         if (SessionState.mode == MODE_STEAM) {
             guest.add("BL_GAMESCOPE_STRETCH_16X9=" + (if (SessionPrefs.stretch16x9(this)) "1" else "0"))

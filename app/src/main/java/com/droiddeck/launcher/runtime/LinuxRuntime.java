@@ -34,6 +34,7 @@ public final class LinuxRuntime {
     /** Shortcut extra naming which of the modes above a Linux entry launches. */
     public static final String EXTRA_LINUX_MODE = "linux_mode";
     private static final String KGSL_DEVICE = "/dev/kgsl-3d0";
+    private static final String MALI_DEVICE = "/dev/mali0";
     /**
      * Where the guest sees a command's XDG_RUNTIME_DIR. A Unix socket's path must fit in 108 bytes,
      * and libwayland checks the guest's path before proot ever sees it: with the app on an SD card
@@ -288,11 +289,18 @@ public final class LinuxRuntime {
      */
     private static void bindGpuNode(Context context, List<String> cmd) {
         StructStat st;
+        String gpuDevice = KGSL_DEVICE;
         try {
-            st = Os.stat(KGSL_DEVICE);
+            st = Os.stat(gpuDevice);
         } catch (ErrnoException e) {
-            return;
+            try {
+                gpuDevice = MALI_DEVICE;
+                st = Os.stat(gpuDevice);
+            } catch (ErrnoException missingGpu) {
+                return;
+            }
         }
+        boolean mali = MALI_DEVICE.equals(gpuDevice);
         long dev = st.st_rdev;
         long major = ((dev >> 8) & 0xfff) | ((dev >> 32) & ~0xfffL);
         long minor = (dev & 0xff) | ((dev >> 12) & ~0xffL);
@@ -309,7 +317,7 @@ public final class LinuxRuntime {
             Files.write(new File(drm, "dev").toPath(),
                     (major + ":" + minor + "\n").getBytes(StandardCharsets.UTF_8));
             Files.write(new File(device, "uevent").toPath(),
-                    "DRIVER=kgsl-3d0\nMODALIAS=platform:kgsl-3d0\n".getBytes(StandardCharsets.UTF_8));
+                    (mali ? "DRIVER=panfrost\nMODALIAS=platform:mali\n" : "DRIVER=kgsl-3d0\nMODALIAS=platform:kgsl-3d0\n").getBytes(StandardCharsets.UTF_8));
             File subsystem = new File(device, "subsystem");
             if (!Files.isSymbolicLink(subsystem.toPath())) {
                 Os.symlink("/sys/bus/platform", subsystem.getPath());
@@ -318,14 +326,14 @@ public final class LinuxRuntime {
             // on a mainline kernel, and the driver it reads the load of (bindAdrenoStats).
             File driver = new File(device, "driver");
             if (!Files.isSymbolicLink(driver.toPath())) {
-                Os.symlink("/sys/bus/platform/drivers/msm_drm", driver.getPath());
+                Os.symlink("/sys/bus/platform/drivers/" + (mali ? "panfrost" : "msm_drm"), driver.getPath());
             }
         } catch (IOException | ErrnoException e) {
             return;
         }
         bind(cmd, new File(base, "sys").getPath() + ":/sys/dev/char");
         bind(cmd, dri.getPath() + ":/dev/dri");
-        bind(cmd, KGSL_DEVICE + ":/dev/dri/" + node);
+        bind(cmd, gpuDevice + ":/dev/dri/" + node);
         bindDrmClass(base, cmd, node, major + ":" + minor);
     }
 

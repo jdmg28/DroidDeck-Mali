@@ -135,6 +135,8 @@ android {
 
     buildTypes {
         debug {
+            applicationIdSuffix ".mali.g615"
+            versionNameSuffix "-mali-g615-experimental"
             minifyEnabled false
             signingConfig signingConfigs.testkey
         }

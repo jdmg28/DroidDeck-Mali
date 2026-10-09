@@ -66,6 +66,10 @@ trap 'collect_steam_logs 2>/dev/null || true' TERM INT HUP
 # VK_DRIVER_FILES REPLACES the loader's search, so a manifest whose library is unreadable would
 # leave the session with no Vulkan at all - check both before setting it, and say so in the log
 # rather than fail silently half a minute later.
+if [ "${BL_GPU_FAMILY:-}" = mali ] && [ -z "${BL_VK_DRIVER:-}" ]; then
+  echo "DD_MALI_DRIVER_REQUIRED: import/select the Linux PanVK package; Turnip cannot run on Mali"
+  exit 78
+fi
 if [ -n "${BL_VK_DRIVER:-}" ]; then
   bl_icd_lib=$(sed -n 's/.*"library_path"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$BL_VK_DRIVER" 2>/dev/null | head -1)
   # JSON may escape the separator: org.json writes "\/data\/user\/0\/...". The Vulkan loader
@@ -82,9 +86,16 @@ if [ -n "${BL_VK_DRIVER:-}" ]; then
     export VK_ICD_FILENAMES="$BL_VK_DRIVER"
     echo "== vulkan driver: imported $bl_icd_lib (via $BL_VK_DRIVER)"
   else
+    if [ "${BL_GPU_FAMILY:-}" = mali ]; then
+      echo "DD_MALI_BAD_ICD: manifest or backend wrapper is unreadable: $BL_VK_DRIVER"
+      exit 78
+    fi
     echo "== vulkan driver: IGNORING $BL_VK_DRIVER (manifest or ${bl_icd_lib:-library} unreadable); using the runtime's own"
   fi
   unset bl_icd_lib
+fi
+if [ "${BL_GPU_FAMILY:-}" = mali ] && [ -z "${BL_INSIDE:-}" ]; then
+  /usr/local/bin/droiddeck-mali-check || exit 78
 fi
 # The app's gamescope build (tools/gamescope) asks for realtime-priority Vulkan queues on this
 # switch instead of on CAP_SYS_NICE, which proot never has; it falls back to normal priority

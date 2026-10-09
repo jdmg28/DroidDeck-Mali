@@ -91,7 +91,11 @@ internal class DriverMenus(private val activity: Activity, private val ui: Handl
         mode = SessionPrefs.gpuDriverMode(activity)
         val td = TurnipDriver(activity)
         val auto = td.autoId()
-        androidRows = buildList {
+        val mali = com.droiddeck.launcher.core.DeviceSupport.mali()
+        androidRows = if (mali) listOf(DriverRow(
+            TurnipDriver.AUTO, activity.getString(R.string.mali_display_driver),
+            activity.getString(R.string.mali_integration_hint), false,
+        )) else buildList {
             add(DriverRow(
                 TurnipDriver.AUTO, activity.getString(R.string.gpu_auto_by_gpu),
                 if (auto == "system") activity.getString(R.string.drivers_system_vulkan) else activity.getString(R.string.drivers_bundled, td.displayName(auto)),
@@ -101,7 +105,7 @@ internal class DriverMenus(private val activity: Activity, private val ui: Handl
             for (id in td.enumerateImported()) add(bundleRow(id, linux = false) ?: DriverRow(id, td.displayName(id), td.driverVersion(id), true, origin(id)))
         }
         canRestoreBundled = td.hiddenBundled().isNotEmpty()
-        androidSelected = SessionPrefs.androidDriver(activity)
+        androidSelected = if (mali) TurnipDriver.AUTO else SessionPrefs.androidDriver(activity)
         activeBundle = DriverBundle.active(activity)?.label
         refreshReleaseRows()
         refreshPairs()
@@ -294,16 +298,17 @@ internal class DriverMenus(private val activity: Activity, private val ui: Handl
         val name = activity.displayNameOf(uri)
         Thread({
             var bundle: DriverBundle.Bundle? = null
+            var importedLinuxId: String? = null
             val problem = try {
                 when {
                     DriverBundle.isBundle(activity, uri) -> bundle = DriverBundle.install(activity, uri)
-                    linux == true -> LinuxVulkanDriverManager(activity).installDriver(uri, name)
+                    linux == true -> { importedLinuxId = LinuxVulkanDriverManager(activity).installDriver(uri, name) }
                     linux == false -> TurnipDriver(activity).installFromZip(uri, name)
                     else -> try {
                         TurnipDriver(activity).installFromZip(uri, name)
                     } catch (display: IllegalArgumentException) {
                         try {
-                            LinuxVulkanDriverManager(activity).installDriver(uri, name)
+                            importedLinuxId = LinuxVulkanDriverManager(activity).installDriver(uri, name)
                         } catch (runtime: IllegalArgumentException) {
                             throw IllegalArgumentException(activity.getString(R.string.drivers_not_a_driver))
                         }
@@ -317,6 +322,11 @@ internal class DriverMenus(private val activity: Activity, private val ui: Handl
                 activity.getString(R.string.drivers_import_failed, e.message)
             }
             ui.post {
+                if (problem == null && com.droiddeck.launcher.core.DeviceSupport.mali()) {
+                    importedLinuxId?.let { SessionPrefs.setLinuxDriver(activity, it) }
+                    SessionPrefs.setAndroidDriver(activity, TurnipDriver.AUTO)
+                    setMode(false)
+                }
                 val done = bundle?.let { useBundle(it) }
                     ?: name?.let { activity.getString(R.string.comp_imported, it) } ?: activity.getString(R.string.drivers_imported_unnamed)
                 android.widget.Toast.makeText(
