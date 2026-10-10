@@ -189,6 +189,15 @@ jobs:
           test -f tools/release/apk-identity.sh
           bash tools/build_local.sh
 
+      # build_local.sh assembles the apk and nothing else, so the tests it does not run are run
+      # here: GpuSafetyTest says what a device with no stored setting does, which is the whole of
+      # "the safest value is the default" and the only part of this branch that is provable on a
+      # machine with no phone attached.
+      - name: Run the unit tests
+        env:
+          ANDROID_HOME: ${{ env.ANDROID_HOME }}
+        run: ./gradlew testDebugUnitTest --console=plain -PndkVersion="$DROIDDECK_NDK_VERSION" -PskipRust=true
+
       - name: What this build is
         id: identity
         run: |

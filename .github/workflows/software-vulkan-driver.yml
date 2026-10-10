@@ -586,7 +586,7 @@ jobs:
             echo
             echo "Measured before it was packaged: the runtime (\`$RUNTIME_VERSION\`) carries glibc"
             echo "$RUNTIME_GLIBC, and this driver asks for \`$DRIVER_NEEDS\`. The zip's"
-            echo "\`meta.json\` records both, with the checksums of the two Debian packages it is made of."
+            echo "\`meta.json\` records both, with the checksum of every Debian package the zip is made of."
             echo
             echo "Built by [this run]($RUN_URL) from \`${{ github.sha }}\`."
           } > "$RUNNER_TEMP/notes.md"
