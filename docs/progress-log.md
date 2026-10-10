@@ -45,8 +45,27 @@ Three conclusions, in order of importance.
    session then ran 23 s before the compositor presented anything at all (every sample said "frames
    unavailable"), presented two frames - 250 ms, then 105 ms - and stopped. Two frames and a hang,
    in the present path, with the GPU otherwise idle. That is a driver bug in the WSI/present route
-   rather than in submit, and it is why the answer is a newer PanVK-kbase and not a gentler
-   profile: nothing about 720p-versus-1080p or 30-versus-60 is involved in the first two frames.
+   rather than in submit, and nothing about 720p-versus-1080p or 30-versus-60 is involved in the
+   first two frames - so a gentler profile cannot be the answer.
+
+**Corrected the same evening: there is no newer driver to import.** The note above said the answer
+was a newer PanVK-kbase. It is not, because there is nothing newer. The repo's
+`DroidDeck-Mali-G615-driver-0.1.0.zip` carries `libpanvk_backend.so` whose SHA-256 is
+`0b8eaf709cd3…60c820`, which is what upstream's `panvk-kbase-v0.1.0-rc2` release (2026-10-08)
+publishes for `libvulkan_panfrost-glibc-aarch64.so` - not "the same size", the same file. beta.12,
+recommended earlier in this log, is four days *older*. `docs/gpu-safety.md` has the same correction
+with the release notes quoted.
+
+What the notes do say is worth more than the version number: **the RC2 binary has not been run on a
+device at all** - the G615 numbers were measured on a build of the same patch, and the release asks
+testers to run PanProbe and report. So the thing installed on this phone is a current, untested
+binary, and no update of it is pending anywhere.
+
+Two claims made in the commit that added the adapter trace were also wrong and are retracted here:
+the notes do not describe a present-after-two-frames hang, and they say nothing about this guest's
+display server. The first is a measurement of ours, not a known issue; the second was an inference
+about X11 from the assets' dependency list, which describes how the driver was built, not what it
+supports.
 
 The guard's remaining job, stated plainly: it cannot save a session. It can make sure the *next*
 session does not start on its own.

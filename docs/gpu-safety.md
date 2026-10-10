@@ -175,6 +175,56 @@ then nothing, and the reboot recorded at 22:34:23 with a log ending a minute and
 It looked like the watchdog had stopped sampling. It had not: it had been sampling until the
 device died, and the panic had eaten the evidence.
 
+## The Mali driver package
+
+Everything above is the app. The other half of the question - "the driver is the problem" - is
+`drivers/mali-g615/`, which is in the tree because the driver package is not only a driver.
+
+**What the installed package actually is.** `DroidDeck-Mali-G615-driver-0.1.0.zip` holds two
+binaries and their licences. The larger, `libpanvk_backend.so`, is upstream's
+`libvulkan_panfrost-glibc-aarch64.so` from `panvk-kbase-v0.1.0-rc2` (2026-10-08) - byte-identical,
+SHA-256 `0b8eaf709cd3…60c820`, which is the digest the release notes publish for that file. The
+smaller one, `libvulkan_droiddeck_mali.so`, is 248 lines of ours: an ICD adapter whose source ships
+inside the same zip under MIT.
+
+**What that adapter does, and does not, touch.** It answers
+`vkGetPhysicalDeviceDrmPropertiesEXT` with the render node compiled into it, so gamescope's nested
+Vulkan backend can import the buffers the session presents, and it strips that extension from the
+list handed to PanVK, which does not implement it. It wraps property queries on both the instance and
+device dispatch tables. It is not in the present path: it has no opinion about
+`vkQueuePresentKHR`, the swapchain, or WSI. So it is not where this fault lives, and editing it can
+no more fix the hang than changing the exhaust tip fixes an engine.
+
+**Why it is still the thing we changed.** It is a shim in the dispatch path of every call the session
+makes, and it is ours - which makes it the only place an APK can reach that can answer the question
+the frame timings cannot: did `vkQueueSubmit` return and its fence go unsignalled (the GPU hung), or
+did `vkQueueSubmit` never return (the driver blocked)? Those two need opposite fixes, and only the
+second one is recoverable by an app. Adapter 0.2.0 writes one line per call, `-> name` then
+`<- name = result`, fsynced as it goes, into `droiddeck-driver-trace.log` in the session folder. If a
+device dies mid-call, the call it died inside is the last line in the file. It is off by default: the
+wrappers are not even handed out when tracing is off, so the dispatch table is the backend's own.
+
+**Getting a new driver.** There is nothing newer to import today - rc2 is the newest release and the
+beta.12 that an earlier revision of these notes recommended is four days older. The packaging is
+nevertheless automated, so the next one is a download rather than a rebuild of anything:
+
+    UPSTREAM_ZIP=/path/to/PanVK-Kbase-…-EMULATOR.zip UPSTREAM_TAG=panvk-kbase-v0.1.0-rc3 \
+    UPSTREAM_SHA256=<from its SHA256SUMS> bash drivers/mali-g615/build.sh out/
+
+`mali-driver-package.yml` does that on a runner - cross-compiler from apt, the upstream zip verified
+against the published digest, the AArch64/glibc checks the phone would run performed first, and the
+result attached to the `mali-driver-latest` release. Components -> Controladores de GPU -> Importar
+`.zip` takes it from there. What is *not* in the pipeline is a new backend: the renderer comes from
+upstream, this tree wraps it, and any claim otherwise would be a promise nobody here can keep.
+
+**What upstream says about RC2, read carefully.** The release notes state that the RC2 binary has not
+been run on a device - the G615 numbers were measured on a build of the same patch - and ask for
+PanProbe reports. Running PanProbe 1.2.5 on this phone is a cheap, bounded experiment that does not
+touch Steam, the chroot or the guard, and a pass there against a hang here would localise the fault
+to this guest's presentation path. Two things these notes previously claimed upstream had said are
+retracted: the release does not describe a present-after-two-frames hang, and it does not say the
+driver lacks support for this display server.
+
 ## Settings
 
 Setup gains a fifth tab, **Safety**, on a Mali device (or once the guard has been turned on
