@@ -39,7 +39,12 @@ jobs:
       - name: Build the patched app and guest preloads
         id: build
         run: |
-          set -o pipefail
+          # -e matters more here than it looks: inside a { ... } group the step's status is the LAST
+          # command's, so with only pipefail a red test suite in the middle of this block still
+          # leaves gradle to decide whether the run is green. Verified locally - a failing first
+          # command exits 0 without -e and 1 with it. The "Assert the test suites ran" step below is
+          # the belt to this pair of braces.
+          set -eo pipefail
           # Everything the step does goes into the log the next step publishes. An earlier run
           # died in one second, before the build, and published "(no build log)": the step that
           # failed was the one nobody could read. pipefail keeps the failure visible as a failure.
@@ -61,6 +66,22 @@ jobs:
             bash drivers/mali-g615/test/run_adapter_tests.sh
             bash tools/build_local.sh
           } 2>&1 | tee /tmp/droiddeck-build.log
+      # A green build is not evidence that tests ran; it is evidence that gradle succeeded. The
+      # suites above print their own verdicts, so their verdicts are looked for here, in the log the
+      # step wrote, and this run goes red if one of them ever stops being reached.
+      - name: Assert the test suites ran
+        run: |
+          set -e
+          for marker in 'all probe cases passed' 'declarations checked' 'all adapter cases passed'; do
+            if grep -q "$marker" /tmp/droiddeck-build.log; then
+              echo "ran: $marker"
+            else
+              echo "missing from the build log: $marker"
+              echo "the suite did not run, or failed before printing its verdict"
+              exit 1
+            fi
+          done
+
       # The machine working on this branch cannot download Actions logs, only talk to the API, so
       # on failure the log is published as a check run where it can be read back.
       - name: Publish the build log
