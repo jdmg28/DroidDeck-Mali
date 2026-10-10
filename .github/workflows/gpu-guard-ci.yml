@@ -49,8 +49,16 @@ jobs:
             test -f tools/linuxfs/overlay/usr/local/bin/droiddeck-gpu-probe
             # Before the app: the probe decides whether Steam may touch the GPU at all, and it has
             # twice shipped broken in ways that only showed up on the phone. It is tested here
-            # against a fake loader, which needs no GPU and takes seconds.
+            # against a fake loader, which needs no GPU and takes seconds. The headers are cloned
+            # because the probe's hand-written structs are then checked against the real Vulkan ABI
+            # (tools/test/vulkan_offsets.c) instead of against the mock that has been agreeing with
+            # them - a layout wrong by 16 bytes looks perfectly sane and is only fatal on the phone.
+            git clone -q --depth 1 https://github.com/KhronosGroup/Vulkan-Headers "$RUNNER_TEMP/vkh"
+            export VULKAN_INCLUDE_DIR="$RUNNER_TEMP/vkh/include"
             bash tools/test/run_probe_tests.sh
+            # And the adapter's own suite: a fake backend that can SIGKILL itself mid-present is the
+            # only way to prove the trace survives a dying process with the dying call last.
+            bash drivers/mali-g615/test/run_adapter_tests.sh
             bash tools/build_local.sh
           } 2>&1 | tee /tmp/droiddeck-build.log
       # The machine working on this branch cannot download Actions logs, only talk to the API, so
