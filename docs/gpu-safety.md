@@ -153,8 +153,22 @@ Two samples a second, while a session runs:
   zones where the kernel lets us). Over the ceiling warns, and stops the session if it stays there.
 
 An abort ends the session, writes everything to `gpu-guard.log`, and sweeps anything still holding
-the rootfs or `/dev/mali0` four seconds later — a killed Steam client is a restart, a kernel that
-finds the wedge itself is a reboot.
+the rootfs or `/dev/mali0` four seconds later.
+
+**What the abort buys, measured — and it is less than this section claimed until today.** The
+reasoning was: catch the stall before the kernel's own 3 s fence timeout and there is no timeout to
+dump, no dump, no panic. It is a clean theory and it is wrong. Two sessions, both aborted by the
+watchdog with the frame budget at 2000 ms, both followed by a reboot anyway — 48 s later, and 66 s
+later. Killing the compositor does not un-send what the GPU was already doing, and the fatal event
+(`CS_BUS_FAULT`, then the kbase dump path that hits a `BUG()` at EL1) is already in flight long
+before the first sample looks suspicious. The D-state samples that appear *before* the first frame
+of a session say the same thing from the other side: the kernel path stalls while frames are still
+coming out.
+
+So the watchdog is a limiter and a witness, not a shield: it shortens how long a doomed session
+keeps asking the GPU for things, and it records what it saw. What actually prevents the next reboot
+is the latch (§1) and, now, not taking the faulting path at all — see "The one switch that can prove
+which code is at fault".
 
 Both signals are skipped while the screen is off: a sleeping phone presents nothing by design.
 
@@ -202,7 +216,12 @@ did `vkQueueSubmit` never return (the driver blocked)? Those two need opposite f
 second one is recoverable by an app. Adapter 0.2.0 writes one line per call, `-> name` then
 `<- name = result`, fsynced as it goes, into `droiddeck-driver-trace.log` in the session folder. If a
 device dies mid-call, the call it died inside is the last line in the file. It is off by default: the
-wrappers are not even handed out when tracing is off, so the dispatch table is the backend's own.
+wrappers are not even handed out when tracing is off, so the dispatch table is the backend's own -
+but it turns itself on while the launch latch is engaged, because in that state every session is an
+experiment and an experiment with no result is the worst kind. The crash report now prints the file's
+last line and reads it for you: ending on `->` means a call that never returned (the driver blocked);
+ending on `<-` means every call came back and the GPU hung afterwards, which is the shape this
+device's kernel dump belongs to.
 
 **Getting a new driver.** There is nothing newer to import today - rc2 is the newest release and the
 beta.12 that an earlier revision of these notes recommended is four days older. The packaging is
@@ -224,6 +243,24 @@ touch Steam, the chroot or the guard, and a pass there against a hang here would
 to this guest's presentation path. Two things these notes previously claimed upstream had said are
 retracted: the release does not describe a present-after-two-frames hang, and it does not say the
 driver lacks support for this display server.
+
+### The one switch that can prove which code is at fault
+
+`Seguridad GPU -> Advertise a DRM node (driver facade)`. Off exports `DD_ADAPTER_NO_DRM=1` into the
+guest, and the adapter then adds *nothing*: it does not advertise `VK_EXT_physical_device_drm`, does
+not touch a client's `VkPhysicalDeviceDrmPropertiesEXT`, and does not strip the extension from
+`vkCreateDevice` (a request for something no driver offered is the backend's to refuse, not ours to
+hide). `drivers/mali-g615/test/run_adapter_tests.sh` asserts all three against the fake backend,
+including that the strip is deliberately gone.
+
+Why a toggle and not a code change: this is the only non-pass-through behaviour in the ~500 lines we
+ship around upstream's binary, so it is the only candidate on our side of the line between "the
+driver faults" and "our shim made the driver do something it was never tested doing". The adapter
+answers that extension with `/dev/mali0`, a kbase char device — not a DRM render node — and a
+compositor that trusts it goes on to treat it as one. Whether that has anything to do with this fault
+is unknown; it is testable in one variable, and it is the only remaining test that can end with the
+phone *not* rebooting. Expect a refused Steam launch when off. A refused launch is a session lost; a
+bus fault is the phone.
 
 ## Settings
 

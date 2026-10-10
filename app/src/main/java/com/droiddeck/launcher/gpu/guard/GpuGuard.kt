@@ -498,9 +498,40 @@ object GpuGuard {
                     "cannot fire; only the wedged-process and thermal checks are live"
             else "")
 
-        lines.add("  driver trace: ${if (p.driverTrace(app)) "on - droiddeck-driver-trace.log in the " +
-            "session folder (one line per submit and present, written as it happens, so the call a " +
-            "device dies inside is the last line of the file)" else "off"}")
+        lines.add("  drm facade: ${if (p.drmFacade(app)) "on - the driver advertises a DRM node and " +
+            "gamescope imports the compositor's buffers through it" else "OFF - DD_ADAPTER_NO_DRM=1: the " +
+            "adapter adds nothing at all (Steam will probably refuse to start; that is the point)"}")
+        lines.add("  driver trace: ${if (p.driverTrace(app)) "on" else if (p.lockEngaged(app)) "on " +
+            "(because the launch latch is engaged - every session is a test right now)" else "off"}" +
+            if (!p.driverTrace(app) && !p.lockEngaged(app))
+                " - one line per submit and present, written as it happens, so the call a device dies " +
+                "inside is the last line of the file" else "")
+        // The trace's own verdict, read from the app's folder so that a crash report carries it
+        // without anyone opening Termux after a reboot - and after a reboot is the only time it
+        // would be interesting.
+        val traceFile = com.droiddeck.launcher.session.SessionPaths.sessionFolders(app)
+            .map { java.io.File(it, "droiddeck-driver-trace.log") }
+            .filter { it.isFile }
+            .maxByOrNull { it.lastModified() }
+        if (traceFile == null) {
+            lines.add("    (no trace file in any session folder yet - it appears once a session runs " +
+                "with tracing on)")
+        } else {
+            val recorded = try { traceFile.readLines().filter { it.isNotBlank() } } catch (e: Exception) { emptyList() }
+            val last = recorded.lastOrNull()?.trim().orEmpty()
+            lines.add("    ${traceFile.parentFile?.name}/${traceFile.name}: ${recorded.size} lines, " +
+                "written ${stamp.format(java.util.Date(traceFile.lastModified()))}")
+            lines.add("    last line: ${if (last.isEmpty()) "(the file is empty)" else last}")
+            lines.add(if (last.startsWith("->"))
+                "      <- it ends on a CALL THAT NEVER RETURNED. The driver blocked inside it, so the GPU " +
+                "was never given the work - or was given it and the driver is stuck waiting. This is the " +
+                "case an app can survive by refusing to call, and it is NOT the kernel's dump path."
+            else if (last.startsWith("<-"))
+                "      <- every call it recorded came back with a result. A reboot after that means the work " +
+                "was accepted and the GPU faulted later, on its own time: that is the CS_BUS_FAULT -> " +
+                "FENCE_SIGNAL timeout -> kbase dump shape, and no amount of app-side timing prevents it."
+            else "      <- the file ends on a line that is neither entry nor result; that is worth a look")
+        }
         val probeOn = p.preflightProbe(app)
         lines.add("  pre-flight probe: $probeOn")
         val probeAt = p.lastProbeAt(app)

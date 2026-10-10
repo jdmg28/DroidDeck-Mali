@@ -71,7 +71,7 @@ echo "the adapter, against the fake backend:"
 out=$(cd "$WORK" && ./test_adapter ./libvulkan_droiddeck_mali.so ./libpanvk_backend.so 2>&1); status=$?
 printf '%s\n' "$out" | sed 's/^/  /'
 [ "$status" = 0 ] || FAILED=1
-if ls "$WORK"/gpu-driver-trace.log >/dev/null 2>&1; then
+if [ -n "$(find "$WORK" -maxdepth 1 -name '*trace*.log' -print -quit)" ]; then
     echo "  FAIL a session with no DD_ADAPTER_TRACE wrote a trace file"; FAILED=1
 fi
 
@@ -108,6 +108,7 @@ fi
 # 3. The reason it exists: the device dies in the middle of a call. The process is killed inside
 # vkQueuePresentKHR, so the trace has to end with that entry and no exit - and it has to have
 # survived the kill, which is what fdatasync per line buys.
+NODRM_TRACE="$WORK/nodrm.log"
 HANG_TRACE="$WORK/hang.log"
 env MOCK_HANG=1 DD_ADAPTER_TRACE="$HANG_TRACE" DD_TEST_TRACE=1 DD_TEST_HANG=1 \
     "$WORK/test_adapter" "$WORK/libvulkan_droiddeck_mali.so" "$WORK/libpanvk_backend.so" \
@@ -118,6 +119,36 @@ if printf '%s' "$last" | grep -qF -- '-> vkQueuePresentKHR'; then
 else
     echo "  FAIL a process killed mid-present leaves the call it died in as the last line"
     echo "       last line was: ${last:-<no file>}"
+    FAILED=1
+fi
+
+# 4. DD_ADAPTER_NO_DRM=1 - the switch the phone can set, so the one thing this adapter adds can be
+# taken away without rebuilding anything. Three things have to hold: the extension is not
+# advertised, a client's DrmPropertiesEXT struct is not touched (both asserted by the test binary
+# itself), and the strip in vkCreateDevice is switched off too, so a request for an extension no
+# driver offered reaches the backend and is refused there rather than quietly dropped.
+NODRM_OUT=$(cd "$WORK" && env DD_ADAPTER_NO_DRM=1 DD_ADAPTER_TRACE="$NODRM_TRACE" \
+    DD_TEST_TRACE=1 ./test_adapter ./libvulkan_droiddeck_mali.so ./libpanvk_backend.so 2>&1)
+nodrm_status=$?
+printf '%s\n' "$NODRM_OUT" | sed 's/^/  /'
+[ "$nodrm_status" = 0 ] || { echo "  FAIL the no-facade session failed its own checks"; FAILED=1; }
+# Both names, in whatever order the client asked - asserting the order would test the mock's printf,
+# not the adapter's pass-through.
+line=$(printf '%s\n' "$NODRM_OUT" | grep 'vkCreateDevice enabled' | head -1)
+if printf '%s' "$line" | grep -q 'enabled 2 extensions:' && \
+   printf '%s' "$line" | grep -qF 'VK_KHR_swapchain' && \
+   printf '%s' "$line" | grep -qF 'VK_EXT_physical_device_drm'; then
+    echo "  ok   with the facade off, nothing is stripped: the backend is asked and answers"
+else
+    echo "  FAIL with the facade off, nothing is stripped: the backend is asked and answers"
+    printf '%s\n' "$NODRM_OUT" | grep 'vkCreateDevice' | sed 's/^/       /'
+    FAILED=1
+fi
+if grep -qF -- 'drm facade OFF (DD_ADAPTER_NO_DRM)' "$NODRM_TRACE"; then
+    echo "  ok   and the trace says which configuration the session ran on"
+else
+    echo "  FAIL the trace does not name the configuration it recorded"
+    tail -2 "$NODRM_TRACE" 2>/dev/null | sed 's/^/       /'
     FAILED=1
 fi
 

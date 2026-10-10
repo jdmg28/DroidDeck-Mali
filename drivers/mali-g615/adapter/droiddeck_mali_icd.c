@@ -116,6 +116,37 @@ static _Atomic(unsigned) trace_enabled;
 static _Atomic(unsigned) trace_lines;
 static _Atomic(unsigned) trace_limit = DD_TRACE_MAX_LINES;
 
+/* DD_ADAPTER_NO_DRM=1 turns off the one thing this adapter adds: the DRM-node facade.
+ *
+ * Why that is worth a switch and not a rebuild: the facade is the only way in which this library is
+ * not pure pass-through, so it is the only thing it could be blamed for. Gamescope's nested Vulkan
+ * backend asks for VK_EXT_physical_device_drm to import compositor buffers, and this adapter answers
+ * with the vendor kbase node (/dev/mali0), which is NOT a DRM render node - the numbers it reports
+ * are a Mali0 char device's, presented to a client that will go on to treat them as a DRM device.
+ * Nobody knows whether that mismatch is what eventually faults the GPU; it is a candidate, it is
+ * ours, and it is testable in one variable.
+ *
+ * Off, the adapter adds nothing anywhere: it does not advertise the extension, it does not touch a
+ * client's VkPhysicalDeviceDrmPropertiesEXT, and - deliberately - it stops stripping the extension
+ * from vkCreateDevice. A client that asked for something no driver advertised should be refused by
+ * the backend, loudly, rather than quietly handed a device with a feature it will not get.
+ *
+ * Expect Steam to fail to start with this off. That is a fine outcome: a refused launch costs a
+ * session, a bus fault costs the phone.
+ */
+static int drm_facade_enabled(void) {
+    static int cached = -1;   /* the race is benign: every thread computes the same value */
+    int v = cached;
+    if (v < 0) {
+        const char *off = getenv("DD_ADAPTER_NO_DRM");
+        v = (off && *off && strcmp(off, "0") != 0) ? 0 : 1;
+        cached = v;
+    }
+    return v;
+}
+
+static void tracef(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+
 static void trace_init(void) {
     const char *want = getenv("DD_ADAPTER_TRACE");
     if (!want || !*want) return;
@@ -146,6 +177,10 @@ static void trace_init(void) {
         if (end != cap && wanted > 0) atomic_store(&trace_limit, (unsigned)wanted);
     }
     atomic_store(&trace_enabled, 1u);
+    /* Recorded first, because a trace that does not say which configuration produced it is a
+       guess about someone else's session. */
+    tracef("-- adapter 0.2.0, drm facade %s, pid %d, backend %s",
+           drm_facade_enabled() ? "on" : "OFF (DD_ADAPTER_NO_DRM)", (int)getpid(), DD_BACKEND_NAME);
 }
 
 static inline int tracing(void) {
@@ -153,7 +188,6 @@ static inline int tracing(void) {
 }
 
 /** microseconds since boot, then the caller's line. Never fails, never blocks the frame. */
-static void tracef(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 
 static void tracef(const char *fmt, ...) {
     if (!tracing()) return;
@@ -383,6 +417,7 @@ static VKAPI_ATTR void VKAPI_CALL wrapped_properties2(
     PFN_vkGetPhysicalDeviceProperties2 fn = atomic_load(&real_properties2);
     if (!fn || !properties) return;
     fn(device, properties);
+    if (!drm_facade_enabled()) return;     /* add nothing, touch nothing */
     dev_t rdev;
     if (!target_properties(&properties->properties) || !mali_node(&rdev)) return;
     /* Preserve every unrelated pNext structure and every ordinary property. */
@@ -400,7 +435,8 @@ static VKAPI_ATTR VkResult VKAPI_CALL wrapped_extensions(
     VkPhysicalDevice device, const char *layer, uint32_t *count, VkExtensionProperties *out) {
     PFN_vkEnumerateDeviceExtensionProperties fn = atomic_load(&real_extensions);
     if (!fn || !count) return VK_ERROR_INITIALIZATION_FAILED;
-    if (layer || !target_device(device)) return fn(device, layer, count, out);
+    if (layer || !target_device(device) || !drm_facade_enabled())
+        return fn(device, layer, count, out);   /* pure pass-through: no facade added */
     uint32_t n = 0;
     VkResult r = fn(device, NULL, &n, NULL);
     if (r != VK_SUCCESS) return r;
@@ -441,7 +477,10 @@ static VKAPI_ATTR VkResult VKAPI_CALL wrapped_create_device(
     const VkAllocationCallbacks *allocator, VkDevice *device) {
     PFN_vkCreateDevice fn = atomic_load(&real_create_device);
     if (!fn || !info) return VK_ERROR_INITIALIZATION_FAILED;
-    if (!target_device(physical) || !info->enabledExtensionCount)
+    if (!info->enabledExtensionCount) return fn(physical, info, allocator, device);
+    /* With the facade off there is nothing of ours to strip, and a request for an extension no
+       driver advertised is the backend's problem to answer, not ours to hide. */
+    if (!target_device(physical) || !drm_facade_enabled())
         return fn(physical, info, allocator, device);
     /* This adapter implements the metadata-only extension. It has no device
      * commands, and a backend which did not advertise it must not receive it. */

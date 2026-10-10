@@ -59,6 +59,7 @@ internal fun GpuSafetyPanel(host: MenuHost, modifier: Modifier = Modifier) {
     val lock = remember(tick) { p.lockAfterFatalBoot(context) }
     val probe = remember(tick) { p.preflightProbe(context) }
     val driverTrace = remember(tick) { p.driverTrace(context) }
+    val drmFacade = remember(tick) { p.drmFacade(context) }
     val probeRequired = remember(tick) { p.probeRequired(context) }
     val watchdog = remember(tick) { p.liveWatchdog(context) }
     val stall = remember(tick) { p.stallBudgetMs(context) }
@@ -148,6 +149,11 @@ internal fun GpuSafetyPanel(host: MenuHost, modifier: Modifier = Modifier) {
                 stringResource(R.string.gpu_safety_driver_trace_hint), driverTrace,
                 enabled = enabled) { on ->
                 p.setDriverTrace(context, on); apply()
+            }
+            ToggleRow(host, "gpu-drm-facade", stringResource(R.string.gpu_safety_drm_facade),
+                stringResource(R.string.gpu_safety_drm_facade_hint), drmFacade,
+                enabled = enabled) { on ->
+                p.setDrmFacade(context, on); apply()
             }
             ChoiceRow(
                 host, "gpu-stall", stringResource(R.string.gpu_safety_stall),

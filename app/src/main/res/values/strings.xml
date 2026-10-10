@@ -2144,6 +2144,8 @@
     <string name="gpu_safety_probe">Test the GPU first</string>
     <string name="gpu_safety_probe_hint">Runs one small job inside the runtime before Steam starts. If the GPU will not finish it, the session does not start.</string>
     <string name="gpu_safety_during">While a session runs</string>
+    <string name="gpu_safety_drm_facade">Advertise a DRM node (driver facade)</string>
+    <string name="gpu_safety_drm_facade_hint">The one thing our driver package adds on top of the upstream renderer: it tells the compositor about a DRM node so it can import the buffers being presented. Turning it off removes our addition completely and Steam will most likely refuse to start - which is the point of the switch. If the phone stops rebooting with it off, the addition is what was faulting the GPU; if it hangs the same way, our code is innocent and the driver is the whole story.</string>
     <string name="gpu_safety_driver_trace">Trace the driver\'s GPU calls</string>
     <string name="gpu_safety_driver_trace_hint">One line in the session folder for every submit and present, written as it happens. It is how a hang that takes the phone down can be told apart from a call that never returns - the one question frame timings cannot answer. It costs a storage sync per call, so leave it on while you are looking for something.</string>
     <string name="gpu_safety_watchdog">Watch for a stalled GPU</string>

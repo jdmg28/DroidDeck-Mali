@@ -86,6 +86,26 @@ object GpuSafetyPrefs {
     fun setDriverTrace(context: Context, on: Boolean) =
         prefs(context).edit().putBoolean("driverTrace", on).apply()
 
+    /**
+     * Whether the driver package tells clients about a DRM node for this GPU.
+     *
+     * On is what every session has been running with. It exists as a switch because it is the ONLY
+     * thing the vendored adapter adds - everything else it does is pass the backend's answers
+     * through unchanged - which makes it the single candidate on our side of the line between "the
+     * driver is broken" and "our shim made the driver do something it was never tested doing". The
+     * adapter answers `VK_EXT_physical_device_drm` with /dev/mali0, a kbase char device, and a
+     * compositor that believes it is a DRM render node will go and treat it as one.
+     *
+     * Off means Steam very likely refuses to start: gamescope's nested Vulkan backend imports the
+     * compositor's buffers through exactly this extension. That is an acceptable outcome here and
+     * worth stating, because the alternative outcome on this device is a reboot.
+     */
+    fun drmFacade(context: Context): Boolean =
+        prefs(context).getBoolean("drmFacade", true)
+
+    fun setDrmFacade(context: Context, on: Boolean) =
+        prefs(context).edit().putBoolean("drmFacade", on).apply()
+
     /** The live watchdog while a session runs: frames, wedged processes, temperature. */
     fun liveWatchdog(context: Context): Boolean =
         prefs(context).getBoolean("liveWatchdog", true)

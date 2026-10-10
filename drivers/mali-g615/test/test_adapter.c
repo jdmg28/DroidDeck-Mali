@@ -45,6 +45,11 @@ int main(int argc, char **argv) {
     const char *adapter_path = argv[1];
     const char *backend_path = argc > 2 ? argv[2] : NULL;
     int want_trace = getenv("DD_TEST_TRACE") != NULL;
+    /* The adapter reads the same variable in this same process (it is dlopen'd, not forked), so one
+       switch sets the behaviour under test and the expectation about it. The environment is read by
+       both, and only the harness decides what it is. */
+    const char *no_drm_env = getenv("DD_ADAPTER_NO_DRM");
+    int no_drm = no_drm_env && *no_drm_env && strcmp(no_drm_env, "0") != 0;
 
     void *adapter = dlopen(adapter_path, RTLD_NOW | RTLD_LOCAL);
     if (!adapter) {
@@ -71,7 +76,11 @@ int main(int argc, char **argv) {
 
     uint32_t count = 0;
     CHECK(enum_ext(physical, NULL, &count, NULL) == VK_SUCCESS, "the extension count comes back");
-    CHECK(count == 3, "the two the backend has, plus VK_EXT_physical_device_drm the adapter adds");
+    if (no_drm) {
+        CHECK(count == 2, "DD_ADAPTER_NO_DRM: the facade is not advertised, the backend's own two remain");
+    } else {
+        CHECK(count == 3, "the two the backend has, plus VK_EXT_physical_device_drm the adapter adds");
+    }
     VkExtensionProperties listed[8];
     memset(listed, 0, sizeof(listed));
     uint32_t capacity = count;
@@ -79,7 +88,9 @@ int main(int argc, char **argv) {
     int drm_found = 0;
     for (uint32_t i = 0; i < capacity; ++i)
         if (!strcmp(listed[i].extensionName, VK_EXT_PHYSICAL_DEVICE_DRM_EXTENSION_NAME)) ++drm_found;
-    CHECK(drm_found == 1, "and it is named exactly once");
+    CHECK(drm_found == (no_drm ? 0 : 1),
+          no_drm ? "and it is named not at all, which is the whole point of the switch"
+                 : "and it is named exactly once");
 
     /* The DRM node identity gamescope reads. */
     VkPhysicalDeviceDrmPropertiesEXT drm;
@@ -95,7 +106,10 @@ int main(int argc, char **argv) {
     struct stat node;
     int node_ok = stat(DD_MALI_NODE, &node) == 0 && S_ISCHR(node.st_mode);
     CHECK(node_ok, "the render node this build was told to look for is there");
-    if (node_ok) {
+    if (no_drm) {
+        CHECK(drm.hasPrimary == VK_FALSE && drm.hasRender == VK_FALSE,
+              "and a client's DrmPropertiesEXT struct is left exactly as the backend left it");
+    } else if (node_ok) {
         CHECK(drm.hasPrimary == VK_TRUE && drm.hasRender == VK_TRUE,
               "the adapter claims primary and render for it");
         CHECK(drm.primaryMajor == (int64_t)major(node.st_rdev) &&

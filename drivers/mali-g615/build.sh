@@ -153,7 +153,9 @@ meta = {
     "traceEnvironment": {
         "DD_ADAPTER_TRACE": "path of a file to append one line per GPU call to",
         "DD_ADAPTER_TRACE_MAX": "lines to write before stopping (default 8192)",
+        "DD_ADAPTER_NO_DRM": "1 = add nothing: do not advertise or answer VK_EXT_physical_device_drm",
     },
+    "adapterVersion": version,
     "note": "Not an Android system driver. Not a new GPU driver. The adapter adds the DRM-node "
             "facade gamescope's nested backend needs, and optionally a call trace; nothing else "
             "about the rendering path is changed.",

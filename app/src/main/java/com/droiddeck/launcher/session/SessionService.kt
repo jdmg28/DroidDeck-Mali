@@ -708,8 +708,14 @@ class SessionService : Service() {
             // The driver package's own instrument. "1" means "into the session folder", which the
             // adapter resolves from BL_DEBUG_DIR set above; it never writes anywhere the app has
             // not already agreed to share, and a session that dies mid-call leaves the call behind.
-            if (com.droiddeck.launcher.gpu.guard.GpuSafetyPrefs.driverTrace(this))
-                guest.add("DD_ADAPTER_TRACE=1")
+            val guardPrefs = com.droiddeck.launcher.gpu.guard.GpuSafetyPrefs
+            // While the latch is engaged, the trace is on whether or not anyone remembered to switch
+            // it on: that is exactly the state where every session is an experiment, and a device
+            // that reboots without leaving a trace is an experiment with no result.
+            val traceWanted = guardPrefs.driverTrace(this) || guardPrefs.lockEngaged(this)
+            if (traceWanted) guest.add("DD_ADAPTER_TRACE=1")
+            if (!com.droiddeck.launcher.gpu.guard.GpuSafetyPrefs.drmFacade(this))
+                guest.add("DD_ADAPTER_NO_DRM=1")
             // Hardware rendering, initially presented by CPU/SHM WSI for compatibility.
             guest.add("PANVK_KBASE_DRI3=0")
             guest.add("LIBGL_KOPPER_DISABLE=false")

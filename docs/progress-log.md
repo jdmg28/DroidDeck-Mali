@@ -7,6 +7,39 @@ the timeline, then lessons and backlog. Companion to the README (what the app *d
 
 ---
 
+## 2026-10-10 (later) - the abort did not save the phone, and that is the result
+
+Session `2026-10-10-07-steam`, on the build that carries the trace. The probe passed, the session
+stalled ~19 s in the way it always does, and then did something it had never done: **four real
+frames**, 71 ms, 53 ms, 51 ms, 38 ms - about 20 fps of actual rendering through PanVK - before
+729 / 1246 / 1763 / 2289 ms and the watchdog aborting at the 2 s budget. Reboot 66 s later. The
+previous session's record was two frames (250, 105 ms) and a reboot 48 s later.
+
+Read together, three conclusions:
+
+1. **Rendering works.** Four frames at 38-71 ms is not a driver that cannot drive this GPU. Whatever
+   kills the session arrives after it has already succeeded, which is also why no profile, resolution
+   or fps cap is going to help: none of them is involved in frame five.
+2. **The abort-before-the-kernel-timeout theory is dead**, killed by two data points and by its own
+   mechanism: `CS_BUS_FAULT` does not need our continued participation once it has been raised, and
+   killing the compositor does not recall the job. `docs/gpu-safety.md` §4 says so now instead of
+   implying the opposite.
+3. **`driver trace: off`.** The instrument shipped, the switch existed, and the session that rebooted
+   ran without it - which is on me as much as anyone: a diagnostic that must be remembered is a
+   diagnostic that will be missing at the one moment it matters. It is now automatic while the latch is
+   engaged, and the report prints the tail so the answer arrives with the log instead of requiring a
+   second investigation.
+
+The lever added with it is `DD_ADAPTER_NO_DRM=1` behind *Advertise a DRM node*: the adapter's single
+non-pass-through behaviour, answering `VK_EXT_physical_device_drm` with `/dev/mali0` - a kbase char
+device handed to a compositor that will treat it as a DRM render node. Suspicious, ours, and removable
+in one variable. Two outcomes, both useful: Steam refuses to start and the phone survives (we have
+found something, and there is a safe mode), or the session hangs identically (our shim is cleared and
+the remaining fault is entirely upstream's, which is the answer to bring to
+`zenithblue-oss/panvk-kbase-android` with the trace attached).
+
+---
+
 ## 2026-10-10 (evening) - the guard held the door, then measured its own limit
 
 The probe bugs fixed this afternoon let a session through, and the session went the way the driver

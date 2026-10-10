@@ -2120,6 +2120,8 @@
     <string name="gpu_safety_probe">Probar la GPU primero</string>
     <string name="gpu_safety_probe_hint">Ejecuta una tarea pequeña dentro del runtime antes de arrancar Steam. Si la GPU no la termina, la sesión no empieza.</string>
     <string name="gpu_safety_during">Mientras la sesión está activa</string>
+    <string name="gpu_safety_drm_facade">Anunciar un nodo DRM (fachada del controlador)</string>
+    <string name="gpu_safety_drm_facade_hint">Es lo unico que nuestro paquete de driver agrega por encima del renderizador de upstream: le avisa al compositor de un nodo DRM para que pueda importar los buffers que se presentan. Apagarlo quita nuestra adicion por completo y lo mas probable es que Steam se niegue a iniciar, que es justo el objetivo del interruptor. Si el telefono deja de reiniciarse con esto apagado, la adicion era lo que fallaba; si se cuelga igual, nuestro codigo no tiene nada que ver y el problema es todo del driver.</string>
     <string name="gpu_safety_driver_trace">Trazear las llamadas GPU del controlador</string>
     <string name="gpu_safety_driver_trace_hint">Escribe una linea en la carpeta de la sesion por cada submit y present, en el momento. Es la unica forma de distinguir un cuelgue que reinicia el telefono de una llamada que nunca vuelve, que es justo lo que los intervalos de fotogramas no pueden decir. Cuesta una sincronizacion de almacenamiento por llamada, asi que dejala puesta mientras busques algo.</string>
     <string name="gpu_safety_watchdog">Vigilar si la GPU se bloquea</string>
