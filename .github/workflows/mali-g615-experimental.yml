@@ -194,9 +194,30 @@ jobs:
       # "the safest value is the default" and the only part of this branch that is provable on a
       # machine with no phone attached.
       - name: Run the unit tests
-        env:
-          ANDROID_HOME: ${{ env.ANDROID_HOME }}
-        run: ./gradlew testDebugUnitTest --console=plain -PndkVersion="$DROIDDECK_NDK_VERSION" -PskipRust=true
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/tests.sh" <<'EOS'
+          set -uo pipefail
+          # Wherever the sdk is: setup-android points ANDROID_HOME at it, and the runner image has
+          # one of its own.
+          export ANDROID_HOME="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          ./gradlew testDebugUnitTest --console=plain \
+            -PndkVersion="$DROIDDECK_NDK_VERSION" -PskipRust=true
+          result=$?
+          # Which tests, and what they said: a tick is not the point, the words are. (No heredoc
+          # inside the heredoc this script was written from - the terminator would be indented and
+          # bash would read the rest of the script as the heredoc's body.)
+          if [ -d app/build/test-results/testDebugUnitTest ]; then
+            echo "--- what the failing tests said:"
+            grep -h -B 2 -A 8 '<failure\|<error' \
+              app/build/test-results/testDebugUnitTest/*.xml 2>/dev/null | head -60
+            echo "--- tests that ran:"
+            grep -ho 'testcase name="[^"]*" classname="[^"]*"' \
+              app/build/test-results/testDebugUnitTest/*.xml 2>/dev/null | head -40
+          fi
+          exit $result
+          EOS
+          bash tools/ci/with-report.sh "Run the unit tests" "$RUNNER_TEMP/tests.sh"
 
       - name: What this build is
         id: identity
