@@ -166,7 +166,17 @@ internal fun SetupPanel(
     var showLimitDetails by rememberSaveable { mutableStateOf(false) }
     // Four tabs instead of one long scroll; LB and RB turn them from anywhere on the page. Build
     // and credits are on the Updates page.
-    val tabs = listOf(stringResource(R.string.setup_tab_overview), stringResource(R.string.setup_tab_controller), stringResource(R.string.setup_tab_session), stringResource(R.string.setup_tab_launcher))
+    // A fifth tab, only where the GPU guard means something: on a Mali device, where a session has
+    // ended in a fault inside the kernel's own module, or once someone has turned it on anyway.
+    // Five tabs on a phone that has never needed it would be one tab too many.
+    val showSafety = remember {
+        com.droiddeck.launcher.core.DeviceSupport.mali() ||
+            com.droiddeck.launcher.gpu.guard.GpuSafetyPrefs.guardEnabled(ctx)
+    }
+    val tabs = listOf(
+        stringResource(R.string.setup_tab_overview), stringResource(R.string.setup_tab_controller),
+        stringResource(R.string.setup_tab_session), stringResource(R.string.setup_tab_launcher),
+    ) + if (showSafety) listOf(stringResource(R.string.gpu_safety_tab)) else emptyList()
     var tab by rememberSaveable { mutableStateOf(0) }
     val tabFocus = remember { List(tabs.size) { FocusRequester() } }
     var tabTurned by remember { mutableStateOf(false) }
@@ -386,6 +396,9 @@ internal fun SetupPanel(
                             }
                             StoresEngineRow()
                         }
+                    }
+                    4 -> {
+                        GpuSafetyPanel(host)
                     }
                 }
             }

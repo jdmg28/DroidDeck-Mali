@@ -1,0 +1,705 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-only
+#
+# A bounded GPU smoke test, run inside DroidDeck's Linux guest before gamescope and Steam start.
+# Read-only and unprivileged: no su, no chmod, no SELinux or /vendor changes, nothing written
+# outside the session folder.
+#
+# Why it exists. On the Mali-G615 this integration targets, a Steam session ended in a kernel
+# panic inside mali_kbase (CS_FATAL / CS_BUS_FAULT -> FENCE_SIGNAL timeout(3000 ms) ->
+# "Unexpected kernel BRK exception at EL1" in kbasep_csf_sync_kcpu_dump_locked). An APK can
+# neither repair that module nor read the kernel log that would name the trigger. What it can do
+# is refuse to hand the GPU a 700 MB client before it has proven it can finish one 4 KB job.
+#
+# Three stages, each with its own timeout, each failure labelled:
+#   1. enumeration  - the ICD loads and the device names itself (Mali-G615).
+#   2. submit       - one vkCmdFillBuffer is queued and its fence waited for. A fence that never
+#                     signals is the exact shape of the fault that took the phone down, and it is
+#                     the only outcome this script reports as a hard failure.
+#   3. readback     - the bytes come back as they were written, so a driver that signals a fence
+#                     without having done the work cannot pass.
+#
+# Stage 2 and 3 are skipped, not failed, when they cannot be built (no python3, no matching queue
+# family, a struct the ICD refuses). A test that cannot be run is not evidence against the GPU, and
+# reporting it as one would lock the user out of their own phone over a bug in this script.
+#
+# Output, one per line, on stdout:
+#   DD_GPU_PROBE_OK: ...
+#   DD_GPU_PROBE_FAILED: ...           exit 78
+#   DD_GPU_PROBE_SUBMIT_TIMEOUT: ...   exit 78   (the GPU did not finish; do not start Steam)
+#   DD_GPU_PROBE_SKIPPED: ...          exit 0    (a stage could not be run)
+#
+set -u
+
+mode=${1:-safe}
+# The wall clock the app enforces as well; kept shorter here so the kernel, not this script, is
+# never the thing left holding a wedged queue.
+enum_seconds=${DD_GPU_PROBE_ENUM_SECONDS:-25}
+submit_seconds=${DD_GPU_PROBE_SUBMIT_SECONDS:-20}
+# Fence wait, inside python. A GPU that is working answers this in well under a millisecond; the
+# kernel's own fence timeout on this device is 3000 ms, so anything past ~2 s is already the fault
+# we are looking for and there is no point waiting longer to say so.
+fence_ns=${DD_GPU_PROBE_FENCE_NS:-2000000000}
+
+echo "== droiddeck-gpu-probe $(date -u +%H:%M:%S): profile=$mode enum=${enum_seconds}s submit=${submit_seconds}s"
+
+# ── Stage 0: what the session would hand the GPU ──────────────────────────────────────────────
+icd=${BL_VK_DRIVER:-${VK_DRIVER_FILES:-${VK_ICD_FILENAMES:-}}}
+if [ -z "$icd" ]; then
+    echo "DD_GPU_PROBE_FAILED: no Vulkan driver was selected for this session"
+    exit 78
+fi
+if [ ! -r "$icd" ]; then
+    echo "DD_GPU_PROBE_FAILED: the selected driver manifest is not readable: $icd"
+    exit 78
+fi
+echo "== driver manifest: $icd"
+if [ ! -c /dev/mali0 ]; then
+    echo "DD_GPU_PROBE_FAILED: /dev/mali0 is absent or is not a character device in the guest"
+    exit 78
+fi
+if command -v ls >/dev/null 2>&1; then
+    echo "== /dev/mali0: $(ls -l /dev/mali0 2>/dev/null | awk '{print $1, $5, $6}' || echo 'not statable')"
+fi
+
+# ── Stage 1: enumeration ──────────────────────────────────────────────────────────────────────
+if ! command -v vulkaninfo >/dev/null 2>&1; then
+    echo "DD_GPU_PROBE_SKIPPED: vulkaninfo is not installed; the device was not enumerated"
+    vulkan_summary=""
+else
+    if command -v timeout >/dev/null 2>&1; then
+        vulkan_summary=$(VK_LOADER_DEBUG=error timeout "${enum_seconds}s" vulkaninfo --summary 2>&1)
+        vulkan_status=$?
+    else
+        echo "DD_GPU_PROBE_SKIPPED: timeout is not installed; not running an unbounded GPU probe"
+        vulkan_summary=""
+        vulkan_status=0
+    fi
+    printf '%s\n' "$vulkan_summary" | sed 's/^/== vulkaninfo: /'
+    if [ "$vulkan_status" = 124 ] || [ "$vulkan_status" = 137 ]; then
+        # 124 = timed out, 137 = killed. Either way the GPU did not answer an enumeration in time,
+        # which on this device is the same silence that preceded the panic.
+        echo "DD_GPU_PROBE_SUBMIT_TIMEOUT: enumerating the device did not finish in ${enum_seconds}s (exit $vulkan_status)"
+        exit 78
+    fi
+    if [ "$vulkan_status" != 0 ]; then
+        echo "DD_GPU_PROBE_FAILED: vulkaninfo exited $vulkan_status; the driver did not enumerate"
+        exit 78
+    fi
+    if [ -n "$vulkan_summary" ] && ! printf '%s\n' "$vulkan_summary" | grep -Eq 'Mali-G615([[:space:]]|\(|$)'; then
+        echo "DD_GPU_PROBE_FAILED: the selected driver did not report a Mali-G615 ($(printf '%s\n' "$vulkan_summary" | grep -m1 -E 'deviceName|device Name' || echo 'no device name'))"
+        exit 78
+    fi
+fi
+
+# ── Stages 2 and 3: one job, and its answer ───────────────────────────────────────────────────
+if ! command -v python3 >/dev/null 2>&1; then
+    echo "DD_GPU_PROBE_OK: device enumerated; the submit stage was skipped (no python3)"
+    exit 0
+fi
+
+submit_seconds_int=${submit_seconds%s}
+if command -v timeout >/dev/null 2>&1; then
+    DD_GPU_PROBE_SUBMIT=1 DD_GPU_PROBE_FENCE_NS="$fence_ns" \
+        timeout "${submit_seconds_int}s" python3 - "$icd" <<'PY'
+import ctypes
+import json
+import os
+import pathlib
+import sys
+
+# A minimal Vulkan submit, straight against the session's ICD - no loader, so there is nothing
+# between this script and the driver the session itself would use. The whole point is the fence:
+# if the GPU completes the work it is signalled in microseconds, and if it does not, that is the
+# failure mode this probe exists to catch before Steam is asked to try the same thing.
+
+VK_SUCCESS = 0
+VK_TIMEOUT = 2
+VK_NULL = None
+
+ST_APPLICATION_INFO = 0
+ST_INSTANCE_CREATE_INFO = 1
+ST_DEVICE_QUEUE_CREATE_INFO = 2
+ST_DEVICE_CREATE_INFO = 3
+ST_SUBMIT_INFO = 4
+ST_MEMORY_ALLOCATE_INFO = 5
+ST_FENCE_CREATE_INFO = 8
+ST_BUFFER_CREATE_INFO = 12
+ST_COMMAND_POOL_CREATE_INFO = 39
+ST_COMMAND_BUFFER_ALLOCATE_INFO = 40
+ST_COMMAND_BUFFER_BEGIN_INFO = 42
+
+QUEUE_GRAPHICS = 0x1
+QUEUE_COMPUTE = 0x2
+QUEUE_TRANSFER = 0x4
+
+BUFFER_USAGE_TRANSFER_DST = 0x00000002
+MEMORY_HOST_VISIBLE = 0x00000002
+MEMORY_HOST_COHERENT = 0x00000004
+COMMAND_BUFFER_LEVEL_PRIMARY = 0
+COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT = 0x00000001
+
+SIZE = 4096
+PATTERN = 0x5AA5A55A
+
+
+class Fail(Exception):
+    """Something this script needs is missing: a skip, never a verdict on the GPU."""
+
+
+class VkApplicationInfo(ctypes.Structure):
+    _fields_ = [
+        ("sType", ctypes.c_uint32),
+        ("pNext", ctypes.c_void_p),
+        ("pApplicationName", ctypes.c_char_p),
+        ("applicationVersion", ctypes.c_uint32),
+        ("pEngineName", ctypes.c_char_p),
+        ("engineVersion", ctypes.c_uint32),
+        ("apiVersion", ctypes.c_uint32),
+    ]
+
+
+class VkInstanceCreateInfo(ctypes.Structure):
+    _fields_ = [
+        ("sType", ctypes.c_uint32),
+        ("pNext", ctypes.c_void_p),
+        ("flags", ctypes.c_uint32),
+        ("pApplicationInfo", ctypes.c_void_p),
+        ("enabledLayerCount", ctypes.c_uint32),
+        ("ppEnabledLayerNames", ctypes.c_void_p),
+        ("enabledExtensionCount", ctypes.c_uint32),
+        ("ppEnabledExtensionNames", ctypes.c_void_p),
+    ]
+
+
+class VkDeviceQueueCreateInfo(ctypes.Structure):
+    _fields_ = [
+        ("sType", ctypes.c_uint32),
+        ("pNext", ctypes.c_void_p),
+        ("flags", ctypes.c_uint32),
+        ("queueFamilyIndex", ctypes.c_uint32),
+        ("queueCount", ctypes.c_uint32),
+        ("pQueuePriorities", ctypes.c_void_p),
+    ]
+
+
+class VkDeviceCreateInfo(ctypes.Structure):
+    _fields_ = [
+        ("sType", ctypes.c_uint32),
+        ("pNext", ctypes.c_void_p),
+        ("flags", ctypes.c_uint32),
+        ("queueCreateInfoCount", ctypes.c_uint32),
+        ("pQueueCreateInfos", ctypes.c_void_p),
+        ("enabledLayerCount", ctypes.c_uint32),
+        ("ppEnabledLayerNames", ctypes.c_void_p),
+        ("enabledExtensionCount", ctypes.c_uint32),
+        ("ppEnabledExtensionNames", ctypes.c_void_p),
+    ]
+
+
+class VkBufferCreateInfo(ctypes.Structure):
+    _fields_ = [
+        ("sType", ctypes.c_uint32),
+        ("pNext", ctypes.c_void_p),
+        ("flags", ctypes.c_uint32),
+        ("size", ctypes.c_uint64),
+        ("usage", ctypes.c_uint32),
+        ("sharingMode", ctypes.c_uint32),
+        ("queueFamilyIndexCount", ctypes.c_uint32),
+        ("pQueueFamilyIndices", ctypes.c_void_p),
+    ]
+
+
+class VkMemoryAllocateInfo(ctypes.Structure):
+    _fields_ = [
+        ("sType", ctypes.c_uint32),
+        ("pNext", ctypes.c_void_p),
+        ("allocationSize", ctypes.c_uint64),
+        ("memoryTypeIndex", ctypes.c_uint32),
+    ]
+
+
+class VkMemoryRequirements(ctypes.Structure):
+    _fields_ = [
+        ("size", ctypes.c_uint64),
+        ("alignment", ctypes.c_uint64),
+        ("memoryTypeBits", ctypes.c_uint32),
+    ]
+
+
+class VkMemoryType(ctypes.Structure):
+    _fields_ = [("propertyFlags", ctypes.c_uint32), ("heapIndex", ctypes.c_uint32)]
+
+
+class VkMemoryHeap(ctypes.Structure):
+    _fields_ = [("size", ctypes.c_uint64), ("flags", ctypes.c_uint32)]
+
+
+class VkPhysicalDeviceMemoryProperties(ctypes.Structure):
+    _fields_ = [
+        ("memoryTypeCount", ctypes.c_uint32),
+        ("memoryTypes", VkMemoryType * 32),
+        ("memoryHeapCount", ctypes.c_uint32),
+        ("memoryHeaps", VkMemoryHeap * 16),
+    ]
+
+
+class VkExtent3D(ctypes.Structure):
+    _fields_ = [("width", ctypes.c_uint32), ("height", ctypes.c_uint32), ("depth", ctypes.c_uint32)]
+
+
+class VkQueueFamilyProperties(ctypes.Structure):
+    _fields_ = [
+        ("queueFlags", ctypes.c_uint32),
+        ("queueCount", ctypes.c_uint32),
+        ("timestampValidBits", ctypes.c_uint32),
+        ("minImageTransferGranularity", VkExtent3D),
+    ]
+
+
+class VkCommandPoolCreateInfo(ctypes.Structure):
+    _fields_ = [
+        ("sType", ctypes.c_uint32),
+        ("pNext", ctypes.c_void_p),
+        ("flags", ctypes.c_uint32),
+        ("queueFamilyIndex", ctypes.c_uint32),
+    ]
+
+
+class VkCommandBufferAllocateInfo(ctypes.Structure):
+    _fields_ = [
+        ("sType", ctypes.c_uint32),
+        ("pNext", ctypes.c_void_p),
+        ("commandPool", ctypes.c_uint64),
+        ("level", ctypes.c_uint32),
+        ("commandBufferCount", ctypes.c_uint32),
+    ]
+
+
+class VkCommandBufferBeginInfo(ctypes.Structure):
+    _fields_ = [
+        ("sType", ctypes.c_uint32),
+        ("pNext", ctypes.c_void_p),
+        ("flags", ctypes.c_uint32),
+        ("pInheritanceInfo", ctypes.c_void_p),
+    ]
+
+
+class VkSubmitInfo(ctypes.Structure):
+    _fields_ = [
+        ("sType", ctypes.c_uint32),
+        ("pNext", ctypes.c_void_p),
+        ("waitSemaphoreCount", ctypes.c_uint32),
+        ("pWaitSemaphores", ctypes.c_void_p),
+        ("pWaitDstStageMask", ctypes.c_void_p),
+        ("commandBufferCount", ctypes.c_uint32),
+        ("pCommandBuffers", ctypes.c_void_p),
+        ("signalSemaphoreCount", ctypes.c_uint32),
+        ("pSignalSemaphores", ctypes.c_void_p),
+    ]
+
+
+class VkFenceCreateInfo(ctypes.Structure):
+    _fields_ = [
+        ("sType", ctypes.c_uint32),
+        ("pNext", ctypes.c_void_p),
+        ("flags", ctypes.c_uint32),
+    ]
+
+
+class VkPhysicalDeviceProperties(ctypes.Structure):
+    # Only the first six members are named, because they are all this script reads. The driver
+    # writes the WHOLE struct - limits and sparse properties included, 824 bytes on a 64-bit
+    # target - so the tail must be reserved here or vkGetPhysicalDeviceProperties writes past the
+    # end of this object. Oversized on purpose: a Vulkan version that grows the struct must not
+    # turn this probe into memory corruption.
+    _fields_ = [
+        ("apiVersion", ctypes.c_uint32),
+        ("driverVersion", ctypes.c_uint32),
+        ("vendorID", ctypes.c_uint32),
+        ("deviceID", ctypes.c_uint32),
+        ("deviceType", ctypes.c_uint32),
+        ("deviceName", ctypes.c_char * 256),
+        ("_tail", ctypes.c_char * 2048),
+    ]
+
+
+def manifest_library(path_text):
+    manifest = pathlib.Path(path_text)
+    if manifest.suffix == ".json" and manifest.is_file():
+        try:
+            document = json.loads(manifest.read_text())
+        except Exception:
+            return None
+        if "ICD" in document:
+            library = document["ICD"].get("library_path", "")
+            if not library:
+                return None
+            candidate = pathlib.Path(library)
+            return candidate if candidate.is_absolute() else manifest.parent / candidate
+        if "library_path" in document:
+            candidate = pathlib.Path(document["library_path"])
+            return candidate if candidate.is_absolute() else manifest.parent / candidate
+        return None
+    return pathlib.Path(path_text)
+
+
+def check(result, what):
+    if result != VK_SUCCESS:
+        raise Fail("%s returned %d" % (what, result))
+    return result
+
+
+def main():
+    library = manifest_library(sys.argv[1])
+    if not library or not library.is_file():
+        raise Fail("the driver library could not be found from %s" % sys.argv[1])
+
+    # RTLD_NOW: a dependency this ICD cannot resolve must fail here, before anything is queued.
+    driver = ctypes.CDLL(str(library), mode=os.RTLD_NOW | os.RTLD_LOCAL)
+
+    negotiate = driver.vk_icdNegotiateLoaderICDInterfaceVersion
+    negotiate.argtypes = [ctypes.POINTER(ctypes.c_uint32)]
+    negotiate.restype = ctypes.c_int32
+    version = ctypes.c_uint32(7)
+    check(negotiate(ctypes.byref(version)), "vk_icdNegotiateLoaderICDInterfaceVersion")
+
+    gipa = driver.vk_icdGetInstanceProcAddr
+    gipa.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
+    gipa.restype = ctypes.c_void_p
+    if not gipa(None, b"vkCreateInstance"):
+        raise Fail("the ICD has no vkCreateInstance entry point")
+
+    def instance_fn(name, argtypes=None, restype=ctypes.c_int32):
+        address = gipa(None, name.encode())
+        if not address:
+            raise Fail("the ICD has no %s" % name.decode())
+        return ctypes.cast(address, ctypes.CFUNCTYPE(restype, *(() if argtypes is None else argtypes)))
+
+    vk_create_instance = instance_fn(
+        "vkCreateInstance",
+        [ctypes.c_void_p, ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint64)],
+    )
+    vk_destroy_instance = instance_fn(
+        "vkDestroyInstance", [ctypes.c_uint64, ctypes.c_void_p], ctypes.c_void_p
+    )
+    vk_enumerate_physical_devices = instance_fn(
+        "vkEnumeratePhysicalDevices",
+        [ctypes.c_uint64, ctypes.POINTER(ctypes.c_uint32), ctypes.POINTER(ctypes.c_uint64)],
+    )
+    vk_get_physical_device_properties = instance_fn(
+        "vkGetPhysicalDeviceProperties",
+        [ctypes.c_uint64, ctypes.POINTER(VkPhysicalDeviceProperties)],
+        ctypes.c_void_p,
+    )
+    vk_get_physical_device_memory_properties = instance_fn(
+        "vkGetPhysicalDeviceMemoryProperties",
+        [ctypes.c_uint64, ctypes.POINTER(VkPhysicalDeviceMemoryProperties)],
+        ctypes.c_void_p,
+    )
+    vk_get_physical_device_queue_family_properties = instance_fn(
+        "vkGetPhysicalDeviceQueueFamilyProperties",
+        [ctypes.c_uint64, ctypes.POINTER(ctypes.c_uint32), ctypes.POINTER(VkQueueFamilyProperties)],
+        ctypes.c_void_p,
+    )
+    vk_create_device = instance_fn(
+        "vkCreateDevice",
+        [
+            ctypes.c_uint64,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_uint64),
+        ],
+    )
+    vk_get_device_proc_addr = instance_fn(
+        "vkGetDeviceProcAddr",
+        [ctypes.c_uint64, ctypes.c_char_p],
+        ctypes.c_void_p,
+    )
+
+    application = VkApplicationInfo(
+        sType=ST_APPLICATION_INFO,
+        pNext=None,
+        pApplicationName=b"droiddeck-gpu-probe",
+        applicationVersion=1,
+        pEngineName=b"droiddeck",
+        engineVersion=1,
+        apiVersion=(1 << 22) | (1 << 12),  # Vulkan 1.1
+    )
+    instance_info = VkInstanceCreateInfo(sType=ST_INSTANCE_CREATE_INFO, pApplicationInfo=ctypes.cast(ctypes.byref(application), ctypes.c_void_p))
+    instance = ctypes.c_uint64(0)
+    check(vk_create_instance(ctypes.byref(instance_info), None, ctypes.byref(instance)), "vkCreateInstance")
+    instance_value = instance.value
+    if instance_value == 0:
+        raise Fail("vkCreateInstance reported success but handed back a null instance")
+
+    try:
+        count = ctypes.c_uint32(0)
+        check(vk_enumerate_physical_devices(instance_value, ctypes.byref(count), None), "vkEnumeratePhysicalDevices")
+        if count.value == 0:
+            raise Fail("the driver reports no physical device")
+        devices = (ctypes.c_uint64 * count.value)()
+        check(vk_enumerate_physical_devices(instance_value, ctypes.byref(count), devices), "vkEnumeratePhysicalDevices")
+
+        chosen = None
+        chosen_name = ""
+        chosen_vendor = 0
+        for index in range(count.value):
+            props = VkPhysicalDeviceProperties()
+            vk_get_physical_device_properties(devices[index], ctypes.byref(props))
+            name = props.deviceName.split(b"\x00")[0].decode("utf-8", "replace")
+            if chosen is None:
+                chosen_vendor = props.vendorID
+            if "Mali-G615" in name:
+                chosen = devices[index]
+                chosen_name = name
+                chosen_vendor = props.vendorID
+                break
+        if chosen is None:
+            props = VkPhysicalDeviceProperties()
+            vk_get_physical_device_properties(devices[0], ctypes.byref(props))
+            chosen = devices[0]
+            chosen_name = props.deviceName.split(b"\x00")[0].decode("utf-8", "replace")
+            chosen_vendor = props.vendorID
+            print("== note: no Mali-G615 among the devices; using %s" % chosen_name)
+        print("== device: %s (vendor 0x%x)" % (chosen_name, chosen_vendor))
+
+        families = ctypes.c_uint32(0)
+        vk_get_physical_device_queue_family_properties(chosen, ctypes.byref(families), None)
+        if families.value == 0:
+            raise Fail("the device reports no queue family")
+        family_list = (VkQueueFamilyProperties * families.value)()
+        vk_get_physical_device_queue_family_properties(chosen, ctypes.byref(families), family_list)
+
+        family_index = -1
+        for preference in (QUEUE_TRANSFER, QUEUE_COMPUTE, QUEUE_GRAPHICS):
+            for index in range(families.value):
+                if family_list[index].queueFlags & preference:
+                    family_index = index
+                    break
+            if family_index >= 0:
+                break
+        if family_index < 0:
+            raise Fail("no queue family supports transfer, compute or graphics work")
+        print("== queue family %d (flags 0x%x, %d queue(s))"
+              % (family_index, family_list[family_index].queueFlags, family_list[family_index].queueCount))
+
+        priority = ctypes.c_float(1.0)
+        queue_info = VkDeviceQueueCreateInfo(
+            sType=ST_DEVICE_QUEUE_CREATE_INFO,
+            queueFamilyIndex=family_index,
+            queueCount=1,
+            pQueuePriorities=ctypes.cast(ctypes.byref(priority), ctypes.c_void_p),
+        )
+        device_info = VkDeviceCreateInfo(
+            sType=ST_DEVICE_CREATE_INFO,
+            queueCreateInfoCount=1,
+            pQueueCreateInfos=ctypes.cast(ctypes.byref(queue_info), ctypes.c_void_p),
+        )
+        device = ctypes.c_uint64(0)
+        check(vk_create_device(chosen, ctypes.byref(device_info), None, ctypes.byref(device)), "vkCreateDevice")
+        device_value = device.value
+        if device_value == 0:
+            raise Fail("vkCreateDevice reported success but handed back a null device")
+
+        def device_fn(name, argtypes, restype=ctypes.c_int32):
+            address = vk_get_device_proc_addr(device_value, name.encode())
+            if not address:
+                address = gipa(instance_value, name.encode())
+            if not address:
+                raise Fail("the driver has no %s" % name)
+            return ctypes.cast(address, ctypes.CFUNCTYPE(restype, *argtypes))
+
+        vk_get_device_queue = device_fn(
+            "vkGetDeviceQueue",
+            [ctypes.c_uint64, ctypes.c_uint32, ctypes.c_uint32, ctypes.POINTER(ctypes.c_uint64)],
+            ctypes.c_void_p,
+        )
+        vk_create_buffer = device_fn(
+            "vkCreateBuffer",
+            [ctypes.c_uint64, ctypes.c_void_p, ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint64)],
+        )
+        vk_destroy_buffer = device_fn("vkDestroyBuffer", [ctypes.c_uint64, ctypes.c_uint64, ctypes.c_void_p], ctypes.c_void_p)
+        vk_get_buffer_memory_requirements = device_fn(
+            "vkGetBufferMemoryRequirements",
+            [ctypes.c_uint64, ctypes.c_uint64, ctypes.POINTER(VkMemoryRequirements)],
+            ctypes.c_void_p,
+        )
+        vk_allocate_memory = device_fn(
+            "vkAllocateMemory",
+            [ctypes.c_uint64, ctypes.c_void_p, ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint64)],
+        )
+        vk_free_memory = device_fn("vkFreeMemory", [ctypes.c_uint64, ctypes.c_uint64, ctypes.c_void_p], ctypes.c_void_p)
+        vk_bind_buffer_memory = device_fn("vkBindBufferMemory", [ctypes.c_uint64, ctypes.c_uint64, ctypes.c_uint64, ctypes.c_uint64])
+        vk_map_memory = device_fn(
+            "vkMapMemory",
+            [ctypes.c_uint64, ctypes.c_uint64, ctypes.c_uint64, ctypes.c_uint64, ctypes.c_uint32, ctypes.POINTER(ctypes.c_void_p)],
+        )
+        vk_unmap_memory = device_fn("vkUnmapMemory", [ctypes.c_uint64, ctypes.c_uint64])
+        vk_create_command_pool = device_fn(
+            "vkCreateCommandPool",
+            [ctypes.c_uint64, ctypes.c_void_p, ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint64)],
+        )
+        vk_destroy_command_pool = device_fn("vkDestroyCommandPool", [ctypes.c_uint64, ctypes.c_uint64, ctypes.c_void_p], ctypes.c_void_p)
+        vk_allocate_command_buffers = device_fn(
+            "vkAllocateCommandBuffers",
+            [ctypes.c_uint64, ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint64)],
+        )
+        vk_free_command_buffers = device_fn(
+            "vkFreeCommandBuffers", [ctypes.c_uint64, ctypes.c_uint64, ctypes.c_uint32, ctypes.c_void_p], ctypes.c_void_p
+        )
+        vk_begin_command_buffer = device_fn("vkBeginCommandBuffer", [ctypes.c_uint64, ctypes.c_void_p])
+        vk_cmd_fill_buffer = device_fn(
+            "vkCmdFillBuffer", [ctypes.c_uint64, ctypes.c_uint64, ctypes.c_uint64, ctypes.c_uint64, ctypes.c_uint32], ctypes.c_void_p
+        )
+        vk_end_command_buffer = device_fn("vkEndCommandBuffer", [ctypes.c_uint64])
+        vk_create_fence = device_fn(
+            "vkCreateFence",
+            [ctypes.c_uint64, ctypes.c_void_p, ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint64)],
+        )
+        vk_destroy_fence = device_fn("vkDestroyFence", [ctypes.c_uint64, ctypes.c_uint64, ctypes.c_void_p], ctypes.c_void_p)
+        vk_queue_submit = device_fn("vkQueueSubmit", [ctypes.c_uint64, ctypes.c_uint32, ctypes.c_void_p, ctypes.c_uint64])
+        vk_wait_for_fences = device_fn(
+            "vkWaitForFences", [ctypes.c_uint64, ctypes.c_uint32, ctypes.c_void_p, ctypes.c_uint32, ctypes.c_uint64]
+        )
+        vk_destroy_device = device_fn("vkDestroyDevice", [ctypes.c_uint64, ctypes.c_void_p], ctypes.c_void_p)
+
+        queue = ctypes.c_uint64(0)
+        vk_get_device_queue(device_value, family_index, 0, ctypes.byref(queue))
+
+        memory_properties = VkPhysicalDeviceMemoryProperties()
+        vk_get_physical_device_memory_properties(chosen, ctypes.byref(memory_properties))
+
+        buffer_info = VkBufferCreateInfo(sType=ST_BUFFER_CREATE_INFO, size=SIZE, usage=BUFFER_USAGE_TRANSFER_DST)
+        buffer = ctypes.c_uint64(0)
+        check(vk_create_buffer(device_value, ctypes.byref(buffer_info), None, ctypes.byref(buffer)), "vkCreateBuffer")
+        buffer_value = buffer.value
+
+        requirements = VkMemoryRequirements()
+        vk_get_buffer_memory_requirements(device_value, buffer_value, ctypes.byref(requirements))
+
+        memory_type = -1
+        for index in range(memory_properties.memoryTypeCount):
+            if requirements.memoryTypeBits & (1 << index):
+                flags = memory_properties.memoryTypes[index].propertyFlags
+                if flags & MEMORY_HOST_VISIBLE and flags & MEMORY_HOST_COHERENT:
+                    memory_type = index
+                    break
+        if memory_type < 0:
+            raise Fail("no host-visible, host-coherent memory type for the probe's buffer")
+
+        allocate_info = VkMemoryAllocateInfo(
+            sType=ST_MEMORY_ALLOCATE_INFO, allocationSize=requirements.size, memoryTypeIndex=memory_type
+        )
+        memory = ctypes.c_uint64(0)
+        check(vk_allocate_memory(device_value, ctypes.byref(allocate_info), None, ctypes.byref(memory)), "vkAllocateMemory")
+        memory_value = memory.value
+        check(vk_bind_buffer_memory(device_value, buffer_value, memory_value, 0), "vkBindBufferMemory")
+
+        mapped = ctypes.c_void_p(0)
+        check(vk_map_memory(device_value, memory_value, 0, SIZE, 0, ctypes.byref(mapped)), "vkMapMemory")
+        try:
+            ctypes.memset(mapped, 0, SIZE)
+        except Exception:
+            pass
+
+        pool_info = VkCommandPoolCreateInfo(sType=ST_COMMAND_POOL_CREATE_INFO, queueFamilyIndex=family_index)
+        pool = ctypes.c_uint64(0)
+        check(vk_create_command_pool(device_value, ctypes.byref(pool_info), None, ctypes.byref(pool)), "vkCreateCommandPool")
+        pool_value = pool.value
+
+        allocate_buffers = VkCommandBufferAllocateInfo(
+            sType=ST_COMMAND_BUFFER_ALLOCATE_INFO,
+            commandPool=pool_value,
+            level=COMMAND_BUFFER_LEVEL_PRIMARY,
+            commandBufferCount=1,
+        )
+        command_buffer = ctypes.c_uint64(0)
+        check(vk_allocate_command_buffers(device_value, ctypes.byref(allocate_buffers), ctypes.byref(command_buffer)), "vkAllocateCommandBuffers")
+        command_buffer_value = command_buffer.value
+
+        begin_info = VkCommandBufferBeginInfo(sType=ST_COMMAND_BUFFER_BEGIN_INFO, flags=COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT)
+        check(vk_begin_command_buffer(command_buffer_value, ctypes.byref(begin_info)), "vkBeginCommandBuffer")
+        vk_cmd_fill_buffer(command_buffer_value, buffer_value, 0, SIZE, PATTERN)
+        check(vk_end_command_buffer(command_buffer_value), "vkEndCommandBuffer")
+
+        fence_info = VkFenceCreateInfo(sType=ST_FENCE_CREATE_INFO)
+        fence = ctypes.c_uint64(0)
+        check(vk_create_fence(device_value, ctypes.byref(fence_info), None, ctypes.byref(fence)), "vkCreateFence")
+        fence_value = fence.value
+
+        submit_info = VkSubmitInfo(sType=ST_SUBMIT_INFO, commandBufferCount=1)
+        submit_info.pCommandBuffers = ctypes.cast(ctypes.byref(command_buffer), ctypes.c_void_p)
+        check(vk_queue_submit(queue.value, 1, ctypes.byref(submit_info), fence_value), "vkQueueSubmit")
+        sys.stdout.write("== submitted one %d-byte fill; waiting for its fence\n" % SIZE)
+        sys.stdout.flush()
+
+        # ── From here on, the GPU's answer is the only thing being measured. ──────────────────
+        fence_array = (ctypes.c_uint64 * 1)(fence_value)
+        status = vk_wait_for_fences(device_value, 1, fence_array, 1, int(os.environ.get("DD_GPU_PROBE_FENCE_NS", "2000000000")))
+        if status == VK_TIMEOUT:
+            # Not a skip and not a script fault: work was queued and the GPU did not finish it.
+            print("DD_GPU_PROBE_SUBMIT_TIMEOUT: a queued %d-byte fill did not complete within the fence wait" % SIZE)
+            sys.exit(78)
+        check(status, "vkWaitForFences")
+
+        words = ctypes.cast(mapped, ctypes.POINTER(ctypes.c_uint32))
+        bad = -1
+        for index in range(SIZE // 4):
+            if words[index] != PATTERN:
+                bad = index
+                break
+        if bad >= 0:
+            print("DD_GPU_PROBE_FAILED: the fence was signalled but the buffer reads 0x%08x at word %d (expected 0x%08x)"
+                  % (words[bad], bad, PATTERN))
+            sys.exit(78)
+
+        print("== read back %d bytes, all 0x%08x" % (SIZE, PATTERN))
+
+        vk_destroy_fence(device_value, fence_value, None)
+        vk_free_command_buffers(device_value, pool_value, 1, ctypes.cast(ctypes.byref(command_buffer), ctypes.c_void_p))
+        vk_destroy_command_pool(device_value, pool_value, None)
+        vk_unmap_memory(device_value, memory_value)
+        vk_destroy_buffer(device_value, buffer_value, None)
+        vk_free_memory(device_value, memory_value, None)
+        vk_destroy_device(device_value, None)
+    finally:
+        vk_destroy_instance(instance_value, None)
+
+    print("DD_GPU_PROBE_OK: the device enumerated and finished a queued job")
+
+
+try:
+    main()
+except Fail as error:
+    print("DD_GPU_PROBE_SKIPPED: %s" % error)
+    sys.exit(0)
+except SystemExit:
+    raise
+except BaseException as error:
+    # Anything unexpected - a struct the driver disagrees with, a Python quirk - is a test that
+    # could not be run, and must never be reported as the GPU having failed.
+    print("DD_GPU_PROBE_SKIPPED: the submit stage could not be built: %s: %s" % (type(error).__name__, error))
+    sys.exit(0)
+PY
+    probe_status=$?
+else
+    echo "DD_GPU_PROBE_SKIPPED: timeout is not installed; the submit stage was not run"
+    probe_status=0
+fi
+
+if [ "$probe_status" = 124 ] || [ "$probe_status" = 137 ]; then
+    echo "DD_GPU_PROBE_SUBMIT_TIMEOUT: the submit stage did not finish in ${submit_seconds_int}s (exit $probe_status)"
+    exit 78
+fi
+if [ "$probe_status" = 78 ]; then
+    # The python stage already said why.
+    exit 78
+fi
+if [ "$probe_status" != 0 ]; then
+    echo "DD_GPU_PROBE_SKIPPED: the submit stage exited $probe_status"
+    exit 0
+fi
+
+echo "== droiddeck-gpu-probe $(date -u +%H:%M:%S): done"
+exit 0

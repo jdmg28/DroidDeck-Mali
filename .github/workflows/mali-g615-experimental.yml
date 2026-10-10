@@ -35,6 +35,7 @@ jobs:
         run: |
           test -f app/src/main/java/com/droiddeck/launcher/gpu/DriverArchivePolicy.java
           test -f tools/linuxfs/overlay/usr/local/bin/droiddeck-mali-check
+          test -f tools/linuxfs/overlay/usr/local/bin/droiddeck-gpu-probe
           bash tools/build_local.sh
       - name: Upload experimental isolated debug APK
         uses: actions/upload-artifact@v4

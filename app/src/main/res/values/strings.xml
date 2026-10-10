@@ -2106,4 +2106,72 @@
     <string name="stores_login_error_ssl">The connection to the sign-in page is not secure.</string>
     <string name="stores_login_error_verification">The sign-in could not be verified. Try again.</string>
     <string name="stores_login_error_generic">Sign-in failed. Try again.</string>
+
+    <!-- ── GPU safety guard ─────────────────────────────────────────────────────────────────
+         The experimental Mali path: a session on this device has ended in a fault inside the
+         Mali kernel module, which an app cannot repair. These strings are deliberately plain
+         about that - a user deciding whether to re-arm after a reboot needs the truth, not a
+         reassurance. -->
+    <string name="gpu_safety_tab">Safety</string>
+    <string name="gpu_safety_status">What the guard knows</string>
+    <string name="gpu_safety_boot_reason">How the phone started</string>
+    <string name="gpu_safety_boot_panic">kernel panic</string>
+    <string name="gpu_safety_boot_watchdog">watchdog</string>
+    <string name="gpu_safety_boot_thermal">overheating</string>
+    <string name="gpu_safety_boot_normal">normally</string>
+    <string name="gpu_safety_boot_unknown">not readable</string>
+    <string name="gpu_safety_crashes">Boots recorded as a crash</string>
+    <string name="gpu_safety_last_crash">The last one</string>
+    <string name="gpu_safety_lock">Launch</string>
+    <string name="gpu_safety_lock_on">Refused until it is re-armed</string>
+    <string name="gpu_safety_lock_off">Allowed</string>
+    <string name="gpu_safety_clean_runs">Clean sessions since then</string>
+    <string name="gpu_safety_guard_stops">Sessions the guard stopped</string>
+    <string name="gpu_safety_last_probe">Last pre-flight probe</string>
+    <string name="gpu_safety_none_yet">Not run yet this time</string>
+    <string name="gpu_safety_not_mali">This is not a Mali GPU. The guard was built for the experimental Mali path and is off here, so nothing below applies until you turn it on.</string>
+    <string name="gpu_safety_guard">The guard</string>
+    <string name="gpu_safety_guard_enable">GPU guard</string>
+    <string name="gpu_safety_guard_enable_hint">Watches for a GPU that has stopped, and refuses to repeat a crash the phone has already had.</string>
+    <string name="gpu_safety_profile">Restrictions</string>
+    <string name="gpu_safety_profile_hint">What a session gives up to keep the GPU out of trouble. Applied when the session starts.</string>
+    <string name="gpu_safety_profile_off">Off - nothing is changed</string>
+    <string name="gpu_safety_profile_safe">Safe - 720p, 30 fps, no extras</string>
+    <string name="gpu_safety_profile_strict">Strict - 576p, 24 fps, interface on the CPU</string>
+    <string name="gpu_safety_lock_after_crash">Refuse to start after a crash</string>
+    <string name="gpu_safety_lock_after_crash_hint">After a boot recorded as a crash, no session starts until you re-arm. This is what stops a crash from repeating on every boot.</string>
+    <string name="gpu_safety_before">Before a session starts</string>
+    <string name="gpu_safety_probe">Test the GPU first</string>
+    <string name="gpu_safety_probe_hint">Runs one small job inside the runtime before Steam starts. If the GPU will not finish it, the session does not start.</string>
+    <string name="gpu_safety_during">While a session runs</string>
+    <string name="gpu_safety_watchdog">Watch for a stalled GPU</string>
+    <string name="gpu_safety_watchdog_hint">Ends the session when it stops presenting frames, when its processes are wedged on the GPU, or when the device gets too hot.</string>
+    <string name="gpu_safety_stall">No frame for</string>
+    <string name="gpu_safety_stall_hint">How long the session may go without presenting a frame before it is stopped.</string>
+    <string name="gpu_safety_thermal">Temperature ceiling</string>
+    <string name="gpu_safety_thermal_hint">Stops the session when the battery reaches this. It cannot cool a phone down, but it can end the run before the device does it itself.</string>
+    <string name="gpu_safety_thermal_off">Off</string>
+    <string name="gpu_safety_software_ui">Draw the Steam interface on the CPU</string>
+    <string name="gpu_safety_software_ui_hint">Slow and plain, and it tells you something: if the phone is stable with this on, the fault is in the Vulkan path.</string>
+    <string name="gpu_safety_record">The record</string>
+    <string name="gpu_safety_copy">The guard\'s report</string>
+    <string name="gpu_safety_copy_hint">Everything above plus the guard\'s log, ready to paste into a bug report.</string>
+    <string name="gpu_safety_copy_button">Copy</string>
+    <string name="gpu_safety_copy_label">DroidDeck GPU guard report</string>
+    <string name="gpu_safety_copied">Copied.</string>
+    <string name="gpu_safety_copy_failed">Could not copy it.</string>
+    <string name="gpu_safety_forget">Forget the crash history</string>
+    <string name="gpu_safety_forget_hint">Clears the crashes on record and any lock. The guard starts again from nothing.</string>
+    <string name="gpu_safety_forget_button">Forget</string>
+    <string name="gpu_guard_lock_title">The phone restarted after a crash</string>
+    <string name="gpu_guard_lock_text">Android recorded this boot as a crash (%1$d on record; the last: %2$s). On this device a Steam session has ended in a fault inside the Mali kernel module, which an app cannot repair - so DroidDeck is refusing to start another one until you say so.\n\nRe-arming runs the next session under the strictest settings: a smaller picture, a lower frame rate and the client interface drawn on the CPU. The lock lifts on its own after three sessions that end normally.</string>
+    <string name="gpu_guard_rearm">I understand - re-arm</string>
+    <string name="gpu_guard_show_settings">Settings</string>
+    <string name="gpu_guard_hide_settings">Hide</string>
+    <string name="gpu_guard_rearmed_toast">Re-armed. The next session runs restricted.</string>
+    <string name="gpu_guard_warn">GPU: %1$s</string>
+    <string name="gpu_guard_aborted">GPU guard stopped the session: %1$s</string>
+    <string name="gpu_guard_probe_failed">The GPU guard stopped the launch: the pre-flight probe did not pass.</string>
+    <string name="gpu_guard_alert_title">The GPU has stalled</string>
+    <string name="gpu_guard_session_stopped">The session was stopped to keep the device safe.</string>
 </resources>

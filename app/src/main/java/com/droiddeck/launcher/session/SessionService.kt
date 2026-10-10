@@ -76,6 +76,10 @@ class SessionService : Service() {
     private val auxiliaryProcessesLock = Any()
     private val mainHandler = Handler(Looper.getMainLooper())
     private var suspendController: SessionSuspendController? = null
+    /** The GPU guard's watchdog for this session, when the guard left one running. */
+    private var gpuWatchdog: com.droiddeck.launcher.gpu.guard.GpuWatchdog? = null
+    /** The guard ended this session itself, so its ending must not count as a clean run. */
+    private var guardAborted = false
     private val steamDownloadMonitor = SteamDownloadMonitor()
     private var downloadMonitorTask: Runnable? = null
     private var downloadActive = false
@@ -234,6 +238,7 @@ class SessionService : Service() {
         SessionState.steamUi = intent?.getStringExtra(EXTRA_STEAM_UI)
         SessionState.steamUrl = intent?.getStringExtra(EXTRA_STEAM_URL)
         SessionState.running = true
+        guardAborted = false
         if (SessionState.stopRequested) {
             stopSession(0)
             return START_NOT_STICKY
@@ -342,7 +347,38 @@ class SessionService : Service() {
         val sessionDir = openSessionFolder()
         val sessionLog = File(sessionDir, "session.log")
 
-        Log.i(TAG, GpuClockPin.start(this))
+        // ── GPU safety guard ──────────────────────────────────────────────────────────────────
+        // Where a session is stopped from taking the phone with it. On the Mali-G615 this build
+        // exists for, a session ended in a kernel panic inside mali_kbase and the app was not
+        // running to see it. Three things happen here, in this order: the launch is brought down
+        // to what the profile allows, the driver is asked to finish one small job before gamescope
+        // and the Steam client exist, and a watchdog is left running for the rest of the session.
+        val guard = com.droiddeck.launcher.gpu.guard.GpuGuard
+        guard.beginSession(this, sessionDir)
+        val guardPrefs = com.droiddeck.launcher.gpu.guard.GpuSafetyPrefs
+        if (gen == sessionGen && SessionState.running && guardPrefs.guardEnabled(this) && guardPrefs.preflightProbe(this)) {
+            val probe = com.droiddeck.launcher.gpu.guard.Probe.run(this, guard.profile)
+            com.droiddeck.launcher.gpu.guard.Probe.write(sessionDir, probe)
+            if (!probe.ok) {
+                Log.e(TAG, "gpu guard: the pre-flight probe did not pass: ${probe.summary}")
+                com.droiddeck.launcher.gpu.guard.GpuGuardLog.log("guard", "refusing to start: ${probe.verdict}")
+                SessionEvents.fail("GPU_PROBE_FAILED", probe.summary, null)
+                mainHandler.post {
+                    android.widget.Toast.makeText(this, getString(R.string.gpu_guard_probe_failed), android.widget.Toast.LENGTH_LONG).show()
+                }
+                guard.noteGuardStop(this, probe.summary)
+                stopSession(-1)
+                return
+            }
+            if (probe.skipped) Log.i(TAG, "gpu guard: probe skipped - ${probe.summary}")
+        }
+        if (gen != sessionGen || !SessionState.running) {
+            Log.i(TAG, "session stopped while the GPU was being probed; not launching it")
+            return
+        }
+
+        Log.i(TAG, if (guard.profile.allowsGpuClockPin) GpuClockPin.start(this)
+            else "gpu clock: left governed (${guard.profile.id} profile)")
 
         val size = SessionState.outputSize
         val guest = ArrayList<String>()
@@ -553,6 +589,52 @@ class SessionService : Service() {
             )
             mainHandler.post { updateSuspendPolicy() }
             updateDownloadMonitoring()
+            // Last: the watchdog looks at the compositor's frames, so it starts once there is a
+            // session to watch and not before.
+            gpuWatchdog = guard.startWatchdog(this, ::onGuardAction)
+        }
+    }
+
+    /**
+     * The GPU guard's verdict on a running session.
+     *
+     * A warning is only said once and changes nothing - it is a line in the log and a line on the
+     * screen, and most sessions that trip it recover on their own. An abort ends the session:
+     * the choice is between the app killing a client that has stopped, and the kernel finding the
+     * same wedge three seconds later on a path that ends in a panic.
+     */
+    private fun onGuardAction(action: com.droiddeck.launcher.gpu.guard.GpuWatchdog.Action, message: String) {
+        when (action) {
+            com.droiddeck.launcher.gpu.guard.GpuWatchdog.Action.WARN -> {
+                com.droiddeck.launcher.gpu.guard.GpuGuard.raiseAlert(getString(R.string.gpu_guard_warn, message))
+                mainHandler.post {
+                    android.widget.Toast.makeText(this, getString(R.string.gpu_guard_warn, message), android.widget.Toast.LENGTH_SHORT).show()
+                }
+            }
+            com.droiddeck.launcher.gpu.guard.GpuWatchdog.Action.ABORT -> {
+                guardAborted = true
+                com.droiddeck.launcher.gpu.guard.GpuGuard.noteGuardStop(this, message)
+                SessionEvents.record("gpu.guard_abort", mapOf("reason" to message))
+                mainHandler.post {
+                    android.widget.Toast.makeText(this, getString(R.string.gpu_guard_aborted, message), android.widget.Toast.LENGTH_LONG).show()
+                    if (SessionState.running) stopSession(-1)
+                }
+                // The session's own teardown asks the client to close and gives proot a moment to
+                // take its tree with it. A GPU that has stopped answering may let neither finish,
+                // so once that moment has passed anything still holding the rootfs or /dev/mali0
+                // is swept: a killed Steam client is a restart, a kernel that finds the wedge
+                // itself is a reboot.
+                Thread({
+                    try {
+                        Thread.sleep(4000)
+                        killGuestLeftovers()
+                        killStragglers()
+                        com.droiddeck.launcher.gpu.guard.GpuGuardLog.log("guard", "swept what the session left")
+                    } catch (e: InterruptedException) {
+                        // The app is going down too; there is nothing left to sweep for.
+                    }
+                }, "gpu-guard-sweep").apply { isDaemon = true; start() }
+            }
         }
     }
 
@@ -599,9 +681,15 @@ class SessionService : Service() {
         guest.add("WAYLAND_DISPLAY=wayland-0")
         guest.add("BL_ANDROID_CLIPBOARD=" + File(filesDir, "session/android-clipboard").path)
         guest.add("GAMESCOPE_FORCE_GENERAL_QUEUE=1")
+        // The GPU guard's profile for this session, decided once by GpuGuard.beginSession: OFF on
+        // hardware nothing has gone wrong on, SAFE or STRICT on this one.
+        val guardProfile = com.droiddeck.launcher.gpu.guard.GpuGuard.profile
         // Steam's CEF needs GL and the rootfs ships no native GL driver: route it through Zink.
-        guest.add("MESA_LOADER_DRIVER_OVERRIDE=zink")
-        guest.add("GALLIUM_DRIVER=zink")
+        // The strict profile draws the client's interface on the CPU instead (llvmpipe) - slower
+        // and plainer, and it is the switch that says whether a fault is in the Vulkan path at all.
+        val guardSoftwareUi = guardProfile.softwareUi
+        guest.add("MESA_LOADER_DRIVER_OVERRIDE=" + (if (guardSoftwareUi) "llvmpipe" else "zink"))
+        guest.add("GALLIUM_DRIVER=" + (if (guardSoftwareUi) "llvmpipe" else "zink"))
         guest.add("LIBGL_KOPPER_DRI2=true")
         val mali = com.droiddeck.launcher.core.DeviceSupport.mali()
         if (!mali) LinuxRuntime.vulkanIcd(this)?.let { guest.add("VK_ICD_FILENAMES=" + it.path) }
@@ -610,6 +698,18 @@ class SessionService : Service() {
             // Hardware rendering, initially presented by CPU/SHM WSI for compatibility.
             guest.add("PANVK_KBASE_DRI3=0")
             guest.add("LIBGL_KOPPER_DISABLE=false")
+        }
+        // GPU guard: what the profile takes away from the session. Each of these is a separate
+        // path the experimental PanVK-kbase stack has never been validated on, and the fault that
+        // took this device down was found on a path exactly like them - so they come off for as
+        // long as the guard is restricting the session, not after something goes wrong.
+        if (guardProfile != com.droiddeck.launcher.gpu.guard.SafeProfile.OFF) {
+            guest.addAll(guardProfile.envLines())
+            if (guardSoftwareUi) {
+                // Nothing here collides with the Zink lines above: they were chosen from this
+                // same decision, so the guest is told one thing and not two.
+                guest.add("LIBGL_KOPPER_DISABLE=true")
+            }
         }
         // An imported glibc Turnip, when one is set (by the user, or by Auto): the session script
         // checks the manifest and its library from inside and points the loader at it with
@@ -642,13 +742,16 @@ class SessionService : Service() {
         // two), for every pipeline DXVK, vkd3d-proton and Zink compile or find; the database is
         // opened once and read and written with pread/pwrite, which proot never sees. Mesa removes
         // the old folder itself once it has gone a week untouched.
-        guest.add("MESA_DISK_CACHE_DATABASE=1")
+        // The strict profile stops Mesa keeping a shader cache at all: a program cached by a
+        // driver that has since faulted is one more unvalidated input to hand it.
+        if (guardProfile.disableShaderCache) guest.add("MESA_SHADER_CACHE_DISABLE=1")
+        else guest.add("MESA_DISK_CACHE_DATABASE=1")
         // glibc's per-thread rseq registration is refused by Android's app seccomp policy, so
         // every thread start paid a SIGSYS that proot answers; the malloc top pad grows the heap
         // 16 MB at a time instead of 128 KB, and every brk(2) is a proot stop too.
         guest.add("GLIBC_TUNABLES=glibc.pthread.rseq=0:glibc.malloc.top_pad=16777216")
         if (SessionState.mode == MODE_STEAM) guest.add("BL_STEAMDECK=" + (if (SessionPrefs.steamDeckMode(this)) "1" else "0"))
-        if (SessionState.mode == MODE_STEAM) guest.add("BL_MANGOAPP=" + (if (!mali && SessionPrefs.mangoapp(this)) "1" else "0"))
+        if (SessionState.mode == MODE_STEAM) guest.add("BL_MANGOAPP=" + (if (!mali && guardProfile.allowsMangoapp && SessionPrefs.mangoapp(this)) "1" else "0"))
         if (steamHere) guest.add("BL_STEAM_CHANNEL=" + SessionPrefs.steamChannel(this))
         if (SessionState.mode == MODE_STEAM) {
             guest.add("BL_GAMESCOPE_STRETCH_16X9=" + (if (SessionPrefs.stretch16x9(this)) "1" else "0"))
@@ -662,7 +765,7 @@ class SessionService : Service() {
         guest.add("BL_FSYNC_FIRST=" + (if (SessionPrefs.fsyncFirst(this)) "1" else "0"))
         // gamescope's realtime Vulkan queues (the session script turns this into
         // GAMESCOPE_FORCE_VULKAN_REALTIME); off unless the user turns it on.
-        guest.add("BL_GAMESCOPE_REALTIME=" + (if (SessionPrefs.gamescopeRealtime(this)) "1" else "0"))
+        guest.add("BL_GAMESCOPE_REALTIME=" + (if (guardProfile.allowsRealtimeQueues && SessionPrefs.gamescopeRealtime(this)) "1" else "0"))
         guest.add("BANNER_AUDIO_DIRECT_DECAY=0")
         // Anything else, for a device that cannot be reached with a debugger: droiddeck-env in the
         // app's own external files (envSwitchFile) holds KEY=VALUE lines that go into the session's
@@ -1481,6 +1584,9 @@ class SessionService : Service() {
         val stoppedGen = sessionGen
         SessionState.stopRequested = false
         SessionEvents.record("guest.exited", mapOf("status" to status))
+        // The guard's latch relaxes on evidence, so how this session ended has to be recorded
+        // before the session is gone: only an ending the app did not force counts as one.
+        com.droiddeck.launcher.gpu.guard.GpuGuard.noteSessionEnded(this, status == 0 && !guardAborted)
         GpuClockPin.stop(this)
         SessionEvents.transition(SessionPhase.STOPPING, "session.stopping", mapOf("status" to status))
         suspendOperationPending = false

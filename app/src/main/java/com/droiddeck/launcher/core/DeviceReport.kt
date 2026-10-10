@@ -177,6 +177,11 @@ object DeviceReport {
             else -> g
         })
 
+        h("GPU safety guard")
+        // Why the phone last booted, what the guard did about it, and what the last probe said:
+        // the three things someone reading a report after a crash needs first.
+        b.append(com.droiddeck.launcher.gpu.guard.GpuGuard.report(context)).append('\n')
+
         h("Android process limits")
         k("Phantom proc monitor", PhantomProcessLimit.reportValue(PhantomProcessLimit.read(context)))
 

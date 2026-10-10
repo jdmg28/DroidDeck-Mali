@@ -7,6 +7,44 @@ the timeline, then lessons and backlog. Companion to the README (what the app *d
 
 ---
 
+## 2026-10-10 - Mali-G615: the GPU safety guard
+
+A Steam session on the Mali-G615 did not fail, it took the phone with it. Android recorded the
+next boot as `kernel_panic` and the trace named the kernel's own module: `CS_FATAL` /
+`CS_BUS_FAULT`, `FENCE_SIGNAL timeout(3000 ms)`, then `Unexpected kernel BRK exception at EL1` in
+`kbasep_csf_sync_kcpu_dump_locked` (`mali_kbase_mt6897_r44`). What caused the first bus fault is
+still unknown; what is known is that the app is not running when it happens and cannot repair a
+kernel module it cannot see.
+
+So the guard is built around the four things an APK *can* do. Full write-up: `docs/gpu-safety.md`.
+
+- **Break the loop** (`BootReason`, the latch in `GpuGuard`). `sys.boot.reason` is read at every
+  app start and counted **once per boot** - `elapsedRealtime()` stored on each start, a new boot
+  detected by the uptime going backwards, so opening the app ten times after one crash counts one
+  crash. A fatal boot reason engages the latch and every launch is refused until the user re-arms;
+  an automatic start ("open straight into Steam") is refused with no dialog at all. Three sessions
+  ending normally lift the lock; a session the guard stopped resets the count.
+- **Ask less of the GPU** (`SafeProfile`). Safe = 720p / 30 fps with HDR, frame generation,
+  realtime queues, mangoapp and the clock pin off. Strict adds 576p / 24 fps, no shader cache, no
+  upscaler or effects, no second screen, and the client's interface on llvmpipe - which doubles as
+  a diagnosis: stable on Strict but not on Safe means the fault is in the Vulkan path.
+- **Test before Steam does** (`Probe`, `droiddeck-gpu-probe`). Enumeration under `timeout`, then a
+  ctypes `vkCmdFillBuffer` + fence wait against the session's ICD, then a readback. Only a fence
+  that never signals is a failure; anything that stops the test being built is a **skip**, so a bug
+  in the probe can never lock someone out of their own phone.
+- **Stop the session first** (`GpuWatchdog`). Frames (`recentFrameIntervalMs`), processes wedged in
+  `D` state (3+ of our own uid, 3 samples running, ~1.5 s - inside the kernel's 3 s fence timeout),
+  and temperature. An abort sweeps the tree four seconds later.
+- **Leave evidence.** `gpu-guard.log` and `gpu-probe.log` per session, a GPU-safety section in
+  `device.txt`, and a fifth Setup tab (**Safety**, Mali only) with a Copy button for bug reports.
+
+Deliberately not done, and documented as such in `docs/gpu-safety.md`: nothing touches the kernel
+module, SELinux, a watchdog, or the fence timeout - none of that is an app's to change, and the
+probe can itself provoke the fault it is looking for. The guard makes the panic harder to repeat
+and every attempt traceable; it does not make it impossible.
+
+---
+
 ## 2026-10-08 - `feat/stores`: GOG, Epic Games and Amazon Games in the launcher (in progress)
 
 A new **Stores** section - the three storefronts' libraries and public catalogs, one download

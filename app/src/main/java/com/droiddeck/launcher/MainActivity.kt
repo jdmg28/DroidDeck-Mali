@@ -159,6 +159,12 @@ class MainActivity : ComponentActivity() {
     private var phantomWarning by mutableStateOf<String?>(null)
     private var phantomProcessStatus by mutableStateOf(PhantomProcessStatus.NOT_APPLICABLE)
     private var showPhantomGate by mutableStateOf(false)
+    /**
+     * The GPU guard has the latch locked: the phone's last boot was recorded as a crash and nobody
+     * has acknowledged it. The launch is refused until the user re-arms, which is the only thing
+     * standing between this device and a crash it repeats on every boot.
+     */
+    private var showGpuGuard by mutableStateOf(false)
     private var directAudio by mutableStateOf(false)
     private var stretch16x9 by mutableStateOf(false)
     private var launcherFullscreen by mutableStateOf(true)
@@ -820,6 +826,14 @@ class MainActivity : ComponentActivity() {
                     onClear = { SessionPrefs.setRomsDir(this, ""); romsDir = null; showRoms = false },
                     onDismiss = { showRoms = false },
                 )
+                if (showGpuGuard) com.droiddeck.launcher.ui.GpuSafetyLockDialog(
+                    onRearm = {
+                        com.droiddeck.launcher.gpu.guard.GpuGuard.rearm(this)
+                        showGpuGuard = false
+                        android.widget.Toast.makeText(this, R.string.gpu_guard_rearmed_toast, android.widget.Toast.LENGTH_LONG).show()
+                    },
+                    onDismiss = { showGpuGuard = false },
+                )
                 showNonAdreno?.let { release ->
                     ConfirmDialog(
                         title = androidx.compose.ui.res.stringResource(R.string.main_non_adreno_title),
@@ -884,6 +898,12 @@ class MainActivity : ComponentActivity() {
 
     private fun startSteamAtStartupIfEnabled() {
         if (intent.action != Intent.ACTION_MAIN) return
+        // A locked latch refuses an automatic start outright rather than refusing it with a
+        // dialog: opening the app must never be the thing that puts the device back in the loop.
+        if (com.droiddeck.launcher.gpu.guard.GpuGuard.blocksAutoStart(this)) {
+            showGpuGuard = true
+            return
+        }
         if (SessionPrefs.runSteamAtStartup(this) && !isFinishing && !isDestroyed) startSteamSession()
     }
 
@@ -1577,6 +1597,13 @@ class MainActivity : ComponentActivity() {
     /** Starts a session; with no runtime on a non-Adreno, the same warning Setup gives comes first, before any download. */
     private fun startSession(intent: Intent, steamSession: Boolean = false): Boolean {
         if (busy || LinuxRuntimeInstaller.isBusy()) return false
+        // GPU guard: a phone whose GPU took it down must not walk straight back into the same
+        // session. This is the part of the guard that stops a crash from being repeated, and it
+        // comes before every other check because it is about the device, not the session.
+        if (com.droiddeck.launcher.gpu.guard.GpuGuard.decision(this).blocked) {
+            showGpuGuard = true
+            return false
+        }
         refreshPhantomStatus()
         if (steamSession && PhantomProcessLimit.blocksSteam(phantomProcessStatus)) {
             showPhantomGate = true

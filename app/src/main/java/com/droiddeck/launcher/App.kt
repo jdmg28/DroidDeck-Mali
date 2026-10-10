@@ -22,6 +22,10 @@ class App : Application() {
     override fun onCreate() {
         super.onCreate()
         CrashHandler.install(this)
+        // First of all: the phone's own record of why it started. On a device whose GPU took it
+        // down, this is the only witness - and reading it here, before anything can start a
+        // session, is what stops a crash from being repeated the moment the launcher appears.
+        com.droiddeck.launcher.gpu.guard.GpuGuard.init(this)
         // Before anything else touches the session prefs, so the first session already runs in Deck mode.
         com.droiddeck.launcher.session.SessionPrefs.settleDeckModeDefault(this)
         com.droiddeck.launcher.session.SessionPrefs.settleGpuDriverMode(this)

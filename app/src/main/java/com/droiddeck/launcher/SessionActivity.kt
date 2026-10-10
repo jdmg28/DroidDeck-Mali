@@ -335,8 +335,14 @@ class SessionActivity : ComponentActivity(), SurfaceHolder.Callback {
                 this, SessionPrefs.prefMode(intent.getStringExtra(SessionService.EXTRA_MODE) ?: SessionService.MODE_STEAM),
             )
         }
-        Log.i(TAG, "perf: " + PerfMode.apply(this, SessionState.fpsLimit))
         if (!SessionState.running) SessionState.followScreen = followChoice()
+        // GPU guard: the frame cap is one of the levers the profile lowers, and PerfMode picks the
+        // panel's mode from it, so it is clamped before PerfMode reads it and not after. Only for a
+        // session that is starting: this activity is re-created mid-session (a foldable opening, a
+        // second screen), and resizing a session that is already drawing is its own kind of fault.
+        com.droiddeck.launcher.gpu.guard.GpuGuard.refresh(this)
+        if (!SessionState.running) com.droiddeck.launcher.gpu.guard.GpuGuard.constrainLaunch()
+        Log.i(TAG, "perf: " + PerfMode.apply(this, SessionState.fpsLimit))
         applyFollowOrientation(resources.configuration)
         goFullscreen()
         // The device's volume keys change the stream the session plays on (the relay and
@@ -469,6 +475,9 @@ class SessionActivity : ComponentActivity(), SurfaceHolder.Callback {
                 CursorOverlay(cursorPos, cursorVisible, resources.displayMetrics.density,
                     cursorImage, cursorHotX, cursorHotY, cursorImageScale)
                 if (hud.text.isNotEmpty()) HudText(hud.text)
+                // The GPU guard's notice, over everything else on this screen: on a device whose
+                // GPU has taken the phone down, "the GPU has stopped" is not a line for a log.
+                com.droiddeck.launcher.ui.GpuGuardAlert()
                 if (loading.visible) LoadingOverlay(
                     loading.step, loading.percent, loading.elapsed, loading.hint, loading.ended,
                     topic = loading.topic, readable = loading.readable,
@@ -973,6 +982,11 @@ class SessionActivity : ComponentActivity(), SurfaceHolder.Callback {
         else null
         val size = live ?: if (SessionState.running) previous else outputSize()
         SessionState.outputSize = size
+        // GPU guard: the compositor and gamescope must agree on one size, and the compositor is
+        // told first, so the cap is applied here as well as in the service a moment later. The
+        // second call finds the numbers already inside the profile and changes nothing. A session
+        // already running keeps the size it was started with.
+        if (!SessionState.running) com.droiddeck.launcher.gpu.guard.GpuGuard.constrainLaunch()
         if (!SessionState.running) SessionState.refreshHz = refreshHz()
         // How far the panel enlarges the session, for texture sharpness "Auto" (TextureFiltering):
         // the game environment is published again so the next launch derives it from this session.
@@ -985,9 +999,14 @@ class SessionActivity : ComponentActivity(), SurfaceHolder.Callback {
         // Letterbox, never stretch or crop: the output can be a different shape from the panel,
         // and a game's picture must keep its proportions with bars, not lose its edges.
         WaylandCompositor.nativeSetScaleMode(SCALE_FIT, ALIGN_CENTER)
-        WaylandCompositor.nativeSetUpscaler(SessionPrefs.upscaler(this))
-        WaylandCompositor.nativeSetUpscaleSharpness(SessionPrefs.upscaleSharpness(this))
-        SessionPrefs.screenEffects(this).push(SessionPrefs.upscaler(this))
+        // GPU guard: the upscaler and the effects chain are compositor passes of their own, each
+        // one more thing running on the same GPU. The strict profile turns them off.
+        val guardProfile = com.droiddeck.launcher.gpu.guard.GpuGuard.profile
+        val upscalerNow = if (guardProfile.allowsUpscaling) SessionPrefs.upscaler(this) else 0
+        WaylandCompositor.nativeSetUpscaler(upscalerNow)
+        WaylandCompositor.nativeSetUpscaleSharpness(if (guardProfile.allowsUpscaling) SessionPrefs.upscaleSharpness(this) else 0)
+        if (guardProfile.allowsScreenEffects) SessionPrefs.screenEffects(this).push(upscalerNow)
+        else com.droiddeck.launcher.gpu.ScreenEffects.OFF.push(0)
         // The session's folder, claimed here because the compositor starts before the service and
         // opens its log once. The compositor reads the path from its environment; setting it after
         // it has started changes nothing, which is why the service copies the file in at teardown.
@@ -1012,7 +1031,13 @@ class SessionActivity : ComponentActivity(), SurfaceHolder.Callback {
                 probe.ratioAvailable, probe.ratio, Build.VERSION.SDK_INT,
             )
             val wanted = SessionPrefs.hdr(this, mode)
-            val on = wanted && probe.reason == null
+            // GPU guard: HDR10 is a 10-bit swapchain and a colour-management path on top of it, and
+            // no profile that restricts the GPU offers it to the session's clients.
+            val allowed = wanted && guardProfile.allowsHdr
+            if (wanted && !allowed) {
+                com.droiddeck.launcher.gpu.guard.GpuGuardLog.log("guard", "HDR off (${guardProfile.id} profile)")
+            }
+            val on = allowed && probe.reason == null
             SessionState.hdr = on
             if (on) {
                 try { android.system.Os.setenv("DROIDDECK_WAYLAND_HDR", "1", true) } catch (e: Exception) { Log.w(TAG, "DROIDDECK_WAYLAND_HDR", e) }
@@ -1157,6 +1182,13 @@ class SessionActivity : ComponentActivity(), SurfaceHolder.Callback {
      * first use translates the shader chain out of Lossless.dll, which takes seconds.
      */
     private fun applyFrameGen() {
+        // GPU guard: an engine that generates frames is its own Vulkan workload on top of the
+        // session's, and no profile that restricts the GPU leaves it running.
+        if (!com.droiddeck.launcher.gpu.guard.GpuGuard.profile.allowsFrameGen) {
+            WaylandCompositor.nativeSetFrameGenArmed(false, 0, 0)
+            Log.i(TAG, "gpu guard: frame generation off (${com.droiddeck.launcher.gpu.guard.GpuGuard.profile.id} profile)")
+            return
+        }
         val hz = refreshHz()
         Thread({
             val problem = FrameGen.apply(this, hz)

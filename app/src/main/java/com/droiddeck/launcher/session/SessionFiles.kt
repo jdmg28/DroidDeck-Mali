@@ -45,6 +45,8 @@ object SessionFiles {
             "libssbs.so" to "usr/local/lib/libssbs.so",
             "usr/local/bin/droiddeck-session" to "usr/local/bin/droiddeck-session",
             "usr/local/bin/droiddeck-mali-check" to "usr/local/bin/droiddeck-mali-check",
+            // The GPU guard's pre-flight probe, run by the app before gamescope starts.
+            "usr/local/bin/droiddeck-gpu-probe" to "usr/local/bin/droiddeck-gpu-probe",
             "usr/local/bin/droiddeck-fonts" to "usr/local/bin/droiddeck-fonts",
             "usr/local/bin/droiddeck-agent" to "usr/local/bin/droiddeck-agent",
             "usr/local/bin/steam-compatibility" to "usr/local/bin/steam-compatibility",
