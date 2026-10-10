@@ -1,0 +1,68 @@
+From a52f1cdd123fa84ab523171341909cbe467f003c Mon Sep 17 00:00:00 2001
+From: Arena Agent <agent@arena.ai>
+Date: Sat, 10 Oct 2026 14:46:33 +0000
+Subject: [PATCH 21/29] CI: the suites could not fail the build; now they can,
+ and their absence fails it too
+
+set -o pipefail alone is not enough inside a { ... } group: the step's status is the last
+command's, so tools/test/run_probe_tests.sh returning 1 in the middle of that block would have
+left gradle to decide whether the run is green. Both suites were, in the useful sense, not wired in
+at all - they were decoration. Reproduced locally in two lines: a failing first command of the
+group exits 0 without -e and 1 with it.
+
+Then the part that keeps this from regressing quietly: an 'Assert the test suites ran' step greps
+the tee'd build log for each suite's own verdict line (all probe cases passed / declarations
+checked / all adapter cases passed) and exits 1 if any is missing. A green job now means the probe
+suite, the real-header ABI check and the adapter suite each reached their last line - not merely
+that assembleDebug worked. That distinction is the whole lesson of this branch: twice something here
+passed while looking verified.
+
+Co-authored-by: arena-agent <297053741+arena-agent@users.noreply.github.com>
+---
+ .github/workflows/gpu-guard-ci.yml | 23 ++++++++++++++++++++++-
+ 1 file changed, 22 insertions(+), 1 deletion(-)
+
+diff --git a/.github/workflows/gpu-guard-ci.yml b/.github/workflows/gpu-guard-ci.yml
+index a20dae0..78eab20 100644
+--- a/.github/workflows/gpu-guard-ci.yml
++++ b/.github/workflows/gpu-guard-ci.yml
+@@ -39,7 +39,12 @@ jobs:
+       - name: Build the patched app and guest preloads
+         id: build
+         run: |
+-          set -o pipefail
++          # -e matters more here than it looks: inside a { ... } group the step's status is the LAST
++          # command's, so with only pipefail a red test suite in the middle of this block still
++          # leaves gradle to decide whether the run is green. Verified locally - a failing first
++          # command exits 0 without -e and 1 with it. The "Assert the test suites ran" step below is
++          # the belt to this pair of braces.
++          set -eo pipefail
+           # Everything the step does goes into the log the next step publishes. An earlier run
+           # died in one second, before the build, and published "(no build log)": the step that
+           # failed was the one nobody could read. pipefail keeps the failure visible as a failure.
+@@ -61,6 +66,22 @@ jobs:
+             bash drivers/mali-g615/test/run_adapter_tests.sh
+             bash tools/build_local.sh
+           } 2>&1 | tee /tmp/droiddeck-build.log
++      # A green build is not evidence that tests ran; it is evidence that gradle succeeded. The
++      # suites above print their own verdicts, so their verdicts are looked for here, in the log the
++      # step wrote, and this run goes red if one of them ever stops being reached.
++      - name: Assert the test suites ran
++        run: |
++          set -e
++          for marker in 'all probe cases passed' 'declarations checked' 'all adapter cases passed'; do
++            if grep -q "$marker" /tmp/droiddeck-build.log; then
++              echo "ran: $marker"
++            else
++              echo "missing from the build log: $marker"
++              echo "the suite did not run, or failed before printing its verdict"
++              exit 1
++            fi
++          done
++
+       # The machine working on this branch cannot download Actions logs, only talk to the API, so
+       # on failure the log is published as a check run where it can be read back.
+       - name: Publish the build log
+-- 
+2.39.5
+

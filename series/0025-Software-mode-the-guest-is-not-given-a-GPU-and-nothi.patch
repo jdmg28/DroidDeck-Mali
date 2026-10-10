@@ -1,0 +1,259 @@
+From 92de91bc3aff08b56a93cd40b29f074855f11f73 Mon Sep 17 00:00:00 2001
+From: Arena Agent <agent@arena.ai>
+Date: Sat, 10 Oct 2026 16:25:13 +0000
+Subject: [PATCH 25/29] Software mode: the guest is not given a GPU, and
+ nothing in the session asks for one
+
+Not a smaller session - a different machine, so the stack above the driver (native ARM64 Steam, FEX,
+Proton, DXVK, gamescope) can be exercised while Mali is not in the picture. That is the only way left
+to answer "is the stack sound?" without another reboot riding on the answer.
+
+Enforcement is where the guest is built, not in an env var, because a bind mount is a fact and an
+environment variable is a request:
+
+  - LinuxRuntime.binds() skips bindGpuNode() entirely, so the fake /dev/dri/renderD128 and the
+    /sys/dev/char stand-in are never made. That is the half that matters.
+  - /dev/mali0 and /dev/kgsl-3d0 are then shadowed with the runtime's own zero-length file, on the
+    precedent this class has used for years to hide /sys/fs/selinux.
+  - /dev/null is NOT used, and that is the interesting bit: /dev/null is a character device, so
+    stat() looks like a GPU node, S_ISCHR passes, and our ICD adapter would advertise major 1 /
+    minor 3 to gamescope as a perfectly good render node. A regular file fails that probe, which is
+    the code path the driver package already handles and the test suite already covers.
+  - droiddeck-session makes the choice final: VK_DRIVER_FILES is set to the imported software
+    manifest (replacing the loader's whole search, which is what keeps the runtime's PanVK out), and
+    a missing or unreadable one is a refusal (DD_SOFTWARE_DRIVER_MISSING, exit 78) rather than the
+    existing "IGNORING ...; using the runtime's own" fallback. Falling back is how a no-GPU session
+    ends up opening one.
+  - the pre-flight probe does not run, and says so in the log and the report: its whole job is
+    submitting a job to kbase and waiting on its fence. droiddeck-mali-check is gated the same way,
+    with BL_SOFTWARE_VULKAN != 1 on both Mali checks so the refusal message cannot end up telling a
+    software session to import a hardware driver.
+  - LinuxVulkanDriver.driverForSession() overrides the stored choice: on a Mali device the runtime's
+    own driver IS the hardware driver, so "no choice" is a choice.
+
+LinuxVulkanDriverManager grew companion libraries (next commit's zip needs libLLVM beside
+libvulkan_lvp.so) and a vendor label; SafeProfile grew [SOFTWARE] and [avoidsGpu], the panel grew the
+fourth choice with a note about what it does and what it costs, and the report now states the mode -
+so a watchdog sample in software mode is read as what it is.
+
+Checked here: bash -n on the session script passes (the pre-existing sh -n failure at line 25 is the
+script's process substitution, and the committed version fails it identically - so it is the script's
+dialect, not this change), both strings files parse as XML with no bare apostrophes for aapt2, and
+SafeProfile's four entries each set all fourteen constructor parameters. NOT checked: compilation and
+the runtime behaviour - no JDK or device here. The enum-count check exists because this same file
+failed CI the last time an entry was left half-written.
+
+Co-authored-by: arena-agent <297053741+arena-agent@users.noreply.github.com>
+---
+ .../launcher/gpu/LinuxVulkanDriver.java       | 22 ++++++++++++
+ .../droiddeck/launcher/gpu/guard/GpuGuard.kt  |  7 ++++
+ .../launcher/session/SessionService.kt        | 25 +++++++++++--
+ .../droiddeck/launcher/ui/GpuSafetyPage.kt    |  6 ++++
+ app/src/main/res/values-es/strings.xml        |  2 ++
+ app/src/main/res/values/strings.xml           |  2 ++
+ .../overlay/usr/local/bin/droiddeck-session   | 35 +++++++++++++++++--
+ 7 files changed, 94 insertions(+), 5 deletions(-)
+
+diff --git a/app/src/main/java/com/droiddeck/launcher/gpu/LinuxVulkanDriver.java b/app/src/main/java/com/droiddeck/launcher/gpu/LinuxVulkanDriver.java
+index 4662f89..dd01ebe 100644
+--- a/app/src/main/java/com/droiddeck/launcher/gpu/LinuxVulkanDriver.java
++++ b/app/src/main/java/com/droiddeck/launcher/gpu/LinuxVulkanDriver.java
+@@ -58,6 +58,28 @@ public final class LinuxVulkanDriver {
+         return m.getDriverName(value) + (ver.isEmpty() ? "" : " " + ver) + " (imported)";
+     }
+ 
++    /**
++     * The driver id a session must use, which is not always the one stored. A session chosen to stay
++     * off the GPU cannot end up on a hardware driver merely because that is what was selected last,
++     * and on a Mali device "no choice" is itself a choice: the runtime's built-in ICD is PanVK.
++     *
++     * @return an imported driver's id, or "" for "no Vulkan driver at all" - which the session script
++     *         reads as final, precisely so that the absence is the user's decision and not an
++     *         accident of a missing import.
++     */
++    public static String driverForSession(Context context, String stored) {
++        if (!com.droiddeck.launcher.gpu.guard.GpuGuard.avoidsGpu(context)) return stored;
++        LinuxVulkanDriverManager m = new LinuxVulkanDriverManager(context);
++        List<String> software = m.softwareDriverIds();
++        if (!software.isEmpty()) {
++            Log.i(TAG, "software mode: drawing with the imported software driver " + software.get(0));
++            return software.get(0);
++        }
++        Log.w(TAG, "software mode: no software Vulkan driver is installed (import Mesa's libvulkan_lvp"
++                + " package); the session gets no Vulkan device at all rather than the GPU's");
++        return "";
++    }
++
+     /**
+      * The ICD manifest path to hand the session, or null to leave the runtime's own driver alone.
+      * An id whose import is gone resolves to null rather than failing the launch.
+diff --git a/app/src/main/java/com/droiddeck/launcher/gpu/guard/GpuGuard.kt b/app/src/main/java/com/droiddeck/launcher/gpu/guard/GpuGuard.kt
+index bd97e15..c8ae57f 100644
+--- a/app/src/main/java/com/droiddeck/launcher/gpu/guard/GpuGuard.kt
++++ b/app/src/main/java/com/droiddeck/launcher/gpu/guard/GpuGuard.kt
+@@ -500,6 +500,13 @@ object GpuGuard {
+         // able to tell anything.
+         val reading = BootReason.read(app)
+         val reasonBlind = reading.kind == BootReason.Kind.UNKNOWN
++        val software = avoidsGpu(app)
++        lines.add("  gpu access: " + if (software)
++            "SOFTWARE - the guest gets no render node, /dev/mali0 and /dev/kgsl-3d0 are shadowed by " +
++            "an empty file, the driver package is not loaded, and the pre-flight probe is skipped " +
++            "because there is no GPU to prove. Every stall/thermal/watchdog number below describes a " +
++            "session that cannot be a GPU fault."
++        else "the driver the session was configured with")
+         lines.add("  boot reason (this boot): $reading (from ${reading.source})")
+         lines.add("  crash detection: " + if (reasonBlind)
+             "the guard's session record ONLY - the boot reason is not readable on this device, " +
+diff --git a/app/src/main/java/com/droiddeck/launcher/session/SessionService.kt b/app/src/main/java/com/droiddeck/launcher/session/SessionService.kt
+index 2ebb1fe..552a6be 100644
+--- a/app/src/main/java/com/droiddeck/launcher/session/SessionService.kt
++++ b/app/src/main/java/com/droiddeck/launcher/session/SessionService.kt
+@@ -356,7 +356,18 @@ class SessionService : Service() {
+         val guard = com.droiddeck.launcher.gpu.guard.GpuGuard
+         guard.beginSession(this, sessionDir)
+         val guardPrefs = com.droiddeck.launcher.gpu.guard.GpuSafetyPrefs
+-        if (gen == sessionGen && SessionState.running && guardPrefs.guardEnabled(this) && guardPrefs.preflightProbe(this)) {
++        if (guard.avoidsGpu(this)) {
++            // The probe's whole job is to submit work to the GPU and wait for it. In software mode
++            // that is the exact thing the session is not supposed to do, so the probe is skipped by
++            // design - and said out loud, into the log and the settings page, because a skipped
++            // check that reads as a passed one is how a safety feature turns into a rumour.
++            val note = com.droiddeck.launcher.gpu.guard.Probe.Result.of(0, listOf(
++                "DD_GPU_PROBE_SKIPPED: software mode - the GPU is not exposed to the guest, so " +
++                "there is nothing here for the probe to test and nothing it could prove"))
++            com.droiddeck.launcher.gpu.guard.Probe.write(sessionDir, note)
++            guard.noteProbe(this, note)
++            Log.i(TAG, "gpu guard: software mode, pre-flight probe skipped by design")
++        } else if (gen == sessionGen && SessionState.running && guardPrefs.guardEnabled(this) && guardPrefs.preflightProbe(this)) {
+             val probe = com.droiddeck.launcher.gpu.guard.Probe.run(this, guard.profile)
+             com.droiddeck.launcher.gpu.guard.Probe.write(sessionDir, probe)
+             // A skip is not a pass. The GPU was not asked, so nothing has been shown to work, and
+@@ -702,8 +713,14 @@ class SessionService : Service() {
+         guest.add("GALLIUM_DRIVER=" + (if (guardSoftwareUi) "llvmpipe" else "zink"))
+         guest.add("LIBGL_KOPPER_DRI2=true")
+         val mali = com.droiddeck.launcher.core.DeviceSupport.mali()
+-        if (!mali) LinuxRuntime.vulkanIcd(this)?.let { guest.add("VK_ICD_FILENAMES=" + it.path) }
++        if (!mali && !guardProfile.avoidsGpu)
++            LinuxRuntime.vulkanIcd(this)?.let { guest.add("VK_ICD_FILENAMES=" + it.path) }
+         if (mali) {
++            // The three switches below tune the Mali driver package. They are left alone in software
++            // mode on purpose: with no render node bound and the loader's search replaced by
++            // BL_SOFTWARE_VULKAN (see droiddeck-session) that driver is never loaded, so setting its
++            // knobs would be theatre - and "harmless" flags are how a session ends up looking like it
++            // is configured for something it is not running.
+             guest.add("BL_GPU_FAMILY=mali")
+             // The driver package's own instrument. "1" means "into the session folder", which the
+             // adapter resolves from BL_DEBUG_DIR set above; it never writes anywhere the app has
+@@ -738,7 +755,9 @@ class SessionService : Service() {
+         // import falls back to. One driver for every session: the driver's shader cache is keyed on
+         // its build, and with one per mode every emulator compiled its shaders twice.
+         val linuxDriverId = SessionPrefs.linuxDriver(this)
+-        LinuxVulkanDriver.resolveIcdPath(this, linuxDriverId)
++        // Software mode overrides it; see LinuxVulkanDriver.driverForSession. An empty result is not
++        // "fall back", it is "no driver", and the guest script is written to honour that.
++        LinuxVulkanDriver.resolveIcdPath(this, LinuxVulkanDriver.driverForSession(this, linuxDriverId))
+             ?.let { guest.add(LinuxVulkanDriver.ENV + "=" + it) }
+         // Turnip's own debug switches, for the runtime's driver and everything on it. The file in
+         // Downloads holds the value verbatim ("sysmem", "sysmem,deck_emu"); with nothing there, an
+diff --git a/app/src/main/java/com/droiddeck/launcher/ui/GpuSafetyPage.kt b/app/src/main/java/com/droiddeck/launcher/ui/GpuSafetyPage.kt
+index 68f1f80..48d2399 100644
+--- a/app/src/main/java/com/droiddeck/launcher/ui/GpuSafetyPage.kt
++++ b/app/src/main/java/com/droiddeck/launcher/ui/GpuSafetyPage.kt
+@@ -120,8 +120,14 @@ internal fun GpuSafetyPanel(host: MenuHost, modifier: Modifier = Modifier) {
+                     GpuSafetyPrefs.PROFILE_OFF to stringResource(R.string.gpu_safety_profile_off),
+                     GpuSafetyPrefs.PROFILE_SAFE to stringResource(R.string.gpu_safety_profile_safe),
+                     GpuSafetyPrefs.PROFILE_STRICT to stringResource(R.string.gpu_safety_profile_strict),
++                    GpuSafetyPrefs.PROFILE_SOFTWARE to stringResource(R.string.gpu_safety_profile_software),
+                 ), profileId, enabled = enabled, onPick = { id -> p.setChosenProfile(context, id); apply() },
+             )
++            if (profileId == GpuSafetyPrefs.PROFILE_SOFTWARE) {
++                // Said here because it is the one setting on this page that changes what the guest can
++                // see at all, and because "software mode" would otherwise be assumed to mean "slow".
++                Note(stringResource(R.string.gpu_safety_software_note))
++            }
+             ToggleRow(host, "gpu-lock", stringResource(R.string.gpu_safety_lock_after_crash),
+                 stringResource(R.string.gpu_safety_lock_after_crash_hint), lock, enabled = enabled) { on ->
+                 p.setLockAfterFatalBoot(context, on); apply()
+diff --git a/app/src/main/res/values-es/strings.xml b/app/src/main/res/values-es/strings.xml
+index 03685e3..b623a8b 100644
+--- a/app/src/main/res/values-es/strings.xml
++++ b/app/src/main/res/values-es/strings.xml
+@@ -2113,6 +2113,8 @@
+     <string name="gpu_safety_profile_hint">A qué renuncia una sesión para no forzar la GPU. Se aplica al iniciar la sesión.</string>
+     <string name="gpu_safety_profile_off">Desactivado: no cambia nada</string>
+     <string name="gpu_safety_profile_safe">Seguro: 720p, 30 fps, sin extras</string>
++    <string name="gpu_safety_profile_software">Software (lavapipe) - sin tocar la GPU</string>
++    <string name="gpu_safety_software_note">Esta opcion no es una sesion mas chica, es otra maquina: al guest nunca se le da un render node, los nodos de la GPU se tapan con un archivo vacio, el paquete del driver no se carga, y la prueba de pre-vuelo no corre - no hay GPU que demostrar. Necesita un driver Vulkan de software importado (el libvulkan_lvp.so de Mesa con su libLLVM al lado); sin el, la sesion se rechaza en vez de arrancar escondidos sobre la GPU. Todo corre en el CPU, asi que prepara para segundos por fotograma, no 30: el punto es saber si Steam, FEX, Proton y los juegos estan bien mientras el stack de Mali no esta en la foto.</string>
+     <string name="gpu_safety_profile_strict">Estricto: 576p, 24 fps, interfaz en la CPU</string>
+     <string name="gpu_safety_lock_after_crash">No iniciar tras un fallo</string>
+     <string name="gpu_safety_lock_after_crash_hint">Tras un arranque registrado como fallo, no se inicia ninguna sesión hasta que rearme. Es lo que evita que el fallo se repita en cada arranque.</string>
+diff --git a/app/src/main/res/values/strings.xml b/app/src/main/res/values/strings.xml
+index b448d76..9046832 100644
+--- a/app/src/main/res/values/strings.xml
++++ b/app/src/main/res/values/strings.xml
+@@ -2137,6 +2137,8 @@
+     <string name="gpu_safety_profile_hint">What a session gives up to keep the GPU out of trouble. Applied when the session starts.</string>
+     <string name="gpu_safety_profile_off">Off - nothing is changed</string>
+     <string name="gpu_safety_profile_safe">Safe - 720p, 30 fps, no extras</string>
++    <string name="gpu_safety_profile_software">Software (lavapipe) - no GPU at all</string>
++    <string name="gpu_safety_software_note">This one is not a smaller session, it is a different machine: the guest is never given a render node, the GPU device nodes are shadowed by an empty file, the driver package is not loaded, and the pre-flight probe does not run - there is no GPU to prove. It needs an imported software Vulkan driver (Mesa\'s libvulkan_lvp.so with its libLLVM beside it); without one the session is refused rather than quietly started on the GPU. Everything runs on the CPU, so expect seconds per frame, not 30: the point is to find out whether Steam, FEX, Proton and the games themselves are sound while the Mali stack is out of the picture.</string>
+     <string name="gpu_safety_profile_strict">Strict - 576p, 24 fps, interface on the CPU</string>
+     <string name="gpu_safety_lock_after_crash">Refuse to start after a crash</string>
+     <string name="gpu_safety_lock_after_crash_hint">After a boot recorded as a crash, no session starts until you re-arm. This is what stops a crash from repeating on every boot.</string>
+diff --git a/tools/linuxfs/overlay/usr/local/bin/droiddeck-session b/tools/linuxfs/overlay/usr/local/bin/droiddeck-session
+index d1c4a56..bbc92f9 100755
+--- a/tools/linuxfs/overlay/usr/local/bin/droiddeck-session
++++ b/tools/linuxfs/overlay/usr/local/bin/droiddeck-session
+@@ -66,7 +66,38 @@ trap 'collect_steam_logs 2>/dev/null || true' TERM INT HUP
+ # VK_DRIVER_FILES REPLACES the loader's search, so a manifest whose library is unreadable would
+ # leave the session with no Vulkan at all - check both before setting it, and say so in the log
+ # rather than fail silently half a minute later.
+-if [ "${BL_GPU_FAMILY:-}" = mali ] && [ -z "${BL_VK_DRIVER:-}" ]; then
++# Software mode ("no GPU at all"): the app bound no render node and shadowed the device nodes, so
++# reaching for hardware from here would be a bug in this script and not a fallback. Two rules follow
++# from that, and both are about refusing rather than degrading:
++#   - VK_DRIVER_FILES replaces the loader's whole search. Setting it to the imported software
++#     manifest is what keeps the runtime's own (PanVK on this device, Turnip elsewhere) out.
++#   - "the manifest is unreadable" is NOT a reason to fall back. Falling back is how a session that
++#     was promised no GPU ends up opening one, so the mode is refused instead - and said in the log
++#     with the name of what to import, because a bare exit 78 teaches nobody anything.
++if [ "${BL_SOFTWARE_VULKAN:-}" = 1 ]; then
++  bl_soft_lib=""
++  if [ -n "${BL_VK_DRIVER:-}" ] && [ -r "$BL_VK_DRIVER" ]; then
++    bl_soft_lib=$(sed -n 's/.*"library_path"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$BL_VK_DRIVER" | head -1)
++    # JSON escapes the separator (org.json writes "\/data\/..."); an unescaped path looks relative
++    # and would be glued onto the manifest's own directory.
++    bl_soft_lib=$(printf '%s' "$bl_soft_lib" | sed 's|\\/|/|g')
++    case $bl_soft_lib in
++      /*) ;;
++      ?*) bl_soft_lib="$(dirname "$BL_VK_DRIVER")/$bl_soft_lib" ;;
++    esac
++  fi
++  if [ -z "$bl_soft_lib" ] || [ ! -r "$bl_soft_lib" ]; then
++    echo "DD_SOFTWARE_DRIVER_MISSING: software mode needs an imported software Vulkan driver - a zip" \
++         "with Mesa's libvulkan_lvp.so and its libLLVM beside it (Components -> drivers -> import" \
++         ".zip). The session is refused rather than started on the GPU."
++    exit 78
++  fi
++  export VK_DRIVER_FILES="$BL_VK_DRIVER"
++  export VK_ICD_FILENAMES="$BL_VK_DRIVER"
++  echo "== vulkan driver: software only, $bl_soft_lib"
++  unset bl_soft_lib
++fi
++if [ "${BL_GPU_FAMILY:-}" = mali ] && [ "${BL_SOFTWARE_VULKAN:-}" != 1 ] && [ -z "${BL_VK_DRIVER:-}" ]; then
+   echo "DD_MALI_DRIVER_REQUIRED: import/select the Linux PanVK package; Turnip cannot run on Mali"
+   exit 78
+ fi
+@@ -94,7 +125,7 @@ if [ -n "${BL_VK_DRIVER:-}" ]; then
+   fi
+   unset bl_icd_lib
+ fi
+-if [ "${BL_GPU_FAMILY:-}" = mali ] && [ -z "${BL_INSIDE:-}" ]; then
++if [ "${BL_GPU_FAMILY:-}" = mali ] && [ "${BL_SOFTWARE_VULKAN:-}" != 1 ] && [ -z "${BL_INSIDE:-}" ]; then
+   /usr/local/bin/droiddeck-mali-check || exit 78
+ fi
+ # The app's gamescope build (tools/gamescope) asks for realtime-priority Vulkan queues on this
+-- 
+2.39.5
+

@@ -1,0 +1,129 @@
+From b14655dbfc8ae44205d0b478e1dca801ab37ad37 Mon Sep 17 00:00:00 2001
+From: Arena Agent <agent@arena.ai>
+Date: Sat, 10 Oct 2026 14:23:19 +0000
+Subject: [PATCH 18/29] docs: what the driver package is, corrected - and
+ build.sh checks the binary's digest
+
+The correction the previous commit's message promised but did not contain: docs/gpu-safety.md never
+got the driver section (it was lost when the workspace was restored from an older snapshot), and
+docs/progress-log.md still said the answer was "a newer PanVK-kbase". It is not, because there is
+nothing newer - and the proof is now in the docs rather than in my reasoning: the installed
+libpanvk_backend.so hashes to 0b8eaf709cd3...60c820, which is the digest upstream's rc2 notes publish
+for libvulkan_panfrost-glibc-aarch64.so. Same file, not same size.
+
+Both docs now also retract two claims I made about upstream's release notes after reading them
+properly. They do not describe a present-after-two-frames hang - that is our measurement, ours alone.
+And they say nothing about this guest's display server; the X11 dependence in the .so is about how
+the binary was built, not a statement about supported WSI. What the notes DO say matters more: the
+rc2 binary has never been run on a device at all, and upstream is asking for PanProbe reports, which
+is a bounded experiment on this phone that involves neither Steam nor the chroot.
+
+build.sh gained EXPECTED_BACKEND_SHA256, comparing the extracted .so against the published digest
+instead of only the download's, so a repackage proves it carries the official build; the packaging
+workflow passes it through as an optional input with rc2's value in a comment. The doc no longer says
+"248 lines", which I can no longer verify from the original zip.
+
+Co-authored-by: arena-agent <297053741+arena-agent@users.noreply.github.com>
+---
+ docs/gpu-safety.md   | 50 ++++++++++++++++++++++++++++++++++++++++++++
+ docs/progress-log.md | 23 ++++++++++++++++++--
+ 2 files changed, 71 insertions(+), 2 deletions(-)
+
+diff --git a/docs/gpu-safety.md b/docs/gpu-safety.md
+index 4d21097..aa9c054 100644
+--- a/docs/gpu-safety.md
++++ b/docs/gpu-safety.md
+@@ -175,6 +175,56 @@ then nothing, and the reboot recorded at 22:34:23 with a log ending a minute and
+ It looked like the watchdog had stopped sampling. It had not: it had been sampling until the
+ device died, and the panic had eaten the evidence.
+ 
++## The Mali driver package
++
++Everything above is the app. The other half of the question - "the driver is the problem" - is
++`drivers/mali-g615/`, which is in the tree because the driver package is not only a driver.
++
++**What the installed package actually is.** `DroidDeck-Mali-G615-driver-0.1.0.zip` holds two
++binaries and their licences. The larger, `libpanvk_backend.so`, is upstream's
++`libvulkan_panfrost-glibc-aarch64.so` from `panvk-kbase-v0.1.0-rc2` (2026-10-08) - byte-identical,
++SHA-256 `0b8eaf709cd3…60c820`, which is the digest the release notes publish for that file. The
++smaller one, `libvulkan_droiddeck_mali.so`, is 248 lines of ours: an ICD adapter whose source ships
++inside the same zip under MIT.
++
++**What that adapter does, and does not, touch.** It answers
++`vkGetPhysicalDeviceDrmPropertiesEXT` with the render node compiled into it, so gamescope's nested
++Vulkan backend can import the buffers the session presents, and it strips that extension from the
++list handed to PanVK, which does not implement it. It wraps property queries on both the instance and
++device dispatch tables. It is not in the present path: it has no opinion about
++`vkQueuePresentKHR`, the swapchain, or WSI. So it is not where this fault lives, and editing it can
++no more fix the hang than changing the exhaust tip fixes an engine.
++
++**Why it is still the thing we changed.** It is a shim in the dispatch path of every call the session
++makes, and it is ours - which makes it the only place an APK can reach that can answer the question
++the frame timings cannot: did `vkQueueSubmit` return and its fence go unsignalled (the GPU hung), or
++did `vkQueueSubmit` never return (the driver blocked)? Those two need opposite fixes, and only the
++second one is recoverable by an app. Adapter 0.2.0 writes one line per call, `-> name` then
++`<- name = result`, fsynced as it goes, into `droiddeck-driver-trace.log` in the session folder. If a
++device dies mid-call, the call it died inside is the last line in the file. It is off by default: the
++wrappers are not even handed out when tracing is off, so the dispatch table is the backend's own.
++
++**Getting a new driver.** There is nothing newer to import today - rc2 is the newest release and the
++beta.12 that an earlier revision of these notes recommended is four days older. The packaging is
++nevertheless automated, so the next one is a download rather than a rebuild of anything:
++
++    UPSTREAM_ZIP=/path/to/PanVK-Kbase-…-EMULATOR.zip UPSTREAM_TAG=panvk-kbase-v0.1.0-rc3 \
++    UPSTREAM_SHA256=<from its SHA256SUMS> bash drivers/mali-g615/build.sh out/
++
++`mali-driver-package.yml` does that on a runner - cross-compiler from apt, the upstream zip verified
++against the published digest, the AArch64/glibc checks the phone would run performed first, and the
++result attached to the `mali-driver-latest` release. Components -> Controladores de GPU -> Importar
++`.zip` takes it from there. What is *not* in the pipeline is a new backend: the renderer comes from
++upstream, this tree wraps it, and any claim otherwise would be a promise nobody here can keep.
++
++**What upstream says about RC2, read carefully.** The release notes state that the RC2 binary has not
++been run on a device - the G615 numbers were measured on a build of the same patch - and ask for
++PanProbe reports. Running PanProbe 1.2.5 on this phone is a cheap, bounded experiment that does not
++touch Steam, the chroot or the guard, and a pass there against a hang here would localise the fault
++to this guest's presentation path. Two things these notes previously claimed upstream had said are
++retracted: the release does not describe a present-after-two-frames hang, and it does not say the
++driver lacks support for this display server.
++
+ ## Settings
+ 
+ Setup gains a fifth tab, **Safety**, on a Mali device (or once the guard has been turned on
+diff --git a/docs/progress-log.md b/docs/progress-log.md
+index ecad2ea..7156d20 100644
+--- a/docs/progress-log.md
++++ b/docs/progress-log.md
+@@ -45,8 +45,27 @@ Three conclusions, in order of importance.
+    session then ran 23 s before the compositor presented anything at all (every sample said "frames
+    unavailable"), presented two frames - 250 ms, then 105 ms - and stopped. Two frames and a hang,
+    in the present path, with the GPU otherwise idle. That is a driver bug in the WSI/present route
+-   rather than in submit, and it is why the answer is a newer PanVK-kbase and not a gentler
+-   profile: nothing about 720p-versus-1080p or 30-versus-60 is involved in the first two frames.
++   rather than in submit, and nothing about 720p-versus-1080p or 30-versus-60 is involved in the
++   first two frames - so a gentler profile cannot be the answer.
++
++**Corrected the same evening: there is no newer driver to import.** The note above said the answer
++was a newer PanVK-kbase. It is not, because there is nothing newer. The repo's
++`DroidDeck-Mali-G615-driver-0.1.0.zip` carries `libpanvk_backend.so` whose SHA-256 is
++`0b8eaf709cd3…60c820`, which is what upstream's `panvk-kbase-v0.1.0-rc2` release (2026-10-08)
++publishes for `libvulkan_panfrost-glibc-aarch64.so` - not "the same size", the same file. beta.12,
++recommended earlier in this log, is four days *older*. `docs/gpu-safety.md` has the same correction
++with the release notes quoted.
++
++What the notes do say is worth more than the version number: **the RC2 binary has not been run on a
++device at all** - the G615 numbers were measured on a build of the same patch, and the release asks
++testers to run PanProbe and report. So the thing installed on this phone is a current, untested
++binary, and no update of it is pending anywhere.
++
++Two claims made in the commit that added the adapter trace were also wrong and are retracted here:
++the notes do not describe a present-after-two-frames hang, and they say nothing about this guest's
++display server. The first is a measurement of ours, not a known issue; the second was an inference
++about X11 from the assets' dependency list, which describes how the driver was built, not what it
++supports.
+ 
+ The guard's remaining job, stated plainly: it cannot save a session. It can make sure the *next*
+ session does not start on its own.
+-- 
+2.39.5
+

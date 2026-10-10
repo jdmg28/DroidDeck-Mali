@@ -1,0 +1,458 @@
+From 58822da5db3c7524e7203c7281d5cb8fb8b39408 Mon Sep 17 00:00:00 2001
+From: Arena Agent <agent@arena.ai>
+Date: Sat, 10 Oct 2026 13:28:40 +0000
+Subject: [PATCH 16/29] Count a bad session END as a fatal boot, and ask pstore
+ what the kernel wrote
+
+The field log from the device closes the loop and exposes a hole in it. The
+watchdog did its job: last frame at 10:15:28.6, budget blown at 2154 ms, abort at
+10:15:31.2 - 300 ms inside the kernel's own 3 s fence timeout - tree swept,
+session ended. The phone restarted 48 s later anyway, which settles what the
+guard can and cannot do: the bus fault is committed before userspace sees the
+stall, so no timing wins that race. What remains is refusing the next attempt.
+
+The next attempt was not refused, and that is the bug. `noteSessionEnded` had
+already cleared the open-session mark, so at the next boot `interruptedSession`
+found nothing open, the boot reason was unreadable as always, and the guard
+logged "no boot reason and no interrupted session" and left the latch alone. A
+check that only looks for a session still running at boot cannot see a crash the
+guard cleaned up after.
+
+GpuSafetyPrefs now keeps how the last session ended, and a new boot preceded
+within ten minutes by an abnormal end - or by a guard abort, which is written at
+the moment it is decided, because the teardown is exactly when the kernel may
+take the phone - is a fatal boot. A false lock costs one tap on the Safety page;
+a false clear costs the device, so a wall clock that moved backwards counts as
+recent rather than as long ago.
+
+BootReason gains a third witness: pstore, the console tail the kernel leaves in
+RAM for the boot after a panic. It is usually root-only, so nothing here assumes
+it is readable; what it guarantees is that the panel tells you which kind of
+blind you are, "no pstore buffer present" or "the buffer exists and this app
+cannot read it", because only one of those has a fix.
+
+Measured limit and the missed latch are both written up in docs/gpu-safety.md
+under honest limits, with the log lines, and in the progress log.
+
+Co-authored-by: arena-agent <297053741+arena-agent@users.noreply.github.com>
+---
+ .../launcher/gpu/guard/BootReason.kt          | 87 ++++++++++++++++++-
+ .../droiddeck/launcher/gpu/guard/GpuGuard.kt  | 62 ++++++++++++-
+ .../launcher/gpu/guard/GpuSafetyPrefs.kt      | 45 ++++++++++
+ docs/gpu-safety.md                            | 42 +++++++--
+ docs/progress-log.md                          | 46 ++++++++++
+ 5 files changed, 271 insertions(+), 11 deletions(-)
+
+diff --git a/app/src/main/java/com/droiddeck/launcher/gpu/guard/BootReason.kt b/app/src/main/java/com/droiddeck/launcher/gpu/guard/BootReason.kt
+index bbda3e0..810b9ad 100644
+--- a/app/src/main/java/com/droiddeck/launcher/gpu/guard/BootReason.kt
++++ b/app/src/main/java/com/droiddeck/launcher/gpu/guard/BootReason.kt
+@@ -47,6 +47,28 @@ object BootReason {
+         override fun toString(): String = if (raw.isEmpty()) kind.name else "$raw [$kind]"
+     }
+ 
++    private val PSTORE_PATHS = listOf(
++        "/sys/fs/pstore/console-ramoops-0",
++        "/sys/fs/pstore/console-ramoops",
++        "/sys/fs/pstore/dmesg-ramoops-0",
++        "/sys/fs/pstore/dmesg-ramoops-1",
++    )
++
++    /** Strings that mean the kernel stopped by itself. MediaTek's Mali module has its own two. */
++    private val PANIC_MARKS = listOf(
++        "Kernel panic",
++        "Attempted to kill init",
++        "Unable to handle kernel",
++        "Unexpected kernel BRK exception",
++        "soft lockup",
++        "hung_task",
++        "CS_FATAL",
++        "FENCE_SIGNAL timeout",
++        "watchdog: ",
++    )
++
++    private const val PSTORE_TAIL_BYTES = 512 * 1024
++
+     /** Shutdown reasons read by name, so the SDK level decides what exists and not the compiler. */
+     private val SHUTDOWN_REASONS = listOf(
+         "SHUTDOWN_REASON_SHUTDOWN" to "shutdown",
+@@ -106,11 +128,72 @@ object BootReason {
+             }
+         }
+ 
++        // Nothing the framework says worked, so ask the kernel what it wrote on the way down.
++        // A panic found there is the answer; anything else pstore has to say is only worth keeping
++        // as the reason the guard is blind, because that decides what to do about it.
++        val witness = pstore()
++        if (witness != null && witness.fatal) return witness
++
+         Log.i(TAG, "boot reason: no property under any of $KEYS could be read by any means " +
+-            "(SystemProperties refused, getprop ${if (properties.isEmpty()) "unavailable" else "had none of them"})")
+-        return Reading("", Kind.UNKNOWN, "not readable")
++            "(SystemProperties refused, getprop ${if (properties.isEmpty()) "unavailable" else "had none of them"}); " +
++            (witness?.source ?: "no pstore buffer present"))
++        return Reading("", Kind.UNKNOWN, witness?.source ?: "not readable")
+     }
+ 
++    /**
++     * The kernel's own account of the previous boot's last moments.
++     *
++     * On a device that refuses every boot property the way this one does, `pstore` is what is left:
++     * RAM the kernel reserves for its console, left standing across a panic and dumped into
++     * `/sys/fs/pstore` by the boot after it. It is usually root-only, and nothing here assumes
++     * otherwise - the value is in the two answers it can give. A buffer that can be read and names
++     * a panic is the strongest evidence the guard can get, and turns "the phone restarted" into the
++     * line that says why (`CS_FATAL`, `FENCE_SIGNAL timeout`, the BRK at EL1). A buffer that exists
++     * but cannot be opened is a different diagnosis from one that is not there at all: the guard is
++     * blind by permission, not by design, and the user can fix it once from a root shell or adb
++     * instead of being told the platform says nothing.
++     */
++    private fun pstore(): Reading? {
++        var refused = ""
++        for (path in PSTORE_PATHS) {
++            val file = java.io.File(path)
++            if (!file.exists()) continue
++            val text = try {
++                readTail(file)
++            } catch (error: Exception) {
++                if (refused.isEmpty()) {
++                    refused = "${file.name} exists but this app cannot read it " +
++                        "(${error.javaClass.simpleName}) - it would be readable to root"
++                }
++                continue
++            }
++            if (text.isBlank()) continue
++            for (mark in PANIC_MARKS) {
++                val at = text.lastIndexOf(mark, ignoreCase = true)
++                if (at < 0) continue
++                val from = text.lastIndexOf('\n', at) + 1
++                val to = text.indexOf('\n', at).let { if (it < 0) text.length else it }
++                return Reading(text.substring(from, to).trim().take(240), Kind.KERNEL_PANIC,
++                    "pstore ${file.name}")
++            }
++            // Readable and no mark: the kernel did not die, it was told to stop. Worth saying out
++            // loud - and it does not clear a latch by itself, the session evidence is checked apart.
++            return Reading("", Kind.UNKNOWN,
++                "pstore ${file.name} was readable and holds no panic marker")
++        }
++        return if (refused.isEmpty()) null else Reading("", Kind.UNKNOWN, "pstore: $refused")
++    }
++
++    /** The end of the buffer, which is where a panic is; these files can be a megabyte or more. */
++    private fun readTail(file: java.io.File): String =
++        java.io.RandomAccessFile(file, "r").use { handle ->
++            val size = minOf(handle.length(), PSTORE_TAIL_BYTES.toLong()).toInt()
++            handle.seek(handle.length() - size)
++            val bytes = ByteArray(size)
++            handle.readFully(bytes)
++            String(bytes, Charsets.UTF_8)
++        }
++
+     /**
+      * Every property the phone has, read by running `getprop` once.
+      *
+diff --git a/app/src/main/java/com/droiddeck/launcher/gpu/guard/GpuGuard.kt b/app/src/main/java/com/droiddeck/launcher/gpu/guard/GpuGuard.kt
+index 39fa5b1..fb116d8 100644
+--- a/app/src/main/java/com/droiddeck/launcher/gpu/guard/GpuGuard.kt
++++ b/app/src/main/java/com/droiddeck/launcher/gpu/guard/GpuGuard.kt
+@@ -91,6 +91,9 @@ object GpuGuard {
+ 
+     /** The guard ended this session itself, so the notice over it says stopped, not stalled. */
+     var sessionStopped by mutableStateOf(false)
++
++    /** The folder name of the running session, so its ending can be named in the log. */
++    private var sessionId = "session"
+         private set
+ 
+     /** The last pre-flight probe's verdict, for the settings page. */
+@@ -110,6 +113,9 @@ object GpuGuard {
+      */
+     private const val REBOOT_SLACK_MS = 10L * 60L * 1000L
+ 
++    /** How long after a bad session end a restart still counts as the same event. */
++    private const val BAD_END_WINDOW_MS = 10L * 60L * 1000L
++
+     /** No frame budget above this can fire before the kernel does; see [startWatchdog]. */
+     private const val MAX_STALL_BUDGET_MS = 2_000L
+ 
+@@ -148,15 +154,21 @@ object GpuGuard {
+         // when it restarted", which is the thing that has to be refused next time.
+         val interrupted = if (com.droiddeck.launcher.session.SessionState.running) null else interruptedSession(app, uptime)
+ 
++        // The end mark is read on every new boot, whatever else the evidence says. Leaving it in
++        // place would let a session that went wrong in March blame an unrelated restart in June.
++        val badEnd = if (com.droiddeck.launcher.session.SessionState.running)
++            null else badEndBeforeThisBoot(app, uptime)
++
+         when {
+             reading.fatal -> noteFatalBoot(app, reading.toString())
+             interrupted?.rebooted == true -> noteFatalBoot(app, interrupted.reason)
+             interrupted != null -> GpuGuardLog.log("boot",
+                 "session ${interrupted.id} was left open, but the uptime never went backwards: the app " +
+                     "was killed rather than the phone restarted (${formatUptime(uptime)} up)")
++            badEnd != null -> noteFatalBoot(app, badEnd)
+             reading.kind == BootReason.Kind.UNKNOWN -> GpuGuardLog.log("boot",
+-                "no boot reason and no interrupted session: the guard cannot tell whether the last " +
+-                    "power-off was clean and leaves the latch as it is")
++                "no boot reason, no session left open and no bad session end on record: the guard " +
++                    "cannot tell whether the last power-off was clean and leaves the latch as it is")
+         }
+         refresh(app)
+     }
+@@ -187,6 +199,36 @@ object GpuGuard {
+ 
+     private class Interruption(val id: String, val rebooted: Boolean, val reason: String)
+ 
++    /**
++     * A session that did not end well, and ended shortly before this boot, leaving no open mark.
++     *
++     * This closes the gap the guard's own success opens: the watchdog sees the stall, takes the
++     * session down, logs a clean end - and the kernel, already past the point of no return,
++     * reboots the phone a minute later. A check that only looks for a session still running at boot
++     * finds no victim and calls the night uneventful, which is precisely what happened on the
++     * device this guard was written for: abort at 2.2 s into the stall, restart 48 s later, latch
++     * never engaged, and the next attempt would have been free.
++     *
++     * The wall clock is the only thing that can measure "shortly before" across a restart, so a
++     * clock that moved backwards is read as recent rather than as long ago. The asymmetry is the
++     * point: a false lock costs one tap on the Safety page, a false clear costs the phone.
++     */
++    private fun badEndBeforeThisBoot(app: android.content.Context, uptime: Long): String? {
++        val end = GpuSafetyPrefs.lastSessionEnd(app) ?: return null
++        GpuSafetyPrefs.clearSessionEnd(app)
++        if (end.normally && !end.byGuard) return null
++        val elapsed = System.currentTimeMillis() - end.wallMs
++        if (elapsed > BAD_END_WINDOW_MS) {
++            GpuGuardLog.log("boot", "session ${end.id} ended badly ${formatGap(elapsed / 1000 * 1000)} " +
++                "ago, outside the ${BAD_END_WINDOW_MS / 60000}-minute window: not read as this boot")
++            return null
++        }
++        if (uptime >= end.uptimeMs) return null   // the uptime never went backwards: no restart
++        val how = if (end.byGuard) "the guard stopped it" else "it ended abnormally"
++        return "the device restarted ${formatGap(elapsed)} after session ${end.id}, which $how - an " +
++            "ending the guard forced is the last thing it records before a kernel fault, not a clean end"
++    }
++
+     /** Records a crash on the latch's books, whether it was proved by the platform or by us. */
+     private fun noteFatalBoot(app: android.content.Context, reason: String) {
+         val count = GpuSafetyPrefs.fatalBootCount(app) + 1
+@@ -294,7 +336,8 @@ object GpuGuard {
+         // Left on the books so that, if the phone dies under this session, the next start can
+         // prove it from the uptime alone - which is the only way to detect a crash on a device
+         // whose boot reason cannot be read.
+-        GpuSafetyPrefs.markSessionOpen(app, sessionDir?.name ?: "session", profile.id)
++        sessionId = sessionDir?.name ?: "session"
++        GpuSafetyPrefs.markSessionOpen(app, sessionId, profile.id)
+         GpuGuardLog.openSession(sessionDir, listOf(
+             "level $level, profile ${profile.id}",
+             "output ${SessionState.outputSize.first}x${SessionState.outputSize.second}" +
+@@ -381,6 +424,7 @@ object GpuGuard {
+         // The app has seen this session end, so it stops being evidence of a crash. It must happen
+         // before the early return below: an ending the guard forced is an ending all the same.
+         GpuSafetyPrefs.clearOpenSession(app)
++        GpuSafetyPrefs.markSessionEnd(app, sessionId, endedNormally, sessionStopped)
+         GpuGuardLog.closeSession(if (endedNormally) "clean" else "abnormal")
+         // An ending the guard forced keeps its notice on screen: the user has to be told why the
+         // session they were playing is gone. It is cleared when the next one starts.
+@@ -402,6 +446,11 @@ object GpuGuard {
+         val app = context.applicationContext
+         GpuSafetyPrefs.countGuardStop(app)
+         GpuSafetyPrefs.setCleanSessionsSinceFatal(app, 0)
++        // Recorded here as well as in noteSessionEnded, because the teardown is the dangerous
++        // moment: a kernel that is minutes into a GPU fault can take the phone down while the app
++        // is still killing processes. If this is the last thing the guard ever writes, it still
++        // reads as an abnormal end on the next boot rather than as nothing at all.
++        GpuSafetyPrefs.markSessionEnd(app, sessionId, false, true)
+         alert = reason
+         sessionStopped = true
+         GpuGuardLog.log("guard", "session stopped by the guard: $reason")
+@@ -465,6 +514,13 @@ object GpuGuard {
+         return lines.joinToString("\n")
+     }
+ 
++    /** Like [formatUptime] but honest under a minute: a session stopped 48 s before a reboot is
++        the story, and "0m" would throw it away. */
++    private fun formatGap(millis: Long): String {
++        val seconds = millis / 1000
++        return if (seconds < 60) "${seconds}s" else formatUptime(millis)
++    }
++
+     private fun formatUptime(millis: Long): String {
+         val seconds = millis / 1000
+         val h = seconds / 3600
+diff --git a/app/src/main/java/com/droiddeck/launcher/gpu/guard/GpuSafetyPrefs.kt b/app/src/main/java/com/droiddeck/launcher/gpu/guard/GpuSafetyPrefs.kt
+index 820f4d6..369092a 100644
+--- a/app/src/main/java/com/droiddeck/launcher/gpu/guard/GpuSafetyPrefs.kt
++++ b/app/src/main/java/com/droiddeck/launcher/gpu/guard/GpuSafetyPrefs.kt
+@@ -231,6 +231,51 @@ object GpuSafetyPrefs {
+         .remove("openSessionId")
+         .apply()
+ 
++    /**
++     * The last session the app saw end. Kept alongside [OpenSession] because an end is evidence
++     * too: the guard's own abort is the last thing it records before the phone reboots, and if the
++     * only mark that survives is "no session open", the crash looks clean and the next attempt is
++     * free. That is exactly how a real panic on a real device got past the latch on 2026-10-10:
++     * the watchdog stopped the session at 2.2 s, the device restarted 48 s later, and the guard
++     * found nothing open to blame it on.
++     */
++    class SessionEnd(
++        val id: String,
++        /** Whether the session finished on its own, with no fault and no abort. */
++        val normally: Boolean,
++        /** Whether the guard was the thing that stopped it. */
++        val byGuard: Boolean,
++        val wallMs: Long,
++        val uptimeMs: Long,
++    )
++
++    fun lastSessionEnd(context: Context): SessionEnd? {
++        val store = prefs(context)
++        val id = store.getString("lastEndId", "") ?: ""
++        if (id.isEmpty()) return null
++        return SessionEnd(
++            id,
++            store.getBoolean("lastEndNormally", false),
++            store.getBoolean("lastEndByGuard", false),
++            store.getLong("lastEndWall", 0L),
++            store.getLong("lastEndUptime", 0L),
++        )
++    }
++
++    fun markSessionEnd(context: Context, id: String, normally: Boolean, byGuard: Boolean) =
++        prefs(context).edit()
++            .putString("lastEndId", id)
++            .putBoolean("lastEndNormally", normally)
++            .putBoolean("lastEndByGuard", byGuard)
++            .putLong("lastEndWall", System.currentTimeMillis())
++            .putLong("lastEndUptime", SystemClock.elapsedRealtime())
++            .apply()
++
++    /** An end is counted once. Whatever it said, it is not evidence about a second restart. */
++    fun clearSessionEnd(context: Context) = prefs(context).edit()
++        .remove("lastEndId")
++        .apply()
++
+     /** Clears the crash history and the lock. The counters are evidence; this throws it away. */
+     fun reset(context: Context) = prefs(context).edit()
+         .putInt("fatalBootCount", 0)
+diff --git a/docs/gpu-safety.md b/docs/gpu-safety.md
+index 3c929f2..4d21097 100644
+--- a/docs/gpu-safety.md
++++ b/docs/gpu-safety.md
+@@ -49,6 +49,17 @@ the app must never be the thing that puts the device back into the loop.
+ The latch relaxes on evidence, not on a timer: three sessions in a row that end *normally* lift the
+ lock on their own. A session the guard itself stopped resets the count to zero.
+ 
++The property is only one of three witnesses, because on the device this was written for it cannot
++be read at all. A new boot is therefore also fatal when **a session of ours was open** when the
++uptime went backwards, or when **the last session ended badly** — abnormal, or stopped by the guard
++itself — within ten minutes of the restart. The second of those is not a refinement: the guard ends
++the session before the kernel reboots the phone, so a check that only looks for an open session sees
++a tidy night and lets the next attempt through. It saw that happen on real hardware.
++
++And the kernel is asked directly, last: `pstore` (`/sys/fs/pstore/console-ramoops-*`) holds the
++previous boot's console tail, which is the panic itself. It is normally root-only; the panel says
++which way it failed, since "no buffer" and "buffer we cannot read" want different answers.
++
+ This is the genuinely dangerous scenario it removes: a phone that panics shortly after every boot,
+ before anyone can reach Settings.
+ 
+@@ -187,12 +198,31 @@ anywhere). Everything in it is reversible, and the defaults are the conservative
+   kernel may still take the device down. That is the calculated trade: better a bounded, logged,
+   two-second workload discovering it than the client discovering it half a minute in with the user
+   mid-game.
+-- **The watchdog cannot act before a `CS_FATAL` it did not see coming.** Once the GPU has raised a
+-  fatal exception, the kernel's dump path is what panics, and nothing in userspace is consulted.
+-  The watchdog is a net for soft stalls, heat and wedges, not a guarantee.
+-- **The latch depends on the boot reason being readable and truthful.** Some vendors report
+-  `hw_reset` or nothing at all. An unreadable reason is logged and left alone — the guard never
+-  treats "I don't know" as "it was fine".
++- **The watchdog cannot outrun a `CS_FATAL`.** This is measured now, not argued: on 2026-10-10 at
++  `10:15:28.6` a session presented its last frame; the watchdog saw the budget go (1126 ms, 1642,
++  2154), said `no frame for 2154ms (budget 2000ms)`, and aborted at `10:15:31.2` — **300 ms before
++  the kernel's own 3 s fence timer would have fired**, with the process tree swept. The phone
++  restarted anyway, 48 s later. Nothing was wrong with the timing; the assumption was. The bus
++  fault comes *first* and the fence timeout is downstream of it, so by the moment frames stop the
++  kernel is already committed and no amount of userspace speed is in the race. The watchdog is a
++  net for soft stalls, heat and wedges. It is not, and cannot be, a way to survive this driver.
++- **What that leaves, and what was broken.** If the app cannot stop the reboot, the only thing it
++  can still do is refuse the *next* attempt — which is the latch's whole job, and on that same boot
++  the latch did not engage. The log says why: `session ended: abnormal` at 10:15:31, and at the
++  next boot `no boot reason and no interrupted session`. The guard had already cleaned up its own
++  abort, so nothing was "open" when the phone came back, and a check that only looks for a session
++  still running at boot finds no victim. It now reads how the session *ended* too: an abnormal end
++  or a guard abort followed within ten minutes by a restart is a fatal boot, and a guard abort is
++  written at the moment it is decided, because the teardown is exactly when the kernel may take the
++  phone. The cost of a false lock is one tap; the cost of a false clear is the device.
++- **The boot reason is not readable on this device — and that is no longer the end of it.** Some
++  vendors report `hw_reset`, MediaTek here reports nothing at all: `sys.boot.reason` is refused,
++  `getprop` has no key, `getLastShutdownReason` does not exist at this SDK. The guard now asks the
++  kernel directly through `pstore` (`/sys/fs/pstore/console-ramoops-0`), which holds the previous
++  boot's console tail and *is* the panic line. It is normally root-only, so this is not assumed to
++  work; what is guaranteed is which answer you get, because the panel distinguishes "no pstore
++  buffer present" from "the buffer exists and this app cannot read it". Only the second has a fix.
++  An unreadable reason is never treated as "it was fine".
+ 
+ ## Where it lives
+ 
+diff --git a/docs/progress-log.md b/docs/progress-log.md
+index 140dbc6..ecad2ea 100644
+--- a/docs/progress-log.md
++++ b/docs/progress-log.md
+@@ -7,6 +7,52 @@ the timeline, then lessons and backlog. Companion to the README (what the app *d
+ 
+ ---
+ 
++## 2026-10-10 (evening) - the guard held the door, then measured its own limit
++
++The probe bugs fixed this afternoon let a session through, and the session went the way the driver
++does. The log is the most useful thing in this whole effort, because it is the guard working
++correctly and the phone rebooting anyway:
++
++```
++10:15:06.597 probe: the device enumerated and finished a queued job     <- the fix works
++10:15:28.644 sample: frames 105ms                                        <- last good frame
++10:15:29.664 sample: frames 1126ms
++10:15:30.690 sample: frames 2154ms
++10:15:30.693 no frame for 2154ms (budget 2000ms)
++10:15:31.215 ABORT: the session presented no frame for 2s
++10:15:31.235 session ended: abnormal
++10:17:19.733 boot: app started on a new boot (1m up); boot reason: not readable [UNKNOWN]
++10:17:19.739 no boot reason and no interrupted session: ... leaves the latch as it is
++```
++
++Three conclusions, in order of importance.
++
++1. **The abort was 300 ms ahead of the kernel's own 3 s fence timer and it did not matter.** The
++   phone restarted 48 s later. So the fault is committed before userspace sees the stall: the fence
++   timeout is downstream of `CS_FATAL`, not the cause of the reboot, and no timing in an app can win
++   that race. Every earlier estimate of what the watchdog could prevent was too optimistic, and this
++   is the measurement that replaces it.
++2. **The latch missed the crash, and that was a real bug.** `session ended: abnormal` had already
++   cleaned up the open-session mark, so at the next boot there was nothing "interrupted" to blame
++   the restart on, and the next attempt would have been free. Detection now reads how a session
++   *ended* (abnormal, or guard-stopped, within ten minutes of a restart), and a guard abort is
++   recorded at the moment it is decided - the teardown is precisely when the kernel may take the
++   phone. `pstore` was added as a third witness, and the panel now says whether it is absent or
++   merely unreadable, because those need different answers.
++3. **`0 / 3` clean sessions and `battery 34C` are the good news.** The workload never got far enough
++   to heat anything, the thermal ceiling was never approached, and the driver's behaviour is now
++   characterised by a number rather than a fear: a 4 KB fill finishes in seconds (probe OK); the
++   session then ran 23 s before the compositor presented anything at all (every sample said "frames
++   unavailable"), presented two frames - 250 ms, then 105 ms - and stopped. Two frames and a hang,
++   in the present path, with the GPU otherwise idle. That is a driver bug in the WSI/present route
++   rather than in submit, and it is why the answer is a newer PanVK-kbase and not a gentler
++   profile: nothing about 720p-versus-1080p or 30-versus-60 is involved in the first two frames.
++
++The guard's remaining job, stated plainly: it cannot save a session. It can make sure the *next*
++session does not start on its own.
++
++---
++
+ ## 2026-10-10 - Mali-G615: the GPU safety guard
+ 
+ A Steam session on the Mali-G615 did not fail, it took the phone with it. Android recorded the
+-- 
+2.39.5
+

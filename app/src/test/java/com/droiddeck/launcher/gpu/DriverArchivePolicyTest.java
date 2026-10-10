@@ -49,4 +49,29 @@ public class DriverArchivePolicyTest {
         assertEquals("1.1.274", DriverArchivePolicy.apiVersion("1.4.363\n"));
         assertEquals("1.1.274", DriverArchivePolicy.apiVersion("9.9.999"));
     }
+
+    @Test public void ceilingsHoldDebianLLVM() {
+        // The real package that made these numbers change: measured from Debian trixie's own arm64
+        // build, so the test is a record of why the ceilings are where they are and not a tautology.
+        long llvm = 123_242_120L, lvp = 10_451_865L, meta = 780L;
+        assertTrue("one library must hold Debian's libLLVM.so.19.1",
+                DriverArchivePolicy.MAX_LIBRARY_BYTES > llvm);
+        assertTrue("the unpacked total must hold a whole lavapipe package with room for the next Mesa",
+                DriverArchivePolicy.MAX_ARCHIVE_BYTES > (llvm + lvp + meta) * 5 / 4);
+    }
+
+    @Test public void freeSpaceScalesWithTheArchiveAndStopsAtTheCeiling() {
+        assertEquals(0L, DriverArchivePolicy.requiredFreeSpace(0));          // unmeasurable: no claim
+        // A negative is the same "we were not told" as a zero: no claim, so no refusal either.
+        assertEquals(0L, DriverArchivePolicy.requiredFreeSpace(-5));
+        // A 5 MB Turnip zip is not asked to justify 100 MB of free space...
+        assertEquals(5L * 1024 * 1024 * 4 + DriverArchivePolicy.MIN_FREE_BYTES,
+                DriverArchivePolicy.requiredFreeSpace(5L << 20));
+        // ...while a zip big enough to write everything the policy allows is capped at exactly that.
+        assertEquals(DriverArchivePolicy.MAX_ARCHIVE_BYTES,
+                DriverArchivePolicy.requiredFreeSpace(20L << 30));
+        // The zip that actually ships: 40.6 MB, and the room it is asked for covers what it unpacks to.
+        assertTrue("the free-space question must not be stricter than the write it is guarding",
+                DriverArchivePolicy.requiredFreeSpace(40_605_954L) >= 133_695_570L);
+    }
 }

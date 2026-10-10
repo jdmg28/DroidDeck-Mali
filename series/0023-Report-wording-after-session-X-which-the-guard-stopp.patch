@@ -1,0 +1,49 @@
+From 9a9914a9ae0bc31774b7afbcd684f7b1baa2b542 Mon Sep 17 00:00:00 2001
+From: Arena Agent <agent@arena.ai>
+Date: Sat, 10 Oct 2026 15:28:08 +0000
+Subject: [PATCH 23/29] Report wording: 'after session X, which the guard
+ stopped it' was not a sentence
+
+Also says in the line itself what the last two sessions proved, because that sentence is the one
+being read at the moment someone decides whether to try again: a forced ending is the last thing
+recorded before a kernel fault, and it is not protection.
+
+Not fixed: a comma appeared inside the session id in the pasted log (2026-10-10-07,-steam) while the
+folder the guard opened had none. SessionPaths.slug() replaces every non-alphanumeric run with '-',
+so a comma cannot come out of it, and there is no reproduction here to chase - cosmetic, display
+only, and the id is not used for anything but reading.
+
+Co-authored-by: arena-agent <297053741+arena-agent@users.noreply.github.com>
+---
+ .../com/droiddeck/launcher/gpu/guard/GpuGuard.kt  | 15 ++++++++++++---
+ 1 file changed, 12 insertions(+), 3 deletions(-)
+
+diff --git a/app/src/main/java/com/droiddeck/launcher/gpu/guard/GpuGuard.kt b/app/src/main/java/com/droiddeck/launcher/gpu/guard/GpuGuard.kt
+index 12da47c..2d6c520 100644
+--- a/app/src/main/java/com/droiddeck/launcher/gpu/guard/GpuGuard.kt
++++ b/app/src/main/java/com/droiddeck/launcher/gpu/guard/GpuGuard.kt
+@@ -224,9 +224,18 @@ object GpuGuard {
+             return null
+         }
+         if (uptime >= end.uptimeMs) return null   // the uptime never went backwards: no restart
+-        val how = if (end.byGuard) "the guard stopped it" else "it ended abnormally"
+-        return "the device restarted ${formatGap(elapsed)} after session ${end.id}, which $how - an " +
+-            "ending the guard forced is the last thing it records before a kernel fault, not a clean end"
++        // Read out loud, because it is the line someone reads after a reboot: "after session X,
++        // which the guard stopped it" was ungrammatical, and a report that has to be re-read is a
++        // report that gets misread.
++        return if (end.byGuard)
++            "the device restarted ${formatGap(elapsed)} after the guard stopped session ${end.id}. " +
++            "An ending the guard forced is the last thing this app records before a kernel fault, so " +
++            "it is not evidence the session ended on its own - and it is no longer believed to keep " +
++            "the phone up: on this device both guarded aborts were followed by a reboot anyway, 48 s " +
++            "and 66 s later."
++        else
++            "the device restarted ${formatGap(elapsed)} after session ${end.id} ended abnormally, " +
++            "with no guard intervention involved"
+     }
+ 
+     /** Records a crash on the latch's books, whether it was proved by the platform or by us. */
+-- 
+2.39.5
+

@@ -1,0 +1,3383 @@
+From ff23e9debb5f9413fb69d5465050099d1a16efda Mon Sep 17 00:00:00 2001
+From: Arena Agent <agent@arena.ai>
+Date: Sat, 10 Oct 2026 00:46:54 +0000
+Subject: [PATCH 01/29] Mali-G615: add the GPU safety guard
+
+A Steam session on the Mali-G615 did not fail, it took the phone with it:
+Android recorded the next boot as kernel_panic, and the trace named the
+kernel's own module (CS_FATAL / CS_BUS_FAULT -> FENCE_SIGNAL timeout(3000 ms)
+-> "Unexpected kernel BRK exception at EL1" in kbasep_csf_sync_kcpu_dump_locked,
+mali_kbase_mt6897_r44).
+
+An APK cannot repair that module, cannot read the kernel log, and is not
+running when it happens. So the guard does the four things an app can do.
+
+1. Break the loop (BootReason, the latch in GpuGuard). sys.boot.reason is
+   read at every app start and counted once per boot - elapsedRealtime() is
+   stored on each start and a new boot is detected by the uptime going
+   backwards, so opening the app ten times after one crash counts one crash.
+   A fatal boot reason engages the latch: every launch is refused until the
+   user re-arms, and an automatic start is refused with no dialog at all, so
+   opening the app can never put the device back in the loop. Three sessions
+   ending normally lift the lock; a session the guard stopped resets it.
+
+2. Ask less of the GPU (SafeProfile). Safe caps the output at 720p and the
+   frame rate at 30 and turns off HDR, frame generation, mangoapp, the realtime
+   queues and the clock pin. Strict adds 576p/24, no shader cache, no upscaler
+   or effects, no second screen, and the client interface on llvmpipe - which
+   is a diagnosis as much as a restriction.
+
+3. Test before Steam does (Probe, droiddeck-gpu-probe). Enumeration under
+   timeout, then a ctypes vkCmdFillBuffer plus a fence wait against the
+   session's own ICD, then a readback. Only a fence that never signals is a
+   failure; anything that stops the test being built is a skip, so a bug in
+   the probe can never lock someone out of their own phone.
+
+4. Stop the session first (GpuWatchdog). Frames, processes wedged in D state
+   (3+ of our own uid for 3 samples, ~1.5 s, inside the kernel's own 3 s fence
+   timeout), and temperature. An abort sweeps the tree four seconds later.
+
+Everything is recorded: gpu-guard.log and gpu-probe.log per session, a GPU
+safety section in device.txt, and a fifth Setup tab (Safety, on Mali) with a
+Copy button for bug reports. Strings in English and Spanish.
+
+Full write-up, including what the guard deliberately does not do, in
+docs/gpu-safety.md.
+
+Co-authored-by: arena-agent <297053741+arena-agent@users.noreply.github.com>
+---
+ .github/workflows/mali-g615-experimental.yml  |   1 +
+ .../main/java/com/droiddeck/launcher/App.kt   |   4 +
+ .../com/droiddeck/launcher/MainActivity.kt    |  27 +
+ .../com/droiddeck/launcher/SessionActivity.kt |  42 +-
+ .../droiddeck/launcher/core/DeviceReport.kt   |   5 +
+ .../launcher/gpu/guard/BootReason.kt          | 106 +++
+ .../droiddeck/launcher/gpu/guard/GpuGuard.kt  | 374 ++++++++++
+ .../launcher/gpu/guard/GpuGuardLog.kt         | 106 +++
+ .../launcher/gpu/guard/GpuSafetyPrefs.kt      | 173 +++++
+ .../launcher/gpu/guard/GpuWatchdog.kt         | 297 ++++++++
+ .../com/droiddeck/launcher/gpu/guard/Probe.kt | 269 +++++++
+ .../launcher/gpu/guard/SafeProfile.kt         | 116 +++
+ .../launcher/session/SessionFiles.kt          |   2 +
+ .../launcher/session/SessionService.kt        | 118 ++-
+ .../droiddeck/launcher/ui/FrontEndSetup.kt    |  15 +-
+ .../droiddeck/launcher/ui/GpuSafetyPage.kt    | 272 +++++++
+ app/src/main/res/values-es/mali.xml           |   2 +-
+ app/src/main/res/values-es/strings.xml        |  64 ++
+ app/src/main/res/values/mali.xml              |   2 +-
+ app/src/main/res/values/strings.xml           |  68 ++
+ docs/gpu-safety.md                            | 170 +++++
+ docs/progress-log.md                          |  38 +
+ .../overlay/usr/local/bin/droiddeck-gpu-probe | 705 ++++++++++++++++++
+ 23 files changed, 2962 insertions(+), 14 deletions(-)
+ create mode 100644 app/src/main/java/com/droiddeck/launcher/gpu/guard/BootReason.kt
+ create mode 100644 app/src/main/java/com/droiddeck/launcher/gpu/guard/GpuGuard.kt
+ create mode 100644 app/src/main/java/com/droiddeck/launcher/gpu/guard/GpuGuardLog.kt
+ create mode 100644 app/src/main/java/com/droiddeck/launcher/gpu/guard/GpuSafetyPrefs.kt
+ create mode 100644 app/src/main/java/com/droiddeck/launcher/gpu/guard/GpuWatchdog.kt
+ create mode 100644 app/src/main/java/com/droiddeck/launcher/gpu/guard/Probe.kt
+ create mode 100644 app/src/main/java/com/droiddeck/launcher/gpu/guard/SafeProfile.kt
+ create mode 100644 app/src/main/java/com/droiddeck/launcher/ui/GpuSafetyPage.kt
+ create mode 100644 docs/gpu-safety.md
+ create mode 100755 tools/linuxfs/overlay/usr/local/bin/droiddeck-gpu-probe
+
+diff --git a/.github/workflows/mali-g615-experimental.yml b/.github/workflows/mali-g615-experimental.yml
+index 4e310dc..7a40175 100644
+--- a/.github/workflows/mali-g615-experimental.yml
++++ b/.github/workflows/mali-g615-experimental.yml
+@@ -35,6 +35,7 @@ jobs:
+         run: |
+           test -f app/src/main/java/com/droiddeck/launcher/gpu/DriverArchivePolicy.java
+           test -f tools/linuxfs/overlay/usr/local/bin/droiddeck-mali-check
++          test -f tools/linuxfs/overlay/usr/local/bin/droiddeck-gpu-probe
+           bash tools/build_local.sh
+       - name: Upload experimental isolated debug APK
+         uses: actions/upload-artifact@v4
+diff --git a/app/src/main/java/com/droiddeck/launcher/App.kt b/app/src/main/java/com/droiddeck/launcher/App.kt
+index d1287be..b6c934b 100644
+--- a/app/src/main/java/com/droiddeck/launcher/App.kt
++++ b/app/src/main/java/com/droiddeck/launcher/App.kt
+@@ -22,6 +22,10 @@ class App : Application() {
+     override fun onCreate() {
+         super.onCreate()
+         CrashHandler.install(this)
++        // First of all: the phone's own record of why it started. On a device whose GPU took it
++        // down, this is the only witness - and reading it here, before anything can start a
++        // session, is what stops a crash from being repeated the moment the launcher appears.
++        com.droiddeck.launcher.gpu.guard.GpuGuard.init(this)
+         // Before anything else touches the session prefs, so the first session already runs in Deck mode.
+         com.droiddeck.launcher.session.SessionPrefs.settleDeckModeDefault(this)
+         com.droiddeck.launcher.session.SessionPrefs.settleGpuDriverMode(this)
+diff --git a/app/src/main/java/com/droiddeck/launcher/MainActivity.kt b/app/src/main/java/com/droiddeck/launcher/MainActivity.kt
+index 61e22f4..20668e6 100644
+--- a/app/src/main/java/com/droiddeck/launcher/MainActivity.kt
++++ b/app/src/main/java/com/droiddeck/launcher/MainActivity.kt
+@@ -159,6 +159,12 @@ class MainActivity : ComponentActivity() {
+     private var phantomWarning by mutableStateOf<String?>(null)
+     private var phantomProcessStatus by mutableStateOf(PhantomProcessStatus.NOT_APPLICABLE)
+     private var showPhantomGate by mutableStateOf(false)
++    /**
++     * The GPU guard has the latch locked: the phone's last boot was recorded as a crash and nobody
++     * has acknowledged it. The launch is refused until the user re-arms, which is the only thing
++     * standing between this device and a crash it repeats on every boot.
++     */
++    private var showGpuGuard by mutableStateOf(false)
+     private var directAudio by mutableStateOf(false)
+     private var stretch16x9 by mutableStateOf(false)
+     private var launcherFullscreen by mutableStateOf(true)
+@@ -820,6 +826,14 @@ class MainActivity : ComponentActivity() {
+                     onClear = { SessionPrefs.setRomsDir(this, ""); romsDir = null; showRoms = false },
+                     onDismiss = { showRoms = false },
+                 )
++                if (showGpuGuard) com.droiddeck.launcher.ui.GpuSafetyLockDialog(
++                    onRearm = {
++                        com.droiddeck.launcher.gpu.guard.GpuGuard.rearm(this)
++                        showGpuGuard = false
++                        android.widget.Toast.makeText(this, R.string.gpu_guard_rearmed_toast, android.widget.Toast.LENGTH_LONG).show()
++                    },
++                    onDismiss = { showGpuGuard = false },
++                )
+                 showNonAdreno?.let { release ->
+                     ConfirmDialog(
+                         title = androidx.compose.ui.res.stringResource(R.string.main_non_adreno_title),
+@@ -884,6 +898,12 @@ class MainActivity : ComponentActivity() {
+ 
+     private fun startSteamAtStartupIfEnabled() {
+         if (intent.action != Intent.ACTION_MAIN) return
++        // A locked latch refuses an automatic start outright rather than refusing it with a
++        // dialog: opening the app must never be the thing that puts the device back in the loop.
++        if (com.droiddeck.launcher.gpu.guard.GpuGuard.blocksAutoStart(this)) {
++            showGpuGuard = true
++            return
++        }
+         if (SessionPrefs.runSteamAtStartup(this) && !isFinishing && !isDestroyed) startSteamSession()
+     }
+ 
+@@ -1577,6 +1597,13 @@ class MainActivity : ComponentActivity() {
+     /** Starts a session; with no runtime on a non-Adreno, the same warning Setup gives comes first, before any download. */
+     private fun startSession(intent: Intent, steamSession: Boolean = false): Boolean {
+         if (busy || LinuxRuntimeInstaller.isBusy()) return false
++        // GPU guard: a phone whose GPU took it down must not walk straight back into the same
++        // session. This is the part of the guard that stops a crash from being repeated, and it
++        // comes before every other check because it is about the device, not the session.
++        if (com.droiddeck.launcher.gpu.guard.GpuGuard.decision(this).blocked) {
++            showGpuGuard = true
++            return false
++        }
+         refreshPhantomStatus()
+         if (steamSession && PhantomProcessLimit.blocksSteam(phantomProcessStatus)) {
+             showPhantomGate = true
+diff --git a/app/src/main/java/com/droiddeck/launcher/SessionActivity.kt b/app/src/main/java/com/droiddeck/launcher/SessionActivity.kt
+index 90a9751..004c522 100644
+--- a/app/src/main/java/com/droiddeck/launcher/SessionActivity.kt
++++ b/app/src/main/java/com/droiddeck/launcher/SessionActivity.kt
+@@ -335,8 +335,14 @@ class SessionActivity : ComponentActivity(), SurfaceHolder.Callback {
+                 this, SessionPrefs.prefMode(intent.getStringExtra(SessionService.EXTRA_MODE) ?: SessionService.MODE_STEAM),
+             )
+         }
+-        Log.i(TAG, "perf: " + PerfMode.apply(this, SessionState.fpsLimit))
+         if (!SessionState.running) SessionState.followScreen = followChoice()
++        // GPU guard: the frame cap is one of the levers the profile lowers, and PerfMode picks the
++        // panel's mode from it, so it is clamped before PerfMode reads it and not after. Only for a
++        // session that is starting: this activity is re-created mid-session (a foldable opening, a
++        // second screen), and resizing a session that is already drawing is its own kind of fault.
++        com.droiddeck.launcher.gpu.guard.GpuGuard.refresh(this)
++        if (!SessionState.running) com.droiddeck.launcher.gpu.guard.GpuGuard.constrainLaunch()
++        Log.i(TAG, "perf: " + PerfMode.apply(this, SessionState.fpsLimit))
+         applyFollowOrientation(resources.configuration)
+         goFullscreen()
+         // The device's volume keys change the stream the session plays on (the relay and
+@@ -469,6 +475,9 @@ class SessionActivity : ComponentActivity(), SurfaceHolder.Callback {
+                 CursorOverlay(cursorPos, cursorVisible, resources.displayMetrics.density,
+                     cursorImage, cursorHotX, cursorHotY, cursorImageScale)
+                 if (hud.text.isNotEmpty()) HudText(hud.text)
++                // The GPU guard's notice, over everything else on this screen: on a device whose
++                // GPU has taken the phone down, "the GPU has stopped" is not a line for a log.
++                com.droiddeck.launcher.ui.GpuGuardAlert()
+                 if (loading.visible) LoadingOverlay(
+                     loading.step, loading.percent, loading.elapsed, loading.hint, loading.ended,
+                     topic = loading.topic, readable = loading.readable,
+@@ -973,6 +982,11 @@ class SessionActivity : ComponentActivity(), SurfaceHolder.Callback {
+         else null
+         val size = live ?: if (SessionState.running) previous else outputSize()
+         SessionState.outputSize = size
++        // GPU guard: the compositor and gamescope must agree on one size, and the compositor is
++        // told first, so the cap is applied here as well as in the service a moment later. The
++        // second call finds the numbers already inside the profile and changes nothing. A session
++        // already running keeps the size it was started with.
++        if (!SessionState.running) com.droiddeck.launcher.gpu.guard.GpuGuard.constrainLaunch()
+         if (!SessionState.running) SessionState.refreshHz = refreshHz()
+         // How far the panel enlarges the session, for texture sharpness "Auto" (TextureFiltering):
+         // the game environment is published again so the next launch derives it from this session.
+@@ -985,9 +999,14 @@ class SessionActivity : ComponentActivity(), SurfaceHolder.Callback {
+         // Letterbox, never stretch or crop: the output can be a different shape from the panel,
+         // and a game's picture must keep its proportions with bars, not lose its edges.
+         WaylandCompositor.nativeSetScaleMode(SCALE_FIT, ALIGN_CENTER)
+-        WaylandCompositor.nativeSetUpscaler(SessionPrefs.upscaler(this))
+-        WaylandCompositor.nativeSetUpscaleSharpness(SessionPrefs.upscaleSharpness(this))
+-        SessionPrefs.screenEffects(this).push(SessionPrefs.upscaler(this))
++        // GPU guard: the upscaler and the effects chain are compositor passes of their own, each
++        // one more thing running on the same GPU. The strict profile turns them off.
++        val guardProfile = com.droiddeck.launcher.gpu.guard.GpuGuard.profile
++        val upscalerNow = if (guardProfile.allowsUpscaling) SessionPrefs.upscaler(this) else 0
++        WaylandCompositor.nativeSetUpscaler(upscalerNow)
++        WaylandCompositor.nativeSetUpscaleSharpness(if (guardProfile.allowsUpscaling) SessionPrefs.upscaleSharpness(this) else 0)
++        if (guardProfile.allowsScreenEffects) SessionPrefs.screenEffects(this).push(upscalerNow)
++        else com.droiddeck.launcher.gpu.ScreenEffects.OFF.push(0)
+         // The session's folder, claimed here because the compositor starts before the service and
+         // opens its log once. The compositor reads the path from its environment; setting it after
+         // it has started changes nothing, which is why the service copies the file in at teardown.
+@@ -1012,7 +1031,13 @@ class SessionActivity : ComponentActivity(), SurfaceHolder.Callback {
+                 probe.ratioAvailable, probe.ratio, Build.VERSION.SDK_INT,
+             )
+             val wanted = SessionPrefs.hdr(this, mode)
+-            val on = wanted && probe.reason == null
++            // GPU guard: HDR10 is a 10-bit swapchain and a colour-management path on top of it, and
++            // no profile that restricts the GPU offers it to the session's clients.
++            val allowed = wanted && guardProfile.allowsHdr
++            if (wanted && !allowed) {
++                com.droiddeck.launcher.gpu.guard.GpuGuardLog.log("guard", "HDR off (${guardProfile.id} profile)")
++            }
++            val on = allowed && probe.reason == null
+             SessionState.hdr = on
+             if (on) {
+                 try { android.system.Os.setenv("DROIDDECK_WAYLAND_HDR", "1", true) } catch (e: Exception) { Log.w(TAG, "DROIDDECK_WAYLAND_HDR", e) }
+@@ -1157,6 +1182,13 @@ class SessionActivity : ComponentActivity(), SurfaceHolder.Callback {
+      * first use translates the shader chain out of Lossless.dll, which takes seconds.
+      */
+     private fun applyFrameGen() {
++        // GPU guard: an engine that generates frames is its own Vulkan workload on top of the
++        // session's, and no profile that restricts the GPU leaves it running.
++        if (!com.droiddeck.launcher.gpu.guard.GpuGuard.profile.allowsFrameGen) {
++            WaylandCompositor.nativeSetFrameGenArmed(false, 0, 0)
++            Log.i(TAG, "gpu guard: frame generation off (${com.droiddeck.launcher.gpu.guard.GpuGuard.profile.id} profile)")
++            return
++        }
+         val hz = refreshHz()
+         Thread({
+             val problem = FrameGen.apply(this, hz)
+diff --git a/app/src/main/java/com/droiddeck/launcher/core/DeviceReport.kt b/app/src/main/java/com/droiddeck/launcher/core/DeviceReport.kt
+index d230212..6acf408 100644
+--- a/app/src/main/java/com/droiddeck/launcher/core/DeviceReport.kt
++++ b/app/src/main/java/com/droiddeck/launcher/core/DeviceReport.kt
+@@ -177,6 +177,11 @@ object DeviceReport {
+             else -> g
+         })
+ 
++        h("GPU safety guard")
++        // Why the phone last booted, what the guard did about it, and what the last probe said:
++        // the three things someone reading a report after a crash needs first.
++        b.append(com.droiddeck.launcher.gpu.guard.GpuGuard.report(context)).append('\n')
++
+         h("Android process limits")
+         k("Phantom proc monitor", PhantomProcessLimit.reportValue(PhantomProcessLimit.read(context)))
+ 
+diff --git a/app/src/main/java/com/droiddeck/launcher/gpu/guard/BootReason.kt b/app/src/main/java/com/droiddeck/launcher/gpu/guard/BootReason.kt
+new file mode 100644
+index 0000000..eab2f47
+--- /dev/null
++++ b/app/src/main/java/com/droiddeck/launcher/gpu/guard/BootReason.kt
+@@ -0,0 +1,106 @@
++/* SPDX-License-Identifier: GPL-3.0-only */
++package com.droiddeck.launcher.gpu.guard
++
++import android.util.Log
++
++/**
++ * Why the phone started the last time, as Android itself recorded it.
++ *
++ * This is the whole basis of the safety latch. When the Mali kernel module takes the device down
++ * (`kbasep_csf_sync_kcpu_dump_locked` -> `Unexpected kernel BRK exception at EL1` -> panic), the
++ * app is not running and cannot see it happen. What it CAN see, the next time it starts, is that
++ * Android recorded the boot as `kernel_panic` rather than as a power-on or a user-requested
++ * reboot. That single property is what turns "the phone rebooted while using Steam" from an
++ * unexplainable event into a fact the app can act on: refuse to walk straight back into the same
++ * workload.
++ *
++ * `sys.boot.reason` is set by the init that ran on that boot and is readable by any app through
++ * the (hidden but unblocked) `android.os.SystemProperties` getter; the fallback keys cover vendors
++ * that keep the same value somewhere else.
++ */
++object BootReason {
++    private const val TAG = "BootReason"
++
++    enum class Kind {
++        /** A power-on, a `adb reboot`, a long-press: nothing went wrong. */
++        NORMAL,
++
++        /** The kernel died: a panic, an oops that took the device with it, a BUG(). */
++        KERNEL_PANIC,
++
++        /** A hardware or framework watchdog bit: something stopped feeding it. */
++        WATCHDOG,
++
++        /** The device restarted because it was too hot. */
++        THERMAL,
++
++        /** The property could not be read, or says something we do not recognise. */
++        UNKNOWN,
++    }
++
++    class Reading(val raw: String, val kind: Kind) {
++        /** Whether this boot is evidence that the previous one ended in a crash. */
++        val fatal: Boolean
++            get() = kind == Kind.KERNEL_PANIC || kind == Kind.WATCHDOG || kind == Kind.THERMAL
++
++        override fun toString(): String = if (raw.isEmpty()) kind.name else "$raw [$kind]"
++    }
++
++    /**
++     * The properties that hold it, in the order they are trusted. `sys.boot.reason` is Android 9+
++     * and is the one the platform itself uses for `DropBoxManager`'s reboot tags; the others are
++     * what MediaTek and a few others leave behind.
++     */
++    private val KEYS = listOf(
++        "sys.boot.reason",
++        "persist.sys.boot.reason",
++        "sys.boot.reason.last",
++        "ro.boot.bootreason",
++        "vendor.sys.boot.reason",
++    )
++
++    fun read(): Reading {
++        for (key in KEYS) {
++            val value = systemProperty(key)
++            if (value.isBlank()) continue
++            return Reading(value.trim(), classify(value))
++        }
++        Log.i(TAG, "boot reason: no property under any of $KEYS could be read")
++        return Reading("", Kind.UNKNOWN)
++    }
++
++    /**
++     * A reboot reason to a [Kind]. Deliberately broad: vendors spell the same event several ways
++     * (`reboot,kernel_panic`, `kernel_panic,watchdog`, `HWWDT`, `thermal_shutdown`), and missing a
++     * real panic is the expensive mistake here while treating an ordinary reboot as fatal only
++     * costs the user one confirmation.
++     */
++    fun classify(raw: String): Kind {
++        val text = raw.lowercase()
++        // Panic first: "kernel_panic,watchdog" is a panic that a watchdog then finished, and the
++        // panic is the part that says the GPU driver was involved.
++        if (text.contains("panic") || text.contains("oops") || text.contains("bug(")) return Kind.KERNEL_PANIC
++        if (text.contains("watchdog") || text.contains("wdog") || text.contains("hwwt") ||
++            text.contains("hw watchdog") || text.contains("hwdt")
++        ) return Kind.WATCHDOG
++        if (text.contains("thermal") || text.contains("overheat") || text.contains("overtemp") ||
++            text.contains("shutdown,therm")
++        ) return Kind.THERMAL
++        if (text.contains("reboot") || text.contains("power_key") || text.contains("powerkey") ||
++            text.contains("poweron") || text.contains("cold") || text.contains("rtc") ||
++            text.contains("alarm") || text.contains("adb") || text.contains("shell") ||
++            text.contains("bootloader") || text.contains("recovery") || text.contains("factory") ||
++            text.contains("charger") || text.contains("usb") || text.contains("userrequested") ||
++            text.contains("key_power") || text.contains("kpdpwr") || text.contains("normal")
++        ) return Kind.NORMAL
++        return Kind.UNKNOWN
++    }
++
++    /** android.os.SystemProperties.get, which apps may read but not call directly. */
++    fun systemProperty(name: String): String = try {
++        Class.forName("android.os.SystemProperties")
++            .getMethod("get", String::class.java).invoke(null, name) as? String ?: ""
++    } catch (e: Exception) {
++        ""
++    }
++}
+diff --git a/app/src/main/java/com/droiddeck/launcher/gpu/guard/GpuGuard.kt b/app/src/main/java/com/droiddeck/launcher/gpu/guard/GpuGuard.kt
+new file mode 100644
+index 0000000..f9420cc
+--- /dev/null
++++ b/app/src/main/java/com/droiddeck/launcher/gpu/guard/GpuGuard.kt
+@@ -0,0 +1,374 @@
++/* SPDX-License-Identifier: GPL-3.0-only */
++package com.droiddeck.launcher.gpu.guard
++
++import android.content.Context
++import android.os.SystemClock
++import androidx.compose.runtime.getValue
++import androidx.compose.runtime.mutableStateOf
++import androidx.compose.runtime.setValue
++import com.droiddeck.launcher.session.SessionState
++import java.text.SimpleDateFormat
++import java.util.Date
++import java.util.Locale
++
++/**
++ * The GPU safety guard.
++ *
++ * What this is for, stated plainly: on this device a Steam session ended in a kernel panic inside
++ * the Mali kernel module (`CS_FATAL ... CS_BUS_FAULT` -> `FENCE_SIGNAL timeout(3000 ms)` ->
++ * `Unexpected kernel BRK exception at EL1` in `kbasep_csf_sync_kcpu_dump_locked`). An APK cannot
++ * repair a kernel module, cannot disable a watchdog it does not own, and cannot lower SELinux. It
++ * also cannot run at all in the seconds where that happens - by the time Android is back up, the
++ * app is starting from nothing.
++ *
++ * So the guard does the four things an app CAN do:
++ *
++ * 1. **Break the loop.** The next start reads Android's own record of why the phone booted. A boot
++ *    recorded as a crash leaves the latch locked: the launch is refused until the user says they
++ *    know and want to try. A device that panics again immediately after every boot is the one
++ *    genuinely dangerous outcome - this is the part that prevents it, and it is the part that
++ *    matters most.
++ * 2. **Reduce the load before it is applied.** [SafeProfile] caps the output and the frame rate and
++ *    turns off HDR, frame generation, the upscaler, the realtime queues and the shader cache, so
++ *    the experimental PanVK path is asked for less of what it has never been validated on.
++ * 3. **Test the GPU before Steam does.** A bounded, logged, tiny workload inside the runtime, with
++ *    a wall-clock timeout the app enforces. If the GPU cannot do that much, Steam never starts -
++ *    and the failure is a line in a log instead of a reboot.
++ * 4. **Take the session down first.** [GpuWatchdog] watches for a session that has stopped
++ *    presenting, or processes wedged on a fence, or a device that is too hot, and stops the
++ *    session itself rather than leaving the kernel to discover the same thing three seconds later
++ *    on a path that ends in a panic.
++ *
++ * None of it makes the panic impossible. It makes it far less likely to be repeated, and it makes
++ * every attempt leave evidence behind.
++ */
++object GpuGuard {
++
++    /** Where the guard stands on this start. */
++    enum class Level {
++        /** Nothing has crashed; the chosen profile runs, if any. */
++        NORMAL,
++
++        /** A crash is on record. Launching is allowed, at [SafeProfile.SAFE] or stricter. */
++        GUARDED,
++
++        /** A crash is on record and nobody has acknowledged it. Launching is refused. */
++        LOCKED,
++    }
++
++    /** What a request to start a session is answered with. */
++    class Decision(
++        val allowed: Boolean,
++        val level: Level,
++        val profile: SafeProfile,
++    ) {
++        val blocked: Boolean get() = !allowed
++    }
++
++    private val stamp = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US)
++
++    @Volatile
++    var level: Level = Level.NORMAL
++        private set
++
++    /** The profile in force this start: the chosen one, raised by the latch. */
++    @Volatile
++    var profile: SafeProfile = SafeProfile.OFF
++        private set
++
++    /** Why [level] is what it is, for the page and the device report. */
++    @Volatile
++    var levelReason: String = ""
++        private set
++
++    /** A notice to show over a running session ("the GPU has stalled"); cleared when it ends. */
++    @Volatile
++    var alert by mutableStateOf<String?>(null)
++        internal set
++
++    /** The guard ended this session itself, so the notice over it says stopped, not stalled. */
++    var sessionStopped by mutableStateOf(false)
++        private set
++
++    /** The last pre-flight probe's verdict, for the settings page. */
++    @Volatile
++    var lastProbe: Probe.Result? = null
++        private set
++
++    private var watchdog: GpuWatchdog? = null
++
++    private val lock = Any()
++
++    // ── Start of the app process ──────────────────────────────────────────────────────────────
++
++    /**
++     * Called once from the Application. Accounts for the boot the app has just started on, once per
++     * boot and not once per process start: `elapsedRealtime()` only ever rises within a boot, so an
++     * uptime behind the one on file means this is a new boot, and only then is the boot reason read
++     * and counted. Without that, a phone that crashed would count the same crash again every time
++     * the app was opened, and the latch could never relax.
++     */
++    fun init(context: Context) {
++        GpuGuardLog.bind(context)
++        val app = context.applicationContext
++        val uptime = SystemClock.elapsedRealtime()
++        val seen = GpuSafetyPrefs.lastSeenUptime(app)
++        val newBoot = seen < 0L || uptime < seen
++        GpuSafetyPrefs.setLastSeenUptime(app, uptime)
++        if (!newBoot) {
++            refresh(app)
++            GpuGuardLog.log("guard", "app started (same boot, ${formatUptime(uptime)} up); " +
++                "level $level, profile ${profile.id}${if (levelReason.isEmpty()) "" else ", $levelReason"}")
++            return
++        }
++
++        val reading = BootReason.read()
++        GpuGuardLog.log("boot", "app started on a new boot (${formatUptime(uptime)} up); " +
++            "boot reason: ${if (reading.raw.isEmpty()) "not readable" else reading.raw} [${reading.kind}]")
++        if (reading.fatal) {
++            val count = GpuSafetyPrefs.fatalBootCount(app) + 1
++            GpuSafetyPrefs.setFatalBootCount(app, count)
++            GpuSafetyPrefs.setLastFatalBootAt(app, System.currentTimeMillis())
++            GpuSafetyPrefs.setLastFatalBootReason(app, reading.toString())
++            GpuSafetyPrefs.setCleanSessionsSinceFatal(app, 0)
++            if (GpuSafetyPrefs.lockAfterFatalBoot(app)) {
++                GpuSafetyPrefs.setLockEngaged(app, true)
++                GpuGuardLog.log("latch", "boot recorded as ${reading.kind}: launch locked until it is " +
++                    "re-armed (crash $count on record)")
++            } else {
++                GpuGuardLog.log("latch", "boot recorded as ${reading.kind}: crash $count on record; " +
++                    "locking is off, so the launch is only restricted")
++            }
++        } else if (reading.kind == BootReason.Kind.UNKNOWN) {
++            GpuGuardLog.log("boot", "the boot reason could not be read; the guard cannot tell whether " +
++                "the last power-off was clean and leaves the latch as it is")
++        }
++        refresh(app)
++    }
++
++    /** Recomputes [level] and [profile] from the settings and the crash history. */
++    fun refresh(context: Context) {
++        val app = context.applicationContext
++        val fatal = GpuSafetyPrefs.fatalBootCount(app)
++        val locked = GpuSafetyPrefs.lockEngaged(app)
++        val chosen = SafeProfile.of(GpuSafetyPrefs.chosenProfile(app))
++        synchronized(lock) {
++            if (!GpuSafetyPrefs.guardEnabled(app)) {
++                level = Level.NORMAL
++                profile = SafeProfile.OFF
++                levelReason = "off"
++                return
++            }
++            when {
++                locked -> {
++                    level = Level.LOCKED
++                    profile = strictest(chosen, SafeProfile.STRICT)
++                    levelReason = GpuSafetyPrefs.lastFatalBootReason(app)
++                }
++                fatal > 0 -> {
++                    level = Level.GUARDED
++                    profile = strictest(chosen, SafeProfile.SAFE)
++                    levelReason = GpuSafetyPrefs.lastFatalBootReason(app)
++                }
++                else -> {
++                    level = Level.NORMAL
++                    profile = chosen
++                    levelReason = ""
++                }
++            }
++        }
++    }
++
++    private fun strictest(a: SafeProfile, b: SafeProfile): SafeProfile =
++        if (a.ordinal >= b.ordinal) a else b
++
++    // ── Deciding a launch ─────────────────────────────────────────────────────────────────────
++
++    /**
++     * Whether a session may start, and under what profile. The lock is the only thing that refuses;
++     * [GUARDED] allows the launch because a device with one crash on record still has to be usable,
++     * and the answer to "it crashed once" is a restricted session, not a dead app.
++     */
++    fun decision(context: Context): Decision {
++        refresh(context)
++        val allowed = level != Level.LOCKED
++        GpuGuardLog.log("guard", "launch ${if (allowed) "allowed" else "refused"}: level $level, " +
++            "profile ${profile.id}")
++        return Decision(allowed, level, profile)
++    }
++
++    /** Whether the app may start a session by itself (Setup's "open straight into Steam"). */
++    fun blocksAutoStart(context: Context): Boolean {
++        refresh(context)
++        return level == Level.LOCKED
++    }
++
++    /**
++     * The user has read what happened and chosen to go ahead: the lock is lifted for as long as the
++     * device keeps behaving. Nothing is forgotten - the crash count stays, and the profile stays at
++     * [SafeProfile.SAFE] or stricter until three sessions in a row end cleanly.
++     */
++    fun rearm(context: Context) {
++        val app = context.applicationContext
++        GpuSafetyPrefs.setLockEngaged(app, false)
++        GpuSafetyPrefs.setCleanSessionsSinceFatal(app, 0)
++        GpuGuardLog.log("latch", "re-armed by the user: the lock is lifted, profile ${profile.id} stays " +
++            "until ${GpuSafetyPrefs.CLEAN_RUNS_TO_RELAX} sessions end cleanly")
++        refresh(app)
++    }
++
++    /** The latch's memory cleared: for someone who wants to start over, not for routine use. */
++    fun forget(context: Context) {
++        val app = context.applicationContext
++        GpuSafetyPrefs.reset(app)
++        GpuGuardLog.log("latch", "crash history cleared")
++        refresh(app)
++    }
++
++    // ── A session's lifetime ──────────────────────────────────────────────────────────────────
++
++    /** The session is starting: cap the output and the frame rate, and start watching. */
++    fun beginSession(context: Context, sessionDir: java.io.File?) {
++        val app = context.applicationContext
++        refresh(app)
++        alert = null
++        sessionStopped = false
++        constrainLaunch()
++        GpuGuardLog.openSession(sessionDir, listOf(
++            "level $level, profile ${profile.id}",
++            "output ${SessionState.outputSize.first}x${SessionState.outputSize.second}" +
++                (if (SessionState.followScreen) " (following the screen)" else ""),
++            "frame cap ${SessionState.fpsLimit}, hdr ${if (SessionState.hdr) "on" else "off"}",
++        ))
++    }
++
++    /**
++     * Brings the session's own launch parameters down to what the profile allows, in place. Both
++     * halves of a session read [SessionState], the activity for the compositor and the service for
++     * gamescope's command line, and the service runs second, so this is where the numbers are
++     * finally decided.
++     */
++    fun constrainLaunch() {
++        val p = profile
++        if (p == SafeProfile.OFF) return
++        val size = SessionState.outputSize
++        val capped = p.constrained(size, SessionState.followScreen)
++        if (capped != size) {
++            SessionState.outputSize = capped
++            GpuGuardLog.log("guard", "output capped: ${size.first}x${size.second} -> " +
++                "${capped.first}x${capped.second} (${p.maxPixels} px, profile ${p.id})")
++        }
++        val fps = p.clampedFps(SessionState.fpsLimit)
++        if (fps != SessionState.fpsLimit) {
++            GpuGuardLog.log("guard", "frame cap: ${SessionState.fpsLimit} -> $fps (profile ${p.id})")
++            SessionState.fpsLimit = fps
++        }
++        if (SessionState.hdr && !p.allowsHdr) {
++            SessionState.hdr = false
++            GpuGuardLog.log("guard", "HDR off (profile ${p.id})")
++        }
++        if (!p.allowsSecondScreen && SessionState.secondScreenMode !=
++            com.droiddeck.launcher.input.SecondScreenMode.NONE
++        ) {
++            SessionState.secondScreenMode = com.droiddeck.launcher.input.SecondScreenMode.NONE
++            GpuGuardLog.log("guard", "second screen off (profile ${p.id})")
++        }
++    }
++
++    /** The watchdog, when the profile or the settings ask for one. Null when nothing should watch. */
++    fun startWatchdog(context: Context, onAction: (GpuWatchdog.Action, String) -> Unit): GpuWatchdog? {
++        val app = context.applicationContext
++        if (!GpuSafetyPrefs.guardEnabled(app) || !GpuSafetyPrefs.liveWatchdog(app)) return null
++        val dog = GpuWatchdog(
++            context = app,
++            budgetMs = GpuSafetyPrefs.stallBudgetMs(app).toLong(),
++            thermalCeilingC = GpuSafetyPrefs.thermalCeilingC(app),
++            onAction = onAction,
++        )
++        synchronized(this) { watchdog = dog }
++        dog.start()
++        return dog
++    }
++
++    fun stopWatchdog() {
++        val dog = synchronized(this) { watchdog.also { watchdog = null } }
++        dog?.standDown()
++    }
++
++    /** The watchdog said something; the session decides what to do about it. */
++    fun raiseAlert(message: String) {
++        alert = message
++    }
++
++    fun clearAlert() {
++        alert = null
++    }
++
++    /** The session ended on its own: evidence that the device is behaving, one run at a time. */
++    fun noteSessionEnded(context: Context, endedNormally: Boolean) {
++        val app = context.applicationContext
++        stopWatchdog()
++        GpuGuardLog.closeSession(if (endedNormally) "clean" else "abnormal")
++        // An ending the guard forced keeps its notice on screen: the user has to be told why the
++        // session they were playing is gone. It is cleared when the next one starts.
++        if (!endedNormally) return
++        alert = null
++        val clean = GpuSafetyPrefs.cleanSessionsSinceFatal(app) + 1
++        GpuSafetyPrefs.setCleanSessionsSinceFatal(app, clean)
++        GpuGuardLog.log("latch", "clean session $clean of ${GpuSafetyPrefs.CLEAN_RUNS_TO_RELAX}")
++        if (clean >= GpuSafetyPrefs.CLEAN_RUNS_TO_RELAX && GpuSafetyPrefs.lockEngaged(app)) {
++            GpuSafetyPrefs.setLockEngaged(app, false)
++            GpuGuardLog.log("latch", "${GpuSafetyPrefs.CLEAN_RUNS_TO_RELAX} clean sessions in a row: " +
++                "the lock is lifted on its own")
++        }
++        refresh(app)
++    }
++
++    /** The guard stopped a session itself. That is evidence the other way, and it resets the count. */
++    fun noteGuardStop(context: Context, reason: String) {
++        val app = context.applicationContext
++        GpuSafetyPrefs.countGuardStop(app)
++        GpuSafetyPrefs.setCleanSessionsSinceFatal(app, 0)
++        alert = reason
++        sessionStopped = true
++        GpuGuardLog.log("guard", "session stopped by the guard: $reason")
++    }
++
++    /** The pre-flight probe's verdict, remembered for the page and the log. */
++    fun noteProbe(context: Context, result: Probe.Result) {
++        lastProbe = result
++        GpuSafetyPrefs.setLastProbe(context.applicationContext, result.ok, result.summary)
++        GpuGuardLog.log("probe", result.summary)
++    }
++
++    // ── Reporting ─────────────────────────────────────────────────────────────────────────────
++
++    /** English, for the device report and a bug report someone else has to read. */
++    fun report(context: Context): String {
++        val app = context.applicationContext
++        val p = GpuSafetyPrefs
++        val lines = mutableListOf<String>()
++        lines.add("GPU guard: ${if (p.guardEnabled(app)) "on" else "off"}, level $level, profile ${profile.id}")
++        lines.add("  boot reason (this boot): ${BootReason.read()}")
++        lines.add("  boots recorded as a crash: ${p.fatalBootCount(app)}")
++        val at = p.lastFatalBootAt(app)
++        if (at > 0L) lines.add("  last crash: ${stamp.format(Date(at))} (${p.lastFatalBootReason(app)})")
++        lines.add("  launch locked: ${p.lockEngaged(app)}")
++        lines.add("  clean sessions since the last crash: ${p.cleanSessionsSinceFatal(app)}")
++        lines.add("  sessions stopped by the guard: ${p.guardStops(app)}")
++        lines.add("  watchdog: ${p.liveWatchdog(app)} (frame budget ${p.stallBudgetMs(app)} ms, " +
++            "thermal ceiling ${if (p.thermalCeilingC(app) > 0) "${p.thermalCeilingC(app)} C" else "off"})")
++        lines.add("  pre-flight probe: ${p.preflightProbe(app)}")
++        val probeAt = p.lastProbeAt(app)
++        if (probeAt > 0L) lines.add("  last probe: ${stamp.format(Date(probeAt))} - " +
++            "${if (p.lastProbeOk(app)) "passed" else "FAILED"}: ${p.lastProbeSummary(app)}")
++        return lines.joinToString("\n")
++    }
++
++    private fun formatUptime(millis: Long): String {
++        val seconds = millis / 1000
++        val h = seconds / 3600
++        val m = (seconds % 3600) / 60
++        return if (h > 0) "${h}h${m}m" else "${m}m"
++    }
++}
+diff --git a/app/src/main/java/com/droiddeck/launcher/gpu/guard/GpuGuardLog.kt b/app/src/main/java/com/droiddeck/launcher/gpu/guard/GpuGuardLog.kt
+new file mode 100644
+index 0000000..e94165c
+--- /dev/null
++++ b/app/src/main/java/com/droiddeck/launcher/gpu/guard/GpuGuardLog.kt
+@@ -0,0 +1,106 @@
++/* SPDX-License-Identifier: GPL-3.0-only */
++package com.droiddeck.launcher.gpu.guard
++
++import android.util.Log
++import java.io.File
++import java.text.SimpleDateFormat
++import java.util.Date
++import java.util.Locale
++
++/**
++ * The guard's record: one append-only file in the app's own files directory that survives
++ * everything, and a copy inside the session folder while a session runs.
++ *
++ * It exists because the one thing a kernel panic takes with it is evidence. The app is not running
++ * when the GPU goes, so whatever it knew before that - the boot reason it started on, the profile
++ * it applied, the samples the watchdog was seeing in the seconds before - has to already be on
++ * disk. `Download/DroidDeck/<session>/gpu-guard.log` is what a bug report should be attached with.
++ *
++ * Every line also goes to logcat, so a run can be followed from a computer without pulling files.
++ */
++object GpuGuardLog {
++    private const val TAG = "GpuGuard"
++    private const val FILE = "gpu-guard.log"
++    /** The persistent copy is trimmed back to this, oldest lines first, so it cannot grow forever. */
++    private const val KEEP_BYTES = 96 * 1024
++
++    private val lock = Any()
++
++    @Volatile
++    private var persistent: File? = null
++
++    @Volatile
++    private var session: File? = null
++
++    private val stamp = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US)
++
++    /** Called once, from the app's start: where the persistent copy lives. */
++    fun bind(context: android.content.Context) {
++        synchronized(lock) {
++            persistent = File(context.applicationContext.filesDir, FILE)
++        }
++    }
++
++    /** A session started: its folder gets its own copy from here on. */
++    fun openSession(dir: File?, header: List<String> = emptyList()) {
++        synchronized(lock) {
++            session = dir?.let { File(it, FILE) }
++        }
++        if (dir == null) return
++        log("guard", "── session folder ${dir.name} ──")
++        header.forEach { log("guard", it) }
++    }
++
++    fun closeSession(reason: String) {
++        log("guard", "── session ended: $reason ──")
++        synchronized(lock) { session = null }
++    }
++
++    /** One line, timestamped, to the session copy (when there is one), the persistent copy and logcat. */
++    fun log(tag: String, message: String) {
++        val line = "${stamp.format(Date())} $tag: $message\n"
++        Log.i(TAG, "$tag: $message")
++        val targets = synchronized(lock) { listOfNotNull(session, persistent) }
++        for (file in targets) {
++            try {
++                file.parentFile?.mkdirs()
++                file.appendText(line)
++            } catch (e: Exception) {
++                // A log that cannot be written must never take the session with it.
++            }
++        }
++        trim()
++    }
++
++    /** The persistent copy's tail, newest last, for the settings page and the device report. */
++    fun read(context: android.content.Context, lines: Int = 120): String {
++        val file = File(context.applicationContext.filesDir, FILE)
++        val text = try {
++            if (file.isFile) file.readText() else ""
++        } catch (e: Exception) {
++            ""
++        }
++        if (text.isEmpty()) return ""
++        val all = text.split('\n')
++        val take = lines.coerceIn(1, 2000)
++        return all.drop((all.size - take).coerceAtLeast(0)).joinToString("\n").trim()
++    }
++
++    private fun trim() {
++        val file = synchronized(lock) { persistent } ?: return
++        try {
++            if (!file.isFile || file.length() <= KEEP_BYTES) return
++            val bytes = file.readBytes()
++            val from = (bytes.size - KEEP_BYTES).coerceAtLeast(0)
++            var start = from
++            // Cut on a line boundary so the file never opens with half a line.
++            while (start < bytes.size && bytes[start].toInt() != '\n'.code) start++
++            if (start >= bytes.size) return
++            val tmp = File(file.path + ".tmp")
++            tmp.writeBytes(bytes.copyOfRange(start + 1, bytes.size))
++            if (file.delete()) tmp.renameTo(file) else tmp.delete()
++        } catch (e: Exception) {
++            // Trimming is housekeeping; failing it only means the file is a little longer.
++        }
++    }
++}
+diff --git a/app/src/main/java/com/droiddeck/launcher/gpu/guard/GpuSafetyPrefs.kt b/app/src/main/java/com/droiddeck/launcher/gpu/guard/GpuSafetyPrefs.kt
+new file mode 100644
+index 0000000..25b6c5b
+--- /dev/null
++++ b/app/src/main/java/com/droiddeck/launcher/gpu/guard/GpuSafetyPrefs.kt
+@@ -0,0 +1,173 @@
++/* SPDX-License-Identifier: GPL-3.0-only */
++package com.droiddeck.launcher.gpu.guard
++
++import android.content.Context
++import com.droiddeck.launcher.core.DeviceSupport
++
++/**
++ * The GPU guard's own settings, in their own preferences file.
++ *
++ * Defaults are chosen for the device this build exists for: on a Mali-G615 every switch below is
++ * on, because that is the device where a Steam session ended in a kernel panic. On an Adreno the
++ * guard is off until someone turns it on - it costs a little and protects against something that
++ * has not been seen there.
++ *
++ * The history fields ([fatalBootCount], [cleanSessionsSinceFatal], [lockEngaged]) are not
++ * preferences in the usual sense: they are the latch's memory, and they are what stops a phone
++ * from walking back into the same crash over and over.
++ */
++object GpuSafetyPrefs {
++    private const val FILE = "gpu_safety"
++
++    /** No change to a session; the guard only watches and reports. */
++    const val PROFILE_OFF = "off"
++
++    /** The everyday setting for an experimental GPU: smaller output, a frame cap, nothing extra. */
++    const val PROFILE_SAFE = "safe"
++
++    /** What runs after the device has crashed once: the smallest session that still starts Steam. */
++    const val PROFILE_STRICT = "strict"
++
++    /** How many clean session ends in a row relax a lock the guard engaged by itself. */
++    const val CLEAN_RUNS_TO_RELAX = 3
++
++    private fun prefs(context: Context) =
++        context.applicationContext.getSharedPreferences(FILE, Context.MODE_PRIVATE)
++
++    /** The guard as a whole. Off, it does not watch, does not probe and does not block anything. */
++    fun guardEnabled(context: Context): Boolean =
++        prefs(context).getBoolean("guardEnabled", DeviceSupport.mali())
++
++    fun setGuardEnabled(context: Context, on: Boolean) =
++        prefs(context).edit().putBoolean("guardEnabled", on).apply()
++
++    /** Whether a boot recorded as a crash blocks the next launch until the user re-arms. */
++    fun lockAfterFatalBoot(context: Context): Boolean =
++        prefs(context).getBoolean("lockAfterFatalBoot", true)
++
++    fun setLockAfterFatalBoot(context: Context, on: Boolean) =
++        prefs(context).edit().putBoolean("lockAfterFatalBoot", on).apply()
++
++    /** A bounded GPU smoke test inside the runtime before gamescope and Steam are started. */
++    fun preflightProbe(context: Context): Boolean =
++        prefs(context).getBoolean("preflightProbe", true)
++
++    fun setPreflightProbe(context: Context, on: Boolean) =
++        prefs(context).edit().putBoolean("preflightProbe", on).apply()
++
++    /** The live watchdog while a session runs: frames, wedged processes, temperature. */
++    fun liveWatchdog(context: Context): Boolean =
++        prefs(context).getBoolean("liveWatchdog", true)
++
++    fun setLiveWatchdog(context: Context, on: Boolean) =
++        prefs(context).edit().putBoolean("liveWatchdog", on).apply()
++
++    /** How long the session may go without presenting a frame before the guard acts, in ms. */
++    fun stallBudgetMs(context: Context): Int =
++        prefs(context).getInt("stallBudgetMs", 5000).coerceIn(1000, 60_000)
++
++    fun setStallBudgetMs(context: Context, ms: Int) =
++        prefs(context).edit().putInt("stallBudgetMs", ms.coerceIn(1000, 60_000)).apply()
++
++    /**
++     * The battery temperature the guard acts on, in °C; 0 turns the thermal watch off. 44 is where
++     * a phone in a hand is uncomfortably hot and well inside the skin-temperature limits the
++     * platform itself enforces - the guard is meant to act before those, not after them.
++     */
++    fun thermalCeilingC(context: Context): Int =
++        prefs(context).getInt("thermalCeilingC", 44).coerceIn(0, 60)
++
++    fun setThermalCeilingC(context: Context, celsius: Int) =
++        prefs(context).edit().putInt("thermalCeilingC", celsius.coerceIn(0, 60)).apply()
++
++    /** The profile the user chose. What actually runs is [GpuGuard.profile], which the lock raises. */
++    fun chosenProfile(context: Context): String =
++        prefs(context).getString("profile", if (DeviceSupport.mali()) PROFILE_SAFE else PROFILE_OFF)
++            ?: PROFILE_OFF
++
++    fun setChosenProfile(context: Context, id: String) =
++        prefs(context).edit().putString("profile", id).apply()
++
++    /** Draw the Steam client's interface on the CPU (llvmpipe) instead of through the Mali Vulkan
++     *  stack. Slow and ugly, and the reason it exists is diagnosis: if the fault goes away with it,
++     *  it is in the Vulkan path and not in the client. */
++    fun softwareUi(context: Context): Boolean = prefs(context).getBoolean("softwareUi", false)
++
++    fun setSoftwareUi(context: Context, on: Boolean) =
++        prefs(context).edit().putBoolean("softwareUi", on).apply()
++
++    // ── The latch's memory ───────────────────────────────────────────────────────────────────
++
++    /** Boots in a row (or since the start) that Android recorded as a crash. */
++    fun fatalBootCount(context: Context): Int = prefs(context).getInt("fatalBootCount", 0)
++
++    fun setFatalBootCount(context: Context, count: Int) =
++        prefs(context).edit().putInt("fatalBootCount", count.coerceAtLeast(0)).apply()
++
++    fun lastFatalBootAt(context: Context): Long = prefs(context).getLong("lastFatalBootAt", 0L)
++
++    fun setLastFatalBootAt(context: Context, at: Long) =
++        prefs(context).edit().putLong("lastFatalBootAt", at).apply()
++
++    fun lastFatalBootReason(context: Context): String =
++        prefs(context).getString("lastFatalBootReason", "") ?: ""
++
++    fun setLastFatalBootReason(context: Context, reason: String) =
++        prefs(context).edit().putString("lastFatalBootReason", reason).apply()
++
++    /** Session ends the guard forced, ever. Evidence for "this is not a one-off". */
++    fun guardStops(context: Context): Int = prefs(context).getInt("guardStops", 0)
++
++    private fun setGuardStops(context: Context, count: Int) =
++        prefs(context).edit().putInt("guardStops", count.coerceAtLeast(0)).apply()
++
++    fun countGuardStop(context: Context) = setGuardStops(context, guardStops(context) + 1)
++
++    /** Sessions that ended on their own (a clean quit) since the last crash. */
++    fun cleanSessionsSinceFatal(context: Context): Int =
++        prefs(context).getInt("cleanSessionsSinceFatal", 0)
++
++    fun setCleanSessionsSinceFatal(context: Context, count: Int) =
++        prefs(context).edit().putInt("cleanSessionsSinceFatal", count.coerceAtLeast(0)).apply()
++
++    /** The lock: a launch is refused until the user re-arms, or until [CLEAN_RUNS_TO_RELAX] clean runs. */
++    fun lockEngaged(context: Context): Boolean = prefs(context).getBoolean("lockEngaged", false)
++
++    fun setLockEngaged(context: Context, on: Boolean) =
++        prefs(context).edit().putBoolean("lockEngaged", on).apply()
++
++    /** The last pre-flight probe, for the page and the device report. */
++    fun lastProbeAt(context: Context): Long = prefs(context).getLong("lastProbeAt", 0L)
++
++    fun lastProbeOk(context: Context): Boolean = prefs(context).getBoolean("lastProbeOk", false)
++
++    fun lastProbeSummary(context: Context): String =
++        prefs(context).getString("lastProbeSummary", "") ?: ""
++
++    fun setLastProbe(context: Context, ok: Boolean, summary: String) =
++        prefs(context).edit()
++            .putLong("lastProbeAt", System.currentTimeMillis())
++            .putBoolean("lastProbeOk", ok)
++            .putString("lastProbeSummary", summary.take(2000))
++            .apply()
++
++    /**
++     * `elapsedRealtime()` at the app's last start. It only ever rises within a boot, so a value
++     * behind the one on file means the phone has rebooted since - which is how the guard counts one
++     * crash once instead of once per app start. Kept out of [reset]: it is not evidence, it is a
++     * clock, and clearing it would make the next start look like a new boot.
++     */
++    fun lastSeenUptime(context: Context): Long = prefs(context).getLong("lastSeenUptime", -1L)
++
++    fun setLastSeenUptime(context: Context, uptimeMillis: Long) =
++        prefs(context).edit().putLong("lastSeenUptime", uptimeMillis).apply()
++
++    /** Clears the crash history and the lock. The counters are evidence; this throws it away. */
++    fun reset(context: Context) = prefs(context).edit()
++        .putInt("fatalBootCount", 0)
++        .putLong("lastFatalBootAt", 0L)
++        .putString("lastFatalBootReason", "")
++        .putInt("cleanSessionsSinceFatal", 0)
++        .putBoolean("lockEngaged", false)
++        .apply()
++}
+diff --git a/app/src/main/java/com/droiddeck/launcher/gpu/guard/GpuWatchdog.kt b/app/src/main/java/com/droiddeck/launcher/gpu/guard/GpuWatchdog.kt
+new file mode 100644
+index 0000000..1a5b46e
+--- /dev/null
++++ b/app/src/main/java/com/droiddeck/launcher/gpu/guard/GpuWatchdog.kt
+@@ -0,0 +1,297 @@
++/* SPDX-License-Identifier: GPL-3.0-only */
++package com.droiddeck.launcher.gpu.guard
++
++import android.content.Context
++import android.content.Intent
++import android.content.IntentFilter
++import android.os.BatteryManager
++import android.os.Build
++import android.os.PowerManager
++import android.os.SystemClock
++import com.droiddeck.launcher.session.SessionState
++import com.droiddeck.launcher.wayland.WaylandCompositor
++import java.io.File
++
++/**
++ * Watches a running session for the two things that come before a GPU that stops answering.
++ *
++ * An APK cannot make the Mali kernel module more robust. What it can do is notice that the session
++ * has stopped moving and take it down itself, in the app's own time, rather than leaving the
++ * kernel to discover the same thing three seconds later on a path that ends in a panic.
++ *
++ * Two independent signals, because either alone would cry wolf:
++ *
++ * - **Frames.** The compositor records the interval between presented frames
++ *   ([WaylandCompositor.recentFrameIntervalMs]). gamescope presents continuously, so a gap of
++ *   many seconds is not "a heavy scene", it is a session that has stopped.
++ * - **Wedged processes.** A GPU that has stopped completing jobs leaves the threads waiting on it
++ *   in uninterruptible sleep (`D` in /proc). A momentary `D` is normal I/O; several of our own
++ *   processes sitting in it across consecutive samples is a fence that is never going to be
++ *   signalled.
++ *
++ * Plus temperature, which is not a fault but is the one cause the app can do something about
++ * before it becomes one.
++ *
++ * It acts once. A guard that keeps escalating after the session is already coming down would be
++ * noise on top of the teardown.
++ */
++class GpuWatchdog(
++    private val context: Context,
++    private val budgetMs: Long,
++    private val thermalCeilingC: Int,
++    private val onAction: (Action, String) -> Unit,
++) {
++    enum class Action { WARN, ABORT }
++
++    private val TAG = "GpuWatchdog"
++    private val lock = Any()
++
++    @Volatile
++    private var running = false
++
++    private var thread: Thread? = null
++
++    /** Samples in a row with no frame: one is a warning, two is a stop. */
++    private var stallSamples = 0
++
++    /** Samples in a row with our processes wedged in uninterruptible sleep. */
++    private var wedgedSamples = 0
++
++    private var thermalTripped = false
++    private var warned = false
++    private var acted = false
++
++    private var lastSampleAt = 0L
++
++    /** The newest readings, for the HUD line and the log. */
++    @Volatile
++    var lastFrameIntervalMs: Long = -1
++        private set
++
++    @Volatile
++    var lastWedged: Int = 0
++        private set
++
++    @Volatile
++    var lastThermalC: Int = Int.MIN_VALUE
++        private set
++
++    private val power by lazy { context.getSystemService(Context.POWER_SERVICE) as? PowerManager }
++
++    fun start() {
++        synchronized(lock) {
++            if (running) return
++            running = true
++            acted = false
++            warned = false
++            stallSamples = 0
++            wedgedSamples = 0
++            thermalTripped = false
++            lastSampleAt = 0L
++        }
++        thread = Thread({
++            GpuGuardLog.log(TAG, "watchdog on: frame budget ${budgetMs}ms, thermal ceiling " +
++                (if (thermalCeilingC > 0) "${thermalCeilingC}C" else "off"))
++            while (true) {
++                synchronized(lock) { if (!running) break }
++                try {
++                    Thread.sleep(SAMPLE_MS)
++                } catch (e: InterruptedException) {
++                    break
++                }
++                synchronized(lock) { if (!running) break }
++                try {
++                    sample()
++                } catch (t: Throwable) {
++                    // A watchdog that dies on an unexpected exception is worse than none: it
++                    // leaves the session running with nothing watching it, silently.
++                    GpuGuardLog.log(TAG, "sample failed: $t")
++                }
++            }
++            GpuGuardLog.log(TAG, "watchdog off")
++        }, "gpu-watchdog").apply { isDaemon = true; start() }
++    }
++
++    fun stop() {
++        synchronized(lock) {
++            if (!running) return
++            running = false
++        }
++        thread?.interrupt()
++        thread = null
++    }
++
++    /** The session is already coming down: stop watching, and stop reporting. */
++    fun standDown() {
++        synchronized(lock) { running = false; acted = true }
++        thread?.interrupt()
++        thread = null
++    }
++
++    private fun sample() {
++        val interactive = power?.isInteractive ?: true
++        val presenting = SessionState.firstFrameSeen && !SessionState.suspended
++
++        // A screen that is off presents nothing and suspends the session's GPU work by design.
++        // Treating that as a stall would stop every session the moment the phone sleeps.
++        if (!interactive) {
++            stallSamples = 0
++            wedgedSamples = 0
++            return
++        }
++
++        val frame = WaylandCompositor.recentFrameIntervalMs()
++        lastFrameIntervalMs = frame
++        val wedged = if (presenting) uninterruptibleCount() else 0
++        lastWedged = wedged
++        val thermal = thermalCelsius()
++        lastThermalC = thermal
++
++        // A periodic reading, so a crash has a run-up recorded and not just a last word.
++        val now = SystemClock.elapsedRealtime()
++        if (lastSampleAt == 0L || now - lastSampleAt >= TRACE_MS) {
++            lastSampleAt = now
++            GpuGuardLog.log(TAG, "sample: frames ${frame}ms, wedged $wedged, " +
++                (if (thermal == Int.MIN_VALUE) "thermal unknown" else "battery ${thermal}C"))
++        }
++
++        if (acted) return
++
++        if (presenting && frame > budgetMs) {
++            stallSamples++
++            if (stallSamples == 1) {
++                GpuGuardLog.log(TAG, "no frame for ${frame}ms (budget ${budgetMs}ms)")
++                warn("no frame for ${frame / 1000}s")
++            } else if (stallSamples >= 2) {
++                act(Action.ABORT, "the session presented no frame for ${frame / 1000}s")
++                return
++            }
++        } else {
++            stallSamples = 0
++        }
++
++        if (presenting && wedged >= WEDGED_COUNT) {
++            wedgedSamples++
++            if (wedgedSamples == WEDGED_SAMPLES) {
++                act(Action.ABORT, "$wedged processes of this app stuck in uninterruptible sleep " +
++                    "for ${(WEDGED_SAMPLES * SAMPLE_MS) / 1000}s - the GPU has stopped completing work")
++                return
++            }
++        } else {
++            wedgedSamples = 0
++        }
++
++        if (thermalCeilingC > 0 && thermal != Int.MIN_VALUE && thermal >= thermalCeilingC) {
++            if (thermalTripped) {
++                act(Action.ABORT, "battery at ${thermal}C, at or above the ${thermalCeilingC}C ceiling")
++                return
++            }
++            thermalTripped = true
++            GpuGuardLog.log(TAG, "battery at ${thermal}C (ceiling ${thermalCeilingC}C)")
++            warn("the device is at ${thermal}C")
++        } else if (thermalCeilingC > 0 && thermal != Int.MIN_VALUE && thermal < thermalCeilingC - HYSTERESIS_C) {
++            thermalTripped = false
++        }
++    }
++
++    private fun warn(message: String) {
++        if (warned) return
++        warned = true
++        onAction(Action.WARN, message)
++    }
++
++    private fun act(action: Action, message: String) {
++        synchronized(lock) {
++            if (acted) return
++            acted = true
++        }
++        GpuGuardLog.log(TAG, "${action.name}: $message")
++        onAction(action, message)
++    }
++
++    /**
++     * How many processes of this app's own uid are in uninterruptible sleep right now. A GPU fence
++     * that will never be signalled parks every thread waiting on it in `D`; ordinary I/O parks one
++     * for a moment. Only processes of our own uid are counted, so a busy phone never trips this.
++     */
++    private fun uninterruptibleCount(): Int {
++        val uid = android.os.Process.myUid()
++        var count = 0
++        val entries = File("/proc").listFiles() ?: return 0
++        for (entry in entries) {
++            val pid = entry.name.toIntOrNull() ?: continue
++            if (pid <= 1) continue
++            val stat = try {
++                File(entry, "stat").readText()
++            } catch (e: Exception) {
++                continue
++            }
++            // "pid (comm) S ppid ...": comm may hold spaces and parentheses, the last ") " ends it.
++            val after = stat.substringAfterLast(") ", "")
++            if (after.isEmpty() || after[0] != 'D') continue
++            if (uidOf(pid) == uid) count++
++        }
++        return count
++    }
++
++    private fun uidOf(pid: Int): Int = try {
++        File("/proc/$pid/status").useLines { lines ->
++            lines.firstOrNull { it.startsWith("Uid:") }
++                ?.substringAfter("Uid:")?.trim()?.split(Regex("\\s+"))?.firstOrNull()?.toIntOrNull() ?: -1
++        }
++    } catch (e: Exception) {
++        -1
++    }
++
++    /**
++     * The battery's temperature in °C. It is the one thermal number an app may read on a stock
++     * phone: the thermal zones under /sys/class/thermal are labelled for the platform, not for us,
++     * and are refused on most devices. Tried first anyway, because where it is readable it is the
++     * temperature that is actually rising.
++     */
++    private fun thermalCelsius(): Int {
++        zoneCelsius()?.let { return it }
++        return try {
++            val intent = context.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
++            val tenths = intent?.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, Int.MIN_VALUE) ?: Int.MIN_VALUE
++            if (tenths == Int.MIN_VALUE) Int.MIN_VALUE else tenths / 10
++        } catch (e: Exception) {
++            Int.MIN_VALUE
++        }
++    }
++
++    private fun zoneCelsius(): Int? {
++        if (Build.VERSION.SDK_INT < 26) return null
++        val zones = File("/sys/class/thermal").listFiles() ?: return null
++        var hottest: Int? = null
++        for (zone in zones) {
++            val raw = try {
++                File(zone, "temp").readText().trim().toLongOrNull()
++            } catch (e: Exception) {
++                null
++            } ?: continue
++            // Some kernels report millidegrees, some degrees; nothing a phone reaches is below 1 °C.
++            val celsius = if (raw > 1000) (raw / 1000).toInt() else raw.toInt()
++            if (celsius in 1..140 && (hottest == null || celsius > hottest)) hottest = celsius
++        }
++        return hottest
++    }
++
++    companion object {
++        /** Two samples a second: fast enough to act inside a kernel's own fence timeout, cheap
++         *  enough to run for hours (one /proc read per process per sample). */
++        const val SAMPLE_MS = 500L
++
++        /** A periodic line in the log, so a crash has a run-up and not just a last word. */
++        const val TRACE_MS = 4000L
++
++        /** Processes in uninterruptible sleep that count as "the GPU has stopped". */
++        const val WEDGED_COUNT = 3
++
++        /** Samples in a row that has to hold: ~1.5 s, so ordinary I/O never trips it. */
++        const val WEDGED_SAMPLES = 3
++
++        /** How far the temperature has to come back before the thermal trip is cleared. */
++        const val HYSTERESIS_C = 3
++    }
++}
+diff --git a/app/src/main/java/com/droiddeck/launcher/gpu/guard/Probe.kt b/app/src/main/java/com/droiddeck/launcher/gpu/guard/Probe.kt
+new file mode 100644
+index 0000000..3c68cac
+--- /dev/null
++++ b/app/src/main/java/com/droiddeck/launcher/gpu/guard/Probe.kt
+@@ -0,0 +1,269 @@
++/* SPDX-License-Identifier: GPL-3.0-only */
++package com.droiddeck.launcher.gpu.guard
++
++import android.content.Context
++import android.os.Environment
++import com.droiddeck.launcher.core.FileUtils
++import com.droiddeck.launcher.core.HostProcess
++import com.droiddeck.launcher.gpu.LinuxVulkanDriver
++import com.droiddeck.launcher.runtime.LinuxRuntime
++import com.droiddeck.launcher.session.SessionPrefs
++import java.io.File
++import java.util.concurrent.CountDownLatch
++import java.util.concurrent.TimeUnit
++
++/**
++ * The pre-flight GPU probe: one small, logged, time-boxed piece of work pushed through the driver
++ * before gamescope and the Steam client are started.
++ *
++ * The point is not to prove the GPU works - `vulkaninfo` already says that much - it is to refuse
++ * to hand the experimental PanVK path a 700 MB client before it has finished one 4 KB fill. The
++ * fault that took this device down was a fence that was never signalled; a fence that is never
++ * signalled for a 4 KB buffer is the same failure, found in two seconds, with the phone still up.
++ *
++ * It is a proot invocation like any other, and the app - not the guest - owns the clock: the guest
++ * script has its own `timeout`s, and if the process is still alive when the budget runs out the app
++ * asks proot to wind its tree down and then kills it. A probe that hangs is itself an answer, and
++ * it is recorded as one.
++ */
++object Probe {
++    /** The script inside the runtime, staged fresh from the apk at every session start. */
++    private const val SCRIPT = "/usr/local/bin/droiddeck-gpu-probe"
++
++    /** Its exit code for "the GPU did not finish what was queued". */
++    private const val EXIT_FAILED = 78
++
++    /** `timeout`'s, and a SIGKILL's: the guest's own clock ran out. */
++    private const val EXIT_TIMEOUT = 124
++    private const val EXIT_KILLED = 137
++
++    class Result(
++        /** Whether a session may start. */
++        val ok: Boolean,
++        /** One line for the log, the page and the device report. */
++        val summary: String,
++        /** Everything the guest said, for the session's folder. */
++        val lines: List<String>,
++        /** The verdict, in the script's own words, when there is one. */
++        val verdict: String?,
++    ) {
++        /** The GPU was asked and did not answer - the one result that is evidence, not absence of it. */
++        val stalled: Boolean
++            get() = !ok && verdict != null && verdict.startsWith("DD_GPU_PROBE_SUBMIT_TIMEOUT")
++
++        val skipped: Boolean
++            get() = verdict != null && verdict.startsWith("DD_GPU_PROBE_SKIPPED")
++
++        companion object {
++            fun of(exit: Int, lines: List<String>): Result {
++                val verdict: String? = lines.lastOrNull { it.startsWith("DD_GPU_PROBE_") }
++                if (verdict == null) {
++                    return Result(false, "the probe produced no verdict (exit $exit)", lines, null)
++                }
++                val body = verdict.substringAfter(':').trim().ifEmpty { verdict }
++                val ok = verdict.startsWith("DD_GPU_PROBE_OK") || verdict.startsWith("DD_GPU_PROBE_SKIPPED")
++                return Result(ok, body, lines, verdict)
++            }
++        }
++    }
++
++    /**
++     * Runs the probe and waits. [timeoutMs] is a wall clock on the whole thing, including proot's
++     * own start; the guest's internal budgets are shorter, so a normal run ends well inside it.
++     *
++     * Must not be called on the main thread: it waits for a process.
++     */
++    /**
++     * A file that turns the probe off without the app: `droiddeck-no-gpu-probe` in the app's own
++     * external files directory, the place the session's other switch file lives. Every other
++     * escape from this guard is a switch inside the app, and a probe that has gone wrong is
++     * exactly the case where someone may not be able to get to them.
++     */
++    private fun skipFile(context: Context): File? =
++        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R)
++            context.getExternalFilesDir(null)?.let { File(it, "droiddeck-no-gpu-probe") }
++        else null
++
++    fun run(context: Context, profile: SafeProfile, timeoutMs: Long = 60_000L): Result {
++        val app = context.applicationContext
++        skipFile(app)?.takeIf { it.isFile }?.let {
++            val result = Result(true, "the probe is switched off by ${it.name}",
++                listOf("DD_GPU_PROBE_SKIPPED: ${it.name} is present"), "DD_GPU_PROBE_SKIPPED: switched off")
++            GpuGuard.noteProbe(app, result)
++            GpuGuardLog.log("probe", "skipped: ${it.name} is present")
++            return result
++        }
++        val root = LinuxRuntime.rootDir(app)
++        val script = File(root, SCRIPT.substring(1))
++        if (!script.isFile) {
++            return Result(true, "the probe is not in this runtime; skipped", listOf(
++                "DD_GPU_PROBE_SKIPPED: $SCRIPT is not present in the runtime (staged at session start)"),
++                "DD_GPU_PROBE_SKIPPED: script missing").also { GpuGuard.noteProbe(app, it) }
++        }
++
++        val runtimeDir = File(app.filesDir, ".wayland-rt").apply { mkdirs() }
++        val guest = ArrayList<String>()
++        guest.add("/usr/bin/env")
++        guest.add("-i")
++        guest.add("HOME=/root")
++        guest.add("USER=root")
++        guest.add("PATH=/usr/local/bin:/usr/bin:/bin")
++        guest.add("TERM=xterm-256color")
++        guest.add("LANG=C.UTF-8")
++        guest.add("TZ=" + java.util.TimeZone.getDefault().id)
++        guest.add("XDG_RUNTIME_DIR=" + LinuxRuntime.GUEST_RUNTIME_DIR)
++        // The driver the session would draw with, so the probe is not testing a different stack.
++        // Named twice on purpose: BL_VK_DRIVER is what the session script reads (and what the
++        // probe's python stage dlopens), VK_DRIVER_FILES is what the Vulkan loader `vulkaninfo`
++        // goes through reads. Setting only the first would leave enumeration pointed at the
++        // runtime's own driver, and the probe would fail over a name it never asked about.
++        LinuxVulkanDriver.resolveIcdPath(app, SessionPrefs.linuxDriver(app))?.let { icd ->
++            guest.add(LinuxVulkanDriver.ENV + "=" + icd)
++            guest.add("VK_DRIVER_FILES=" + icd)
++        }
++        if (guest.none { it.startsWith(LinuxVulkanDriver.ENV + "=") }) {
++            LinuxRuntime.vulkanIcd(app)?.let {
++                guest.add("VK_ICD_FILENAMES=" + it.path)
++                guest.add("VK_DRIVER_FILES=" + it.path)
++            }
++        }
++        guest.add("PANVK_KBASE_DRI3=0")
++        guest.add("MESA_LOADER_DRIVER_OVERRIDE=zink")
++        guest.add("GALLIUM_DRIVER=zink")
++        guest.add("LIBGL_KOPPER_DRI2=true")
++        guest.addAll(profile.envLines())
++        // The guest's own clocks, well inside the app's, so the app is never the first to give up.
++        guest.add("DD_GPU_PROBE_ENUM_SECONDS=20")
++        guest.add("DD_GPU_PROBE_SUBMIT_SECONDS=15")
++        guest.add(SCRIPT)
++        guest.add(profile.id)
++
++        val command = LinuxRuntime.command(
++            app, null, runtimeDir, Environment.getExternalStorageDirectory(), guest,
++        )
++        val hostEnv = ArrayList<String>()
++        hostEnv.add("PROOT_LOADER=" + LinuxRuntime.prootLoader(app).path)
++        hostEnv.add("PROOT_TMP_DIR=" + app.cacheDir.path)
++        val prootLibs = LinuxRuntime.prootLibraryPath(app)
++        if (prootLibs.isNotEmpty()) hostEnv.add("LD_LIBRARY_PATH=$prootLibs")
++
++        val lines = java.util.Collections.synchronizedList(ArrayList<String>())
++        val done = CountDownLatch(1)
++        var status: Int? = null
++        var pid = -1
++        try {
++            pid = HostProcess.start(
++                command.joinToString(" ") { it.replace("\\", "\\\\").replace(" ", "\\ ") },
++                hostEnv.toTypedArray(), root,
++                { value -> status = value; done.countDown() },
++                { line -> lines.add(line) },
++            )
++        } catch (e: Exception) {
++            val result = Result(true, "the probe could not be started: ${e.message}", lines,
++                "DD_GPU_PROBE_SKIPPED: could not be started")
++            GpuGuard.noteProbe(app, result)
++            return result
++        }
++        if (pid <= 1) {
++            val result = Result(true, "the probe process could not be started", lines,
++                "DD_GPU_PROBE_SKIPPED: process could not be started")
++            GpuGuard.noteProbe(app, result)
++            return result
++        }
++
++        val finished = try {
++            done.await(timeoutMs, TimeUnit.MILLISECONDS)
++        } catch (e: InterruptedException) {
++            false
++        }
++        if (!finished) {
++            GpuGuardLog.log("probe", "the probe did not finish in ${timeoutMs / 1000}s; taking it down")
++            killTree(pid)
++            runCatching { done.await(5, TimeUnit.SECONDS) }
++            val result = Result(false,
++                "the GPU did not answer the probe in ${timeoutMs / 1000}s (the process was still alive when the budget ran out)",
++                lines + "DD_GPU_PROBE_SUBMIT_TIMEOUT: the probe process was still alive after ${timeoutMs / 1000}s",
++                "DD_GPU_PROBE_SUBMIT_TIMEOUT: no answer in ${timeoutMs / 1000}s")
++            GpuGuard.noteProbe(app, result)
++            return result
++        }
++        killTree(pid)
++
++        val exit = status ?: -1
++        val result = when {
++            exit == EXIT_TIMEOUT || exit == EXIT_KILLED -> Result(false,
++                "the probe's own clock ran out (exit $exit)",
++                lines + "DD_GPU_PROBE_SUBMIT_TIMEOUT: exit $exit",
++                "DD_GPU_PROBE_SUBMIT_TIMEOUT: exit $exit")
++            exit == 0 || exit == EXIT_FAILED -> Result.of(exit, ArrayList(lines))
++            else -> Result(true, "the probe exited $exit; treated as a skip", lines,
++                "DD_GPU_PROBE_SKIPPED: exit $exit")
++        }
++        GpuGuard.noteProbe(app, result)
++        return result
++    }
++
++    /**
++     * proot's `--kill-on-exit` only runs if proot gets to run it, and SIGKILL never lets it. So:
++     * SIGTERM to proot, which takes its tracees with it, then SIGKILL to whatever is left of the
++     * tree a moment later. Nothing here touches a process that is not under [rootPid].
++     */
++    private fun killTree(rootPid: Int) {
++        signal(rootPid, 15)
++        try {
++            Thread.sleep(1200)
++        } catch (e: InterruptedException) {
++            return
++        }
++        for (pid in descendants(rootPid).sortedDescending()) signal(pid, 9)
++        signal(rootPid, 9)
++    }
++
++    private fun descendants(root: Int): Set<Int> {
++        val parent = HashMap<Int, Int>()
++        File("/proc").listFiles()?.forEach { entry ->
++            val pid = entry.name.toIntOrNull() ?: return@forEach
++            val stat = try {
++                File(entry, "stat").readText()
++            } catch (e: Exception) {
++                return@forEach
++            }
++            stat.substringAfterLast(") ").split(' ').getOrNull(1)?.toIntOrNull()?.let { parent[pid] = it }
++        }
++        val out = HashSet<Int>()
++        out.add(root)
++        var grew = true
++        while (grew) {
++            grew = false
++            for ((pid, ppid) in parent) if (ppid in out && out.add(pid)) grew = true
++        }
++        out.remove(root)
++        return out
++    }
++
++    /** SIGTERM/SIGKILL by pid; `android.os.Process.sendSignal` is hidden, `killProcess` is SIGKILL. */
++    private fun signal(pid: Int, which: Int) {
++        if (pid <= 1) return
++        try {
++            Class.forName("android.os.Process")
++                .getMethod("sendSignal", Int::class.javaPrimitiveType, Int::class.javaPrimitiveType)
++                .invoke(null, pid, which)
++        } catch (e: Exception) {
++            try {
++                android.os.Process.killProcess(pid)
++            } catch (ignored: Exception) {
++            }
++        }
++    }
++
++    /** The probe's own output, into the session folder, so a bug report carries it. */
++    fun write(dir: File?, result: Result) {
++        val file = dir?.let { File(it, "gpu-probe.log") } ?: return
++        try {
++            file.parentFile?.mkdirs()
++            FileUtils.writeString(file, result.lines.joinToString("\n") + "\n")
++        } catch (e: Exception) {
++            GpuGuardLog.log("probe", "the probe log could not be written: $e")
++        }
++    }
++}
+diff --git a/app/src/main/java/com/droiddeck/launcher/gpu/guard/SafeProfile.kt b/app/src/main/java/com/droiddeck/launcher/gpu/guard/SafeProfile.kt
+new file mode 100644
+index 0000000..95b68cf
+--- /dev/null
++++ b/app/src/main/java/com/droiddeck/launcher/gpu/guard/SafeProfile.kt
+@@ -0,0 +1,116 @@
++/* SPDX-License-Identifier: GPL-3.0-only */
++package com.droiddeck.launcher.gpu.guard
++
++/**
++ * How far the guard is allowed to change a session to keep the GPU out of trouble.
++ *
++ * None of this fixes the Mali kernel module - nothing in an APK can, and pretending otherwise
++ * would be the dangerous thing here. What it does is shrink everything that pushes the experimental
++ * PanVK-kbase path harder than it has ever been proven to go: fewer pixels leaves fewer and
++ * smaller allocations for a driver to get wrong, a frame cap leaves the GPU idle half of every
++ * second instead of chasing the panel, and turning off HDR, frame generation, the upscaler and the
++ * realtime queues removes four separate paths that each submit work the driver has never been
++ * validated on.
++ *
++ * [STRICT] additionally moves the Steam client's own interface off the GPU entirely (llvmpipe
++ * instead of Zink). That is slow, and it is meant to be diagnostic: a session that survives on
++ * [STRICT] but dies on [SAFE] is a session whose fault is in the Vulkan path.
++ */
++enum class SafeProfile(
++    val id: String,
++    /** Most pixels gamescope may be asked for, long side times short side; 0 = whatever was set. */
++    val maxPixels: Int,
++    /** Highest frame cap allowed; 0 = no cap. A session with no cap keeps the cap given here. */
++    val maxFps: Int,
++    /** HDR10 output: a 10-bit swapchain and its colour-management path. */
++    val allowsHdr: Boolean,
++    /** LSFG / Win-FG: extra Vulkan work in the compositor on top of the session's. */
++    val allowsFrameGen: Boolean,
++    /** The compositor's upscaler and sharpening passes. */
++    val allowsUpscaling: Boolean,
++    /** CAS, fake-HDR, debanding and the colour grade. */
++    val allowsScreenEffects: Boolean,
++    /** Holding the GPU at its top clock (GpuClockPin); on Mali there is no KGSL to pin anyway. */
++    val allowsGpuClockPin: Boolean,
++    /** The performance overlay, which polls GPU sysfs from inside the session. */
++    val allowsMangoapp: Boolean,
++    /** gamescope's realtime-priority Vulkan queues. */
++    val allowsRealtimeQueues: Boolean,
++    /** Presenting the session on a second display as well. */
++    val allowsSecondScreen: Boolean,
++    /** Draw the client's interface on the CPU: `GALLIUM_DRIVER=llvmpipe` instead of Zink. */
++    val softwareUi: Boolean,
++    /** Stop Mesa keeping a shader cache: a bad cached program is one more unvalidated input. */
++    val disableShaderCache: Boolean,
++) {
++    /** Nothing is changed; the guard only watches and reports. */
++    OFF(
++        id = GpuSafetyPrefs.PROFILE_OFF, maxPixels = 0, maxFps = 0,
++        allowsHdr = true, allowsFrameGen = true, allowsUpscaling = true, allowsScreenEffects = true,
++        allowsGpuClockPin = true, allowsMangoapp = true, allowsRealtimeQueues = true,
++        allowsSecondScreen = true, softwareUi = false, disableShaderCache = false,
++    ),
++
++    /**
++     * The everyday setting on an experimental GPU: 720p at 30, and every extra GPU path off.
++     * Steam's Big Picture is usable at 720p - it is what the Deck itself rendered at for years.
++     */
++    SAFE(
++        id = GpuSafetyPrefs.PROFILE_SAFE, maxPixels = 1280 * 720, maxFps = 30,
++        allowsHdr = false, allowsFrameGen = false, allowsUpscaling = true, allowsScreenEffects = true,
++        allowsGpuClockPin = false, allowsMangoapp = false, allowsRealtimeQueues = false,
++        allowsSecondScreen = true, softwareUi = false, disableShaderCache = false,
++    ),
++
++    /**
++     * What runs after the device has crashed once: 576p at 24, every extra path off, no shader
++     * cache, and the client's interface drawn on the CPU so only games touch the GPU at all.
++     */
++    STRICT(
++        id = GpuSafetyPrefs.PROFILE_STRICT, maxPixels = 1024 * 576, maxFps = 24,
++        allowsHdr = false, allowsFrameGen = false, allowsUpscaling = false, allowsScreenEffects = false,
++        allowsGpuClockPin = false, allowsMangoapp = false, allowsRealtimeQueues = false,
++        allowsSecondScreen = false, softwareUi = true, disableShaderCache = true,
++    ),
++    ;
++
++    /**
++     * [size] brought down to this profile's pixel ceiling, keeping its shape. "Follow screen" is
++     * left alone: the output tracks the panel there, and the guard's own cap would fight the resize.
++     */
++    fun constrained(size: Pair<Int, Int>, followScreen: Boolean): Pair<Int, Int> {
++        if (maxPixels <= 0 || followScreen) return size
++        val pixels = size.first * size.second
++        if (pixels <= maxPixels) return size
++        val scale = kotlin.math.sqrt(maxPixels.toDouble() / pixels.toDouble())
++        val w = (size.first * scale).toInt().coerceAtLeast(320) and 1.inv()
++        val h = (size.second * scale).toInt().coerceAtLeast(240) and 1.inv()
++        return Pair(w, h)
++    }
++
++    /** The frame cap to run with: the session's, brought down to this profile's ceiling. */
++    fun clampedFps(fps: Int): Int = when {
++        maxFps <= 0 -> fps
++        fps <= 0 -> maxFps
++        else -> minOf(fps, maxFps)
++    }
++
++    /**
++     * Environment for the guest. Only keys that nothing else in the session sets, so the order
++     * they arrive in the guest's environment cannot decide which one wins - the switches that do
++     * collide (GALLIUM_DRIVER, MESA_LOADER_DRIVER_OVERRIDE, BL_GAMESCOPE_REALTIME, BL_MANGOAPP)
++     * are handled where they are built, in SessionService.
++     */
++    fun envLines(): List<String> {
++        val lines = mutableListOf("BL_MALI_GUARD=$id")
++        if (this != OFF) lines.add("BL_MALI_GUARD_MAX_PIXELS=$maxPixels")
++        if (this != OFF) lines.add("BL_MALI_GUARD_MAX_FPS=$maxFps")
++        if (disableShaderCache) lines.add("MESA_SHADER_CACHE_DISABLE=1")
++        return lines
++    }
++
++    companion object {
++        /** The profile [id] names, [SAFE] when it is not one: a stale preference must never throw. */
++        fun of(id: String?): SafeProfile = values().firstOrNull { it.id == id } ?: SAFE
++    }
++}
+diff --git a/app/src/main/java/com/droiddeck/launcher/session/SessionFiles.kt b/app/src/main/java/com/droiddeck/launcher/session/SessionFiles.kt
+index b984f09..a3327a1 100644
+--- a/app/src/main/java/com/droiddeck/launcher/session/SessionFiles.kt
++++ b/app/src/main/java/com/droiddeck/launcher/session/SessionFiles.kt
+@@ -45,6 +45,8 @@ object SessionFiles {
+             "libssbs.so" to "usr/local/lib/libssbs.so",
+             "usr/local/bin/droiddeck-session" to "usr/local/bin/droiddeck-session",
+             "usr/local/bin/droiddeck-mali-check" to "usr/local/bin/droiddeck-mali-check",
++            // The GPU guard's pre-flight probe, run by the app before gamescope starts.
++            "usr/local/bin/droiddeck-gpu-probe" to "usr/local/bin/droiddeck-gpu-probe",
+             "usr/local/bin/droiddeck-fonts" to "usr/local/bin/droiddeck-fonts",
+             "usr/local/bin/droiddeck-agent" to "usr/local/bin/droiddeck-agent",
+             "usr/local/bin/steam-compatibility" to "usr/local/bin/steam-compatibility",
+diff --git a/app/src/main/java/com/droiddeck/launcher/session/SessionService.kt b/app/src/main/java/com/droiddeck/launcher/session/SessionService.kt
+index e5ab10f..d973946 100644
+--- a/app/src/main/java/com/droiddeck/launcher/session/SessionService.kt
++++ b/app/src/main/java/com/droiddeck/launcher/session/SessionService.kt
+@@ -76,6 +76,10 @@ class SessionService : Service() {
+     private val auxiliaryProcessesLock = Any()
+     private val mainHandler = Handler(Looper.getMainLooper())
+     private var suspendController: SessionSuspendController? = null
++    /** The GPU guard's watchdog for this session, when the guard left one running. */
++    private var gpuWatchdog: com.droiddeck.launcher.gpu.guard.GpuWatchdog? = null
++    /** The guard ended this session itself, so its ending must not count as a clean run. */
++    private var guardAborted = false
+     private val steamDownloadMonitor = SteamDownloadMonitor()
+     private var downloadMonitorTask: Runnable? = null
+     private var downloadActive = false
+@@ -234,6 +238,7 @@ class SessionService : Service() {
+         SessionState.steamUi = intent?.getStringExtra(EXTRA_STEAM_UI)
+         SessionState.steamUrl = intent?.getStringExtra(EXTRA_STEAM_URL)
+         SessionState.running = true
++        guardAborted = false
+         if (SessionState.stopRequested) {
+             stopSession(0)
+             return START_NOT_STICKY
+@@ -342,7 +347,38 @@ class SessionService : Service() {
+         val sessionDir = openSessionFolder()
+         val sessionLog = File(sessionDir, "session.log")
+ 
+-        Log.i(TAG, GpuClockPin.start(this))
++        // ── GPU safety guard ──────────────────────────────────────────────────────────────────
++        // Where a session is stopped from taking the phone with it. On the Mali-G615 this build
++        // exists for, a session ended in a kernel panic inside mali_kbase and the app was not
++        // running to see it. Three things happen here, in this order: the launch is brought down
++        // to what the profile allows, the driver is asked to finish one small job before gamescope
++        // and the Steam client exist, and a watchdog is left running for the rest of the session.
++        val guard = com.droiddeck.launcher.gpu.guard.GpuGuard
++        guard.beginSession(this, sessionDir)
++        val guardPrefs = com.droiddeck.launcher.gpu.guard.GpuSafetyPrefs
++        if (gen == sessionGen && SessionState.running && guardPrefs.guardEnabled(this) && guardPrefs.preflightProbe(this)) {
++            val probe = com.droiddeck.launcher.gpu.guard.Probe.run(this, guard.profile)
++            com.droiddeck.launcher.gpu.guard.Probe.write(sessionDir, probe)
++            if (!probe.ok) {
++                Log.e(TAG, "gpu guard: the pre-flight probe did not pass: ${probe.summary}")
++                com.droiddeck.launcher.gpu.guard.GpuGuardLog.log("guard", "refusing to start: ${probe.verdict}")
++                SessionEvents.fail("GPU_PROBE_FAILED", probe.summary, null)
++                mainHandler.post {
++                    android.widget.Toast.makeText(this, getString(R.string.gpu_guard_probe_failed), android.widget.Toast.LENGTH_LONG).show()
++                }
++                guard.noteGuardStop(this, probe.summary)
++                stopSession(-1)
++                return
++            }
++            if (probe.skipped) Log.i(TAG, "gpu guard: probe skipped - ${probe.summary}")
++        }
++        if (gen != sessionGen || !SessionState.running) {
++            Log.i(TAG, "session stopped while the GPU was being probed; not launching it")
++            return
++        }
++
++        Log.i(TAG, if (guard.profile.allowsGpuClockPin) GpuClockPin.start(this)
++            else "gpu clock: left governed (${guard.profile.id} profile)")
+ 
+         val size = SessionState.outputSize
+         val guest = ArrayList<String>()
+@@ -553,6 +589,52 @@ class SessionService : Service() {
+             )
+             mainHandler.post { updateSuspendPolicy() }
+             updateDownloadMonitoring()
++            // Last: the watchdog looks at the compositor's frames, so it starts once there is a
++            // session to watch and not before.
++            gpuWatchdog = guard.startWatchdog(this, ::onGuardAction)
++        }
++    }
++
++    /**
++     * The GPU guard's verdict on a running session.
++     *
++     * A warning is only said once and changes nothing - it is a line in the log and a line on the
++     * screen, and most sessions that trip it recover on their own. An abort ends the session:
++     * the choice is between the app killing a client that has stopped, and the kernel finding the
++     * same wedge three seconds later on a path that ends in a panic.
++     */
++    private fun onGuardAction(action: com.droiddeck.launcher.gpu.guard.GpuWatchdog.Action, message: String) {
++        when (action) {
++            com.droiddeck.launcher.gpu.guard.GpuWatchdog.Action.WARN -> {
++                com.droiddeck.launcher.gpu.guard.GpuGuard.raiseAlert(getString(R.string.gpu_guard_warn, message))
++                mainHandler.post {
++                    android.widget.Toast.makeText(this, getString(R.string.gpu_guard_warn, message), android.widget.Toast.LENGTH_SHORT).show()
++                }
++            }
++            com.droiddeck.launcher.gpu.guard.GpuWatchdog.Action.ABORT -> {
++                guardAborted = true
++                com.droiddeck.launcher.gpu.guard.GpuGuard.noteGuardStop(this, message)
++                SessionEvents.record("gpu.guard_abort", mapOf("reason" to message))
++                mainHandler.post {
++                    android.widget.Toast.makeText(this, getString(R.string.gpu_guard_aborted, message), android.widget.Toast.LENGTH_LONG).show()
++                    if (SessionState.running) stopSession(-1)
++                }
++                // The session's own teardown asks the client to close and gives proot a moment to
++                // take its tree with it. A GPU that has stopped answering may let neither finish,
++                // so once that moment has passed anything still holding the rootfs or /dev/mali0
++                // is swept: a killed Steam client is a restart, a kernel that finds the wedge
++                // itself is a reboot.
++                Thread({
++                    try {
++                        Thread.sleep(4000)
++                        killGuestLeftovers()
++                        killStragglers()
++                        com.droiddeck.launcher.gpu.guard.GpuGuardLog.log("guard", "swept what the session left")
++                    } catch (e: InterruptedException) {
++                        // The app is going down too; there is nothing left to sweep for.
++                    }
++                }, "gpu-guard-sweep").apply { isDaemon = true; start() }
++            }
+         }
+     }
+ 
+@@ -599,9 +681,15 @@ class SessionService : Service() {
+         guest.add("WAYLAND_DISPLAY=wayland-0")
+         guest.add("BL_ANDROID_CLIPBOARD=" + File(filesDir, "session/android-clipboard").path)
+         guest.add("GAMESCOPE_FORCE_GENERAL_QUEUE=1")
++        // The GPU guard's profile for this session, decided once by GpuGuard.beginSession: OFF on
++        // hardware nothing has gone wrong on, SAFE or STRICT on this one.
++        val guardProfile = com.droiddeck.launcher.gpu.guard.GpuGuard.profile
+         // Steam's CEF needs GL and the rootfs ships no native GL driver: route it through Zink.
+-        guest.add("MESA_LOADER_DRIVER_OVERRIDE=zink")
+-        guest.add("GALLIUM_DRIVER=zink")
++        // The strict profile draws the client's interface on the CPU instead (llvmpipe) - slower
++        // and plainer, and it is the switch that says whether a fault is in the Vulkan path at all.
++        val guardSoftwareUi = guardProfile.softwareUi
++        guest.add("MESA_LOADER_DRIVER_OVERRIDE=" + (if (guardSoftwareUi) "llvmpipe" else "zink"))
++        guest.add("GALLIUM_DRIVER=" + (if (guardSoftwareUi) "llvmpipe" else "zink"))
+         guest.add("LIBGL_KOPPER_DRI2=true")
+         val mali = com.droiddeck.launcher.core.DeviceSupport.mali()
+         if (!mali) LinuxRuntime.vulkanIcd(this)?.let { guest.add("VK_ICD_FILENAMES=" + it.path) }
+@@ -611,6 +699,18 @@ class SessionService : Service() {
+             guest.add("PANVK_KBASE_DRI3=0")
+             guest.add("LIBGL_KOPPER_DISABLE=false")
+         }
++        // GPU guard: what the profile takes away from the session. Each of these is a separate
++        // path the experimental PanVK-kbase stack has never been validated on, and the fault that
++        // took this device down was found on a path exactly like them - so they come off for as
++        // long as the guard is restricting the session, not after something goes wrong.
++        if (guardProfile != com.droiddeck.launcher.gpu.guard.SafeProfile.OFF) {
++            guest.addAll(guardProfile.envLines())
++            if (guardSoftwareUi) {
++                // Nothing here collides with the Zink lines above: they were chosen from this
++                // same decision, so the guest is told one thing and not two.
++                guest.add("LIBGL_KOPPER_DISABLE=true")
++            }
++        }
+         // An imported glibc Turnip, when one is set (by the user, or by Auto): the session script
+         // checks the manifest and its library from inside and points the loader at it with
+         // VK_DRIVER_FILES, so the runtime's own driver above stays untouched and is what a bad
+@@ -642,13 +742,16 @@ class SessionService : Service() {
+         // two), for every pipeline DXVK, vkd3d-proton and Zink compile or find; the database is
+         // opened once and read and written with pread/pwrite, which proot never sees. Mesa removes
+         // the old folder itself once it has gone a week untouched.
+-        guest.add("MESA_DISK_CACHE_DATABASE=1")
++        // The strict profile stops Mesa keeping a shader cache at all: a program cached by a
++        // driver that has since faulted is one more unvalidated input to hand it.
++        if (guardProfile.disableShaderCache) guest.add("MESA_SHADER_CACHE_DISABLE=1")
++        else guest.add("MESA_DISK_CACHE_DATABASE=1")
+         // glibc's per-thread rseq registration is refused by Android's app seccomp policy, so
+         // every thread start paid a SIGSYS that proot answers; the malloc top pad grows the heap
+         // 16 MB at a time instead of 128 KB, and every brk(2) is a proot stop too.
+         guest.add("GLIBC_TUNABLES=glibc.pthread.rseq=0:glibc.malloc.top_pad=16777216")
+         if (SessionState.mode == MODE_STEAM) guest.add("BL_STEAMDECK=" + (if (SessionPrefs.steamDeckMode(this)) "1" else "0"))
+-        if (SessionState.mode == MODE_STEAM) guest.add("BL_MANGOAPP=" + (if (!mali && SessionPrefs.mangoapp(this)) "1" else "0"))
++        if (SessionState.mode == MODE_STEAM) guest.add("BL_MANGOAPP=" + (if (!mali && guardProfile.allowsMangoapp && SessionPrefs.mangoapp(this)) "1" else "0"))
+         if (steamHere) guest.add("BL_STEAM_CHANNEL=" + SessionPrefs.steamChannel(this))
+         if (SessionState.mode == MODE_STEAM) {
+             guest.add("BL_GAMESCOPE_STRETCH_16X9=" + (if (SessionPrefs.stretch16x9(this)) "1" else "0"))
+@@ -662,7 +765,7 @@ class SessionService : Service() {
+         guest.add("BL_FSYNC_FIRST=" + (if (SessionPrefs.fsyncFirst(this)) "1" else "0"))
+         // gamescope's realtime Vulkan queues (the session script turns this into
+         // GAMESCOPE_FORCE_VULKAN_REALTIME); off unless the user turns it on.
+-        guest.add("BL_GAMESCOPE_REALTIME=" + (if (SessionPrefs.gamescopeRealtime(this)) "1" else "0"))
++        guest.add("BL_GAMESCOPE_REALTIME=" + (if (guardProfile.allowsRealtimeQueues && SessionPrefs.gamescopeRealtime(this)) "1" else "0"))
+         guest.add("BANNER_AUDIO_DIRECT_DECAY=0")
+         // Anything else, for a device that cannot be reached with a debugger: droiddeck-env in the
+         // app's own external files (envSwitchFile) holds KEY=VALUE lines that go into the session's
+@@ -1481,6 +1584,9 @@ class SessionService : Service() {
+         val stoppedGen = sessionGen
+         SessionState.stopRequested = false
+         SessionEvents.record("guest.exited", mapOf("status" to status))
++        // The guard's latch relaxes on evidence, so how this session ended has to be recorded
++        // before the session is gone: only an ending the app did not force counts as one.
++        com.droiddeck.launcher.gpu.guard.GpuGuard.noteSessionEnded(this, status == 0 && !guardAborted)
+         GpuClockPin.stop(this)
+         SessionEvents.transition(SessionPhase.STOPPING, "session.stopping", mapOf("status" to status))
+         suspendOperationPending = false
+diff --git a/app/src/main/java/com/droiddeck/launcher/ui/FrontEndSetup.kt b/app/src/main/java/com/droiddeck/launcher/ui/FrontEndSetup.kt
+index 171caf8..851bbe7 100644
+--- a/app/src/main/java/com/droiddeck/launcher/ui/FrontEndSetup.kt
++++ b/app/src/main/java/com/droiddeck/launcher/ui/FrontEndSetup.kt
+@@ -166,7 +166,17 @@ internal fun SetupPanel(
+     var showLimitDetails by rememberSaveable { mutableStateOf(false) }
+     // Four tabs instead of one long scroll; LB and RB turn them from anywhere on the page. Build
+     // and credits are on the Updates page.
+-    val tabs = listOf(stringResource(R.string.setup_tab_overview), stringResource(R.string.setup_tab_controller), stringResource(R.string.setup_tab_session), stringResource(R.string.setup_tab_launcher))
++    // A fifth tab, only where the GPU guard means something: on a Mali device, where a session has
++    // ended in a fault inside the kernel's own module, or once someone has turned it on anyway.
++    // Five tabs on a phone that has never needed it would be one tab too many.
++    val showSafety = remember {
++        com.droiddeck.launcher.core.DeviceSupport.mali() ||
++            com.droiddeck.launcher.gpu.guard.GpuSafetyPrefs.guardEnabled(ctx)
++    }
++    val tabs = listOf(
++        stringResource(R.string.setup_tab_overview), stringResource(R.string.setup_tab_controller),
++        stringResource(R.string.setup_tab_session), stringResource(R.string.setup_tab_launcher),
++    ) + if (showSafety) listOf(stringResource(R.string.gpu_safety_tab)) else emptyList()
+     var tab by rememberSaveable { mutableStateOf(0) }
+     val tabFocus = remember { List(tabs.size) { FocusRequester() } }
+     var tabTurned by remember { mutableStateOf(false) }
+@@ -387,6 +397,9 @@ internal fun SetupPanel(
+                             StoresEngineRow()
+                         }
+                     }
++                    4 -> {
++                        GpuSafetyPanel(host)
++                    }
+                 }
+             }
+         }
+diff --git a/app/src/main/java/com/droiddeck/launcher/ui/GpuSafetyPage.kt b/app/src/main/java/com/droiddeck/launcher/ui/GpuSafetyPage.kt
+new file mode 100644
+index 0000000..8e6d7b3
+--- /dev/null
++++ b/app/src/main/java/com/droiddeck/launcher/ui/GpuSafetyPage.kt
+@@ -0,0 +1,272 @@
++/* SPDX-License-Identifier: GPL-3.0-only */
++package com.droiddeck.launcher.ui
++
++import android.content.ClipData
++import android.content.ClipboardManager
++import android.content.Context
++import androidx.compose.foundation.layout.Box
++import androidx.compose.foundation.layout.Column
++import androidx.compose.foundation.layout.fillMaxWidth
++import androidx.compose.foundation.layout.heightIn
++import androidx.compose.foundation.rememberScrollState
++import androidx.compose.foundation.verticalScroll
++import androidx.compose.material3.AlertDialog
++import androidx.compose.material3.MaterialTheme
++import androidx.compose.material3.Text
++import androidx.compose.material3.TextButton
++import androidx.compose.runtime.Composable
++import androidx.compose.runtime.getValue
++import androidx.compose.runtime.mutableStateOf
++import androidx.compose.runtime.remember
++import androidx.compose.runtime.setValue
++import androidx.compose.ui.Modifier
++import androidx.compose.ui.draw.clip
++import androidx.compose.ui.graphics.Color
++import androidx.compose.ui.unit.dp
++import androidx.compose.ui.platform.LocalContext
++import androidx.compose.ui.res.stringResource
++import androidx.compose.ui.text.font.FontFamily
++import androidx.compose.ui.text.font.FontWeight
++import androidx.compose.ui.unit.sp
++import com.droiddeck.launcher.R
++import com.droiddeck.launcher.core.DeviceSupport
++import com.droiddeck.launcher.gpu.guard.BootReason
++import com.droiddeck.launcher.gpu.guard.GpuGuard
++import com.droiddeck.launcher.gpu.guard.GpuGuardLog
++import com.droiddeck.launcher.gpu.guard.GpuSafetyPrefs
++import com.droiddeck.launcher.gpu.guard.SafeProfile
++
++/**
++ * The GPU safety page.
++ *
++ * It says what it knows, in the order it matters: whether the phone's last boot was a crash, what
++ * the guard did about it, and what it will allow. Then the switches, each one with what it costs -
++ * a frame cap is a slower session, the software UI is an ugly one, and refusing to start at all is
++ * the price of not repeating a reboot.
++ */
++@Composable
++internal fun GpuSafetyPanel(host: MenuHost, modifier: Modifier = Modifier) {
++    val context = LocalContext.current
++    // Every switch re-reads the preferences and recomputes the guard's level when it changes.
++    var tick by remember { mutableStateOf(0) }
++    val p = GpuSafetyPrefs
++    val enabled = remember(tick) { p.guardEnabled(context) }
++    val profileId = remember(tick) { p.chosenProfile(context) }
++    val lock = remember(tick) { p.lockAfterFatalBoot(context) }
++    val probe = remember(tick) { p.preflightProbe(context) }
++    val watchdog = remember(tick) { p.liveWatchdog(context) }
++    val stall = remember(tick) { p.stallBudgetMs(context) }
++    val thermal = remember(tick) { p.thermalCeilingC(context) }
++    val softwareUi = remember(tick) { p.softwareUi(context) }
++    val crashes = remember(tick) { p.fatalBootCount(context) }
++    val clean = remember(tick) { p.cleanSessionsSinceFatal(context) }
++    val stops = remember(tick) { p.guardStops(context) }
++    val locked = remember(tick) { p.lockEngaged(context) }
++    val reason = remember(tick) { p.lastFatalBootReason(context) }
++    val log = remember(tick) { GpuGuardLog.read(context, 40) }
++    val boot = remember { BootReason.read() }
++
++    val apply: () -> Unit = { tick++; GpuGuard.refresh(context) }
++
++    Column(modifier = modifier.fillMaxWidth()) {
++        SettingsGroup(stringResource(R.string.gpu_safety_status)) {
++            StatusRow(stringResource(R.string.gpu_safety_boot_reason),
++                if (boot.raw.isEmpty()) stringResource(R.string.gpu_safety_boot_unknown) else "${boot.raw} · ${kindText(boot.kind)}")
++            StatusRow(stringResource(R.string.gpu_safety_crashes), crashes.toString())
++            if (crashes > 0 && reason.isNotEmpty()) StatusRow(stringResource(R.string.gpu_safety_last_crash), reason)
++            StatusRow(stringResource(R.string.gpu_safety_lock), stringResource(if (locked) R.string.gpu_safety_lock_on else R.string.gpu_safety_lock_off))
++            StatusRow(stringResource(R.string.gpu_safety_clean_runs), "$clean / ${GpuSafetyPrefs.CLEAN_RUNS_TO_RELAX}")
++            StatusRow(stringResource(R.string.gpu_safety_guard_stops), stops.toString())
++            val lastProbe = remember(tick) { GpuGuard.lastProbe }
++            StatusRow(stringResource(R.string.gpu_safety_last_probe),
++                if (lastProbe == null) stringResource(R.string.gpu_safety_none_yet)
++                else (if (lastProbe.ok) "✓ " else "✗ ") + lastProbe.summary)
++        }
++
++        if (!DeviceSupport.mali()) {
++            Note(stringResource(R.string.gpu_safety_not_mali))
++        }
++
++        SettingsGroup(stringResource(R.string.gpu_safety_guard)) {
++            ToggleRow(host, "gpu-guard", stringResource(R.string.gpu_safety_guard_enable),
++                stringResource(R.string.gpu_safety_guard_enable_hint), enabled) { on ->
++                p.setGuardEnabled(context, on); apply()
++            }
++            ChoiceRow(
++                host, "gpu-profile", stringResource(R.string.gpu_safety_profile),
++                stringResource(R.string.gpu_safety_profile_hint),
++                listOf(
++                    GpuSafetyPrefs.PROFILE_OFF to stringResource(R.string.gpu_safety_profile_off),
++                    GpuSafetyPrefs.PROFILE_SAFE to stringResource(R.string.gpu_safety_profile_safe),
++                    GpuSafetyPrefs.PROFILE_STRICT to stringResource(R.string.gpu_safety_profile_strict),
++                ), profileId, enabled = enabled, onPick = { id -> p.setChosenProfile(context, id); apply() },
++            )
++            ToggleRow(host, "gpu-lock", stringResource(R.string.gpu_safety_lock_after_crash),
++                stringResource(R.string.gpu_safety_lock_after_crash_hint), lock, enabled = enabled) { on ->
++                p.setLockAfterFatalBoot(context, on); apply()
++            }
++        }
++
++        SettingsGroup(stringResource(R.string.gpu_safety_before)) {
++            ToggleRow(host, "gpu-probe", stringResource(R.string.gpu_safety_probe),
++                stringResource(R.string.gpu_safety_probe_hint), probe, enabled = enabled) { on ->
++                p.setPreflightProbe(context, on); apply()
++            }
++        }
++
++        SettingsGroup(stringResource(R.string.gpu_safety_during)) {
++            ToggleRow(host, "gpu-watchdog", stringResource(R.string.gpu_safety_watchdog),
++                stringResource(R.string.gpu_safety_watchdog_hint), watchdog, enabled = enabled) { on ->
++                p.setLiveWatchdog(context, on); apply()
++            }
++            ChoiceRow(
++                host, "gpu-stall", stringResource(R.string.gpu_safety_stall),
++                stringResource(R.string.gpu_safety_stall_hint),
++                listOf(2000, 3000, 5000, 10000).map { ms -> ms to String.format(java.util.Locale.US, "%.0f s", ms / 1000f) },
++                stall, enabled = enabled && watchdog,
++            ) { ms -> p.setStallBudgetMs(context, ms); apply() }
++            ChoiceRow(
++                host, "gpu-thermal", stringResource(R.string.gpu_safety_thermal),
++                stringResource(R.string.gpu_safety_thermal_hint),
++                listOf(0, 42, 44, 46).map { c -> c to (if (c == 0) stringResource(R.string.gpu_safety_thermal_off) else "$c °C") },
++                thermal, enabled = enabled && watchdog,
++            ) { c -> p.setThermalCeilingC(context, c); apply() }
++            ToggleRow(host, "gpu-software", stringResource(R.string.gpu_safety_software_ui),
++                stringResource(R.string.gpu_safety_software_ui_hint), softwareUi, enabled = enabled) { on ->
++                p.setSoftwareUi(context, on); apply()
++            }
++        }
++
++        SettingsGroup(stringResource(R.string.gpu_safety_record)) {
++            ActionRow(stringResource(R.string.gpu_safety_copy), stringResource(R.string.gpu_safety_copy_hint),
++                stringResource(R.string.gpu_safety_copy_button)) { copyReport(context) }
++            ActionRow(stringResource(R.string.gpu_safety_forget), stringResource(R.string.gpu_safety_forget_hint),
++                stringResource(R.string.gpu_safety_forget_button)) { GpuGuard.forget(context); apply() }
++            if (log.isNotEmpty()) {
++                Text(log, fontSize = 11.sp, fontFamily = FontFamily.Monospace,
++                    color = MaterialTheme.colorScheme.onSurfaceVariant,
++                    modifier = Modifier.fillMaxWidth().heightIn(max = 220.dp).verticalScroll(rememberScrollState())
++                        .padding(horizontal = 14.dp, vertical = 8.dp))
++            }
++        }
++    }
++}
++
++@Composable
++private fun StatusRow(label: String, value: String) {
++    val colors = MaterialTheme.colorScheme
++    val pal = LocalPalette.current
++    androidx.compose.foundation.layout.Row(
++        verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
++        modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 9.dp),
++    ) {
++        Text(label, fontSize = 14.sp, color = colors.onSurfaceVariant, modifier = Modifier.weight(1f))
++        Text(value, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = colors.onBackground,
++            maxLines = 3, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
++    }
++    androidx.compose.foundation.layout.Box(Modifier.fillMaxWidth().height(1.dp).background(pal.line))
++}
++
++@Composable
++private fun kindText(kind: BootReason.Kind): String = stringResource(
++    when (kind) {
++        BootReason.Kind.KERNEL_PANIC -> R.string.gpu_safety_boot_panic
++        BootReason.Kind.WATCHDOG -> R.string.gpu_safety_boot_watchdog
++        BootReason.Kind.THERMAL -> R.string.gpu_safety_boot_thermal
++        BootReason.Kind.NORMAL -> R.string.gpu_safety_boot_normal
++        else -> R.string.gpu_safety_boot_unknown
++    },
++)
++
++private fun copyReport(context: Context) {
++    val text = GpuGuard.report(context) + "\n\n" + GpuGuardLog.read(context, 200)
++    try {
++        val manager = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
++        manager?.setPrimaryClip(ClipData.newPlainText(context.getString(R.string.gpu_safety_copy_label), text))
++        android.widget.Toast.makeText(context, R.string.gpu_safety_copied, android.widget.Toast.LENGTH_SHORT).show()
++    } catch (e: Exception) {
++        android.widget.Toast.makeText(context, R.string.gpu_safety_copy_failed, android.widget.Toast.LENGTH_SHORT).show()
++    }
++}
++
++/**
++ * The lock: the phone's last boot was recorded as a crash and the guard is refusing to start a
++ * session until someone says they know.
++ *
++ * This is the one place the app says no and means it. It is a dialog and not a toast because a
++ * decision is being asked for, and it carries the settings because the honest answer to "why
++ * can't I play" is a page the user can change, not a sentence they have to accept.
++ */
++@Composable
++fun GpuSafetyLockDialog(onRearm: () -> Unit, onDismiss: () -> Unit) {
++    val context = LocalContext.current
++    var showSettings by remember { mutableStateOf(false) }
++    val crashes = GpuSafetyPrefs.fatalBootCount(context)
++    val reason = GpuSafetyPrefs.lastFatalBootReason(context)
++    AlertDialog(
++        onDismissRequest = onDismiss,
++        title = { Text(stringResource(R.string.gpu_guard_lock_title)) },
++        text = {
++            Column(modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState())) {
++                Text(stringResource(R.string.gpu_guard_lock_text, crashes, reason.ifEmpty { "—" }), fontSize = 14.sp)
++                if (showSettings) {
++                    val host = rememberMenuHost()
++                    androidx.compose.foundation.layout.Spacer(
++                        Modifier.fillMaxWidth().height(10.dp),
++                    )
++                    GpuSafetyPanel(host)
++                }
++            }
++        },
++        confirmButton = {
++            TextButton(onClick = onRearm) { Text(stringResource(R.string.gpu_guard_rearm)) }
++        },
++        dismissButton = {
++            TextButton(onClick = { showSettings = !showSettings }) {
++                Text(stringResource(if (showSettings) R.string.gpu_guard_hide_settings else R.string.gpu_guard_show_settings))
++            }
++        },
++    )
++}
++
++/** The profile a launch will actually run under, for a card that has to say so. */
++internal fun profileLabel(context: Context): String = context.getString(
++    when (GpuGuard.profile) {
++        SafeProfile.OFF -> R.string.gpu_safety_profile_off
++        SafeProfile.SAFE -> R.string.gpu_safety_profile_safe
++        SafeProfile.STRICT -> R.string.gpu_safety_profile_strict
++    },
++)
++
++/**
++ * The guard's notice over a running session: amber while it is only a warning, red once the
++ * session has been stopped. It has to be impossible to miss and impossible to confuse with the
++ * HUD - this is the app saying the GPU is not answering, which on this device is the sentence
++ * that used to be followed by a reboot.
++ */
++@Composable
++fun GpuGuardAlert() {
++    val alert = GpuGuard.alert ?: return
++    val stopped = GpuGuard.sessionStopped
++    val pal = LocalPalette.current
++    val tone = if (stopped) pal.error else AttentionAmber
++    androidx.compose.foundation.layout.Box(
++        modifier = Modifier.fillMaxSize(), contentAlignment = androidx.compose.ui.Alignment.BottomCenter,
++    ) {
++        androidx.compose.foundation.layout.Box(
++            modifier = Modifier
++                .padding(horizontal = 24.dp, vertical = 20.dp)
++                .clip(Shape12)
++                .background(tone.copy(alpha = 0.92f))
++                .padding(horizontal = 16.dp, vertical = 10.dp),
++        ) {
++            androidx.compose.foundation.layout.Column {
++                Text(
++                    stringResource(if (stopped) R.string.gpu_guard_session_stopped else R.string.gpu_guard_alert_title),
++                    fontSize = 14.sp, fontWeight = FontWeight.Bold, color = androidx.compose.ui.graphics.Color.Black,
++                )
++                Text(alert, fontSize = 13.sp, color = androidx.compose.ui.graphics.Color.Black)
++            }
++        }
++    }
++}
+diff --git a/app/src/main/res/values-es/mali.xml b/app/src/main/res/values-es/mali.xml
+index 3e3aa1f..643a715 100644
+--- a/app/src/main/res/values-es/mali.xml
++++ b/app/src/main/res/values-es/mali.xml
+@@ -3,5 +3,5 @@
+     <string name="gpuinfo_mali_experimental">Integración Mali-G615 experimental: importa el controlador Linux PanVK; Steam aún no está validado en este dispositivo</string>
+     <string name="mali_display_driver">Vulkan del sistema (Mali)</string>
+     <string name="mali_driver_needed">Mali: falta el controlador Vulkan Linux importado. Importa el paquete experimental PanVK en Controladores GPU → Avanzado → Controlador del entorno Linux y selecciónalo.</string>
+-    <string name="mali_integration_hint">Mali-G615 experimental: importa y selecciona PanVK como controlador del entorno Linux. Para la pantalla se usa Vulkan del sistema. Empieza a 1280×720; desactiva HDR y generación de fotogramas. Los juegos no están validados.</string>
++    <string name="mali_integration_hint">Mali-G615 experimental: importa y selecciona PanVK como controlador del entorno Linux. Para la pantalla se usa Vulkan del sistema. Empieza a 1280×720; desactiva HDR y generación de fotogramas. Los juegos no están validados. La guardia de GPU está activa: si el teléfono se reinicia tras un fallo, Steam queda bloqueado hasta que lo rearmes en Ajustes → Seguridad.</string>
+ </resources>
+diff --git a/app/src/main/res/values-es/strings.xml b/app/src/main/res/values-es/strings.xml
+index f346d11..4ff8a6b 100644
+--- a/app/src/main/res/values-es/strings.xml
++++ b/app/src/main/res/values-es/strings.xml
+@@ -2086,4 +2086,68 @@
+     <string name="device_info_copied">Copiado.</string>
+     <string name="force_ssbs_title">Forzar SSBS</string>
+     <string name="force_ssbs_hint">Mantiene activado un ajuste de velocidad de la CPU que Wine sigue desactivando. Puede hacer más rápidos los juegos de Windows en Snapdragon 8 Elite; poco cambio en chips anteriores. Se aplica en el próximo inicio de un juego.</string>
++
++    <!-- ── Guardia de seguridad de la GPU ─────────────────────────────────────────────────── -->
++    <string name="gpu_safety_tab">Seguridad</string>
++    <string name="gpu_safety_status">Lo que sabe la guardia</string>
++    <string name="gpu_safety_boot_reason">Cómo arrancó el teléfono</string>
++    <string name="gpu_safety_boot_panic">pánico del kernel</string>
++    <string name="gpu_safety_boot_watchdog">watchdog</string>
++    <string name="gpu_safety_boot_thermal">sobrecalentamiento</string>
++    <string name="gpu_safety_boot_normal">con normalidad</string>
++    <string name="gpu_safety_boot_unknown">no se pudo leer</string>
++    <string name="gpu_safety_crashes">Arranques registrados como fallo</string>
++    <string name="gpu_safety_last_crash">El último</string>
++    <string name="gpu_safety_lock">Inicio de sesión</string>
++    <string name="gpu_safety_lock_on">Bloqueado hasta que se rearme</string>
++    <string name="gpu_safety_lock_off">Permitido</string>
++    <string name="gpu_safety_clean_runs">Sesiones limpias desde entonces</string>
++    <string name="gpu_safety_guard_stops">Sesiones detenidas por la guardia</string>
++    <string name="gpu_safety_last_probe">Última prueba previa</string>
++    <string name="gpu_safety_none_yet">Aún no se ha ejecutado</string>
++    <string name="gpu_safety_not_mali">Esta no es una GPU Mali. La guardia se creó para la ruta experimental de Mali y aquí está desactivada, así que nada de lo de abajo se aplica hasta que la actives.</string>
++    <string name="gpu_safety_guard">La guardia</string>
++    <string name="gpu_safety_guard_enable">Guardia de GPU</string>
++    <string name="gpu_safety_guard_enable_hint">Vigila si la GPU se detiene y evita repetir un fallo que el teléfono ya tuvo.</string>
++    <string name="gpu_safety_profile">Restricciones</string>
++    <string name="gpu_safety_profile_hint">A qué renuncia una sesión para no forzar la GPU. Se aplica al iniciar la sesión.</string>
++    <string name="gpu_safety_profile_off">Desactivado: no cambia nada</string>
++    <string name="gpu_safety_profile_safe">Seguro: 720p, 30 fps, sin extras</string>
++    <string name="gpu_safety_profile_strict">Estricto: 576p, 24 fps, interfaz en la CPU</string>
++    <string name="gpu_safety_lock_after_crash">No iniciar tras un fallo</string>
++    <string name="gpu_safety_lock_after_crash_hint">Tras un arranque registrado como fallo, no se inicia ninguna sesión hasta que rearme. Es lo que evita que el fallo se repita en cada arranque.</string>
++    <string name="gpu_safety_before">Antes de iniciar una sesión</string>
++    <string name="gpu_safety_probe">Probar la GPU primero</string>
++    <string name="gpu_safety_probe_hint">Ejecuta una tarea pequeña dentro del runtime antes de arrancar Steam. Si la GPU no la termina, la sesión no empieza.</string>
++    <string name="gpu_safety_during">Mientras la sesión está activa</string>
++    <string name="gpu_safety_watchdog">Vigilar si la GPU se bloquea</string>
++    <string name="gpu_safety_watchdog_hint">Termina la sesión cuando deja de mostrar fotogramas, cuando sus procesos se quedan atascados en la GPU o cuando el dispositivo se calienta demasiado.</string>
++    <string name="gpu_safety_stall">Sin fotogramas durante</string>
++    <string name="gpu_safety_stall_hint">Cuánto tiempo puede pasar la sesión sin mostrar un fotograma antes de detenerse.</string>
++    <string name="gpu_safety_thermal">Límite de temperatura</string>
++    <string name="gpu_safety_thermal_hint">Detiene la sesión cuando la batería llega a este valor. No puede enfriar el teléfono, pero sí terminar la sesión antes de que lo haga el propio dispositivo.</string>
++    <string name="gpu_safety_thermal_off">Desactivado</string>
++    <string name="gpu_safety_software_ui">Dibujar la interfaz de Steam en la CPU</string>
++    <string name="gpu_safety_software_ui_hint">Lento y simple, pero dice algo importante: si el teléfono se mantiene estable con esto activado, el fallo está en la ruta de Vulkan.</string>
++    <string name="gpu_safety_record">El registro</string>
++    <string name="gpu_safety_copy">El informe de la guardia</string>
++    <string name="gpu_safety_copy_hint">Todo lo de arriba más el registro de la guardia, listo para pegar en un informe de error.</string>
++    <string name="gpu_safety_copy_button">Copiar</string>
++    <string name="gpu_safety_copy_label">Informe de la guardia de GPU de DroidDeck</string>
++    <string name="gpu_safety_copied">Copiado.</string>
++    <string name="gpu_safety_copy_failed">No se pudo copiar.</string>
++    <string name="gpu_safety_forget">Olvidar el historial de fallos</string>
++    <string name="gpu_safety_forget_hint">Borra los fallos registrados y cualquier bloqueo. La guardia vuelve a empezar de cero.</string>
++    <string name="gpu_safety_forget_button">Olvidar</string>
++    <string name="gpu_guard_lock_title">El teléfono se reinició tras un fallo</string>
++    <string name="gpu_guard_lock_text">Android registró este arranque como un fallo (%1$d registrados; el último: %2$s). En este dispositivo una sesión de Steam terminó en un fallo dentro del módulo del kernel de Mali, que una aplicación no puede reparar, así que DroidDeck se niega a iniciar otra hasta que tú lo indiques.\n\nAl rearmar, la siguiente sesión se ejecuta con los ajustes más estrictos: imagen más pequeña, menor tasa de fotogramas y la interfaz del cliente dibujada en la CPU. El bloqueo se levanta solo después de tres sesiones que terminen con normalidad.</string>
++    <string name="gpu_guard_rearm">Lo entiendo: rearmar</string>
++    <string name="gpu_guard_show_settings">Ajustes</string>
++    <string name="gpu_guard_hide_settings">Ocultar</string>
++    <string name="gpu_guard_rearmed_toast">Rearmado. La siguiente sesión se ejecutará con restricciones.</string>
++    <string name="gpu_guard_warn">GPU: %1$s</string>
++    <string name="gpu_guard_aborted">La guardia de GPU detuvo la sesión: %1$s</string>
++    <string name="gpu_guard_probe_failed">La guardia de GPU detuvo el inicio: la prueba previa no pasó.</string>
++    <string name="gpu_guard_alert_title">La GPU se ha bloqueado</string>
++    <string name="gpu_guard_session_stopped">La sesión se detuvo para proteger el dispositivo.</string>
+ </resources>
+diff --git a/app/src/main/res/values/mali.xml b/app/src/main/res/values/mali.xml
+index 3ce71f1..9151dfd 100644
+--- a/app/src/main/res/values/mali.xml
++++ b/app/src/main/res/values/mali.xml
+@@ -3,5 +3,5 @@
+     <string name="gpuinfo_mali_experimental">Experimental Mali-G615 integration: import the PanVK Linux driver; Steam on this device is not validated</string>
+     <string name="mali_display_driver">System Vulkan (Mali)</string>
+     <string name="mali_driver_needed">Mali: no imported Linux Vulkan driver. Import the experimental PanVK package under GPU drivers → Advanced → Runtime driver, then select it.</string>
+-    <string name="mali_integration_hint">Experimental Mali-G615: import and select PanVK as the Runtime driver. The Display driver uses system Vulkan. Start at 1280×720; keep HDR and frame generation off. Games are not validated.</string>
++    <string name="mali_integration_hint">Experimental Mali-G615: import and select PanVK as the Runtime driver. The Display driver uses system Vulkan. Start at 1280×720; keep HDR and frame generation off. Games are not validated. The GPU guard is on: if the phone restarts after a crash, Steam stays locked until you re-arm it in Setup → Safety.</string>
+ </resources>
+diff --git a/app/src/main/res/values/strings.xml b/app/src/main/res/values/strings.xml
+index b12ca68..81078fa 100644
+--- a/app/src/main/res/values/strings.xml
++++ b/app/src/main/res/values/strings.xml
+@@ -2106,4 +2106,72 @@
+     <string name="stores_login_error_ssl">The connection to the sign-in page is not secure.</string>
+     <string name="stores_login_error_verification">The sign-in could not be verified. Try again.</string>
+     <string name="stores_login_error_generic">Sign-in failed. Try again.</string>
++
++    <!-- ── GPU safety guard ─────────────────────────────────────────────────────────────────
++         The experimental Mali path: a session on this device has ended in a fault inside the
++         Mali kernel module, which an app cannot repair. These strings are deliberately plain
++         about that - a user deciding whether to re-arm after a reboot needs the truth, not a
++         reassurance. -->
++    <string name="gpu_safety_tab">Safety</string>
++    <string name="gpu_safety_status">What the guard knows</string>
++    <string name="gpu_safety_boot_reason">How the phone started</string>
++    <string name="gpu_safety_boot_panic">kernel panic</string>
++    <string name="gpu_safety_boot_watchdog">watchdog</string>
++    <string name="gpu_safety_boot_thermal">overheating</string>
++    <string name="gpu_safety_boot_normal">normally</string>
++    <string name="gpu_safety_boot_unknown">not readable</string>
++    <string name="gpu_safety_crashes">Boots recorded as a crash</string>
++    <string name="gpu_safety_last_crash">The last one</string>
++    <string name="gpu_safety_lock">Launch</string>
++    <string name="gpu_safety_lock_on">Refused until it is re-armed</string>
++    <string name="gpu_safety_lock_off">Allowed</string>
++    <string name="gpu_safety_clean_runs">Clean sessions since then</string>
++    <string name="gpu_safety_guard_stops">Sessions the guard stopped</string>
++    <string name="gpu_safety_last_probe">Last pre-flight probe</string>
++    <string name="gpu_safety_none_yet">Not run yet this time</string>
++    <string name="gpu_safety_not_mali">This is not a Mali GPU. The guard was built for the experimental Mali path and is off here, so nothing below applies until you turn it on.</string>
++    <string name="gpu_safety_guard">The guard</string>
++    <string name="gpu_safety_guard_enable">GPU guard</string>
++    <string name="gpu_safety_guard_enable_hint">Watches for a GPU that has stopped, and refuses to repeat a crash the phone has already had.</string>
++    <string name="gpu_safety_profile">Restrictions</string>
++    <string name="gpu_safety_profile_hint">What a session gives up to keep the GPU out of trouble. Applied when the session starts.</string>
++    <string name="gpu_safety_profile_off">Off - nothing is changed</string>
++    <string name="gpu_safety_profile_safe">Safe - 720p, 30 fps, no extras</string>
++    <string name="gpu_safety_profile_strict">Strict - 576p, 24 fps, interface on the CPU</string>
++    <string name="gpu_safety_lock_after_crash">Refuse to start after a crash</string>
++    <string name="gpu_safety_lock_after_crash_hint">After a boot recorded as a crash, no session starts until you re-arm. This is what stops a crash from repeating on every boot.</string>
++    <string name="gpu_safety_before">Before a session starts</string>
++    <string name="gpu_safety_probe">Test the GPU first</string>
++    <string name="gpu_safety_probe_hint">Runs one small job inside the runtime before Steam starts. If the GPU will not finish it, the session does not start.</string>
++    <string name="gpu_safety_during">While a session runs</string>
++    <string name="gpu_safety_watchdog">Watch for a stalled GPU</string>
++    <string name="gpu_safety_watchdog_hint">Ends the session when it stops presenting frames, when its processes are wedged on the GPU, or when the device gets too hot.</string>
++    <string name="gpu_safety_stall">No frame for</string>
++    <string name="gpu_safety_stall_hint">How long the session may go without presenting a frame before it is stopped.</string>
++    <string name="gpu_safety_thermal">Temperature ceiling</string>
++    <string name="gpu_safety_thermal_hint">Stops the session when the battery reaches this. It cannot cool a phone down, but it can end the run before the device does it itself.</string>
++    <string name="gpu_safety_thermal_off">Off</string>
++    <string name="gpu_safety_software_ui">Draw the Steam interface on the CPU</string>
++    <string name="gpu_safety_software_ui_hint">Slow and plain, and it tells you something: if the phone is stable with this on, the fault is in the Vulkan path.</string>
++    <string name="gpu_safety_record">The record</string>
++    <string name="gpu_safety_copy">The guard\'s report</string>
++    <string name="gpu_safety_copy_hint">Everything above plus the guard\'s log, ready to paste into a bug report.</string>
++    <string name="gpu_safety_copy_button">Copy</string>
++    <string name="gpu_safety_copy_label">DroidDeck GPU guard report</string>
++    <string name="gpu_safety_copied">Copied.</string>
++    <string name="gpu_safety_copy_failed">Could not copy it.</string>
++    <string name="gpu_safety_forget">Forget the crash history</string>
++    <string name="gpu_safety_forget_hint">Clears the crashes on record and any lock. The guard starts again from nothing.</string>
++    <string name="gpu_safety_forget_button">Forget</string>
++    <string name="gpu_guard_lock_title">The phone restarted after a crash</string>
++    <string name="gpu_guard_lock_text">Android recorded this boot as a crash (%1$d on record; the last: %2$s). On this device a Steam session has ended in a fault inside the Mali kernel module, which an app cannot repair - so DroidDeck is refusing to start another one until you say so.\n\nRe-arming runs the next session under the strictest settings: a smaller picture, a lower frame rate and the client interface drawn on the CPU. The lock lifts on its own after three sessions that end normally.</string>
++    <string name="gpu_guard_rearm">I understand - re-arm</string>
++    <string name="gpu_guard_show_settings">Settings</string>
++    <string name="gpu_guard_hide_settings">Hide</string>
++    <string name="gpu_guard_rearmed_toast">Re-armed. The next session runs restricted.</string>
++    <string name="gpu_guard_warn">GPU: %1$s</string>
++    <string name="gpu_guard_aborted">GPU guard stopped the session: %1$s</string>
++    <string name="gpu_guard_probe_failed">The GPU guard stopped the launch: the pre-flight probe did not pass.</string>
++    <string name="gpu_guard_alert_title">The GPU has stalled</string>
++    <string name="gpu_guard_session_stopped">The session was stopped to keep the device safe.</string>
+ </resources>
+diff --git a/docs/gpu-safety.md b/docs/gpu-safety.md
+new file mode 100644
+index 0000000..ea8d4dc
+--- /dev/null
++++ b/docs/gpu-safety.md
+@@ -0,0 +1,170 @@
++# GPU safety guard
++
++The Mali-G615 experiment reached the point where a Steam session did not just fail — it took the
++phone with it. Android recorded the next boot as `kernel_panic`, and the trace named the Mali
++kernel module:
++
++```
++CS_FATAL.EXCEPTION_TYPE: 0x48 (CS_BUS_FAULT)
++FENCE_SIGNAL timeout(3000 ms)
++Unexpected kernel BRK exception at EL1
++kbasep_csf_sync_kcpu_dump_locked [...] [mali_kbase_mt6897_r44]
++Last boot reason: kernel_panic
++```
++
++This document is about what the app can and cannot do about that, and what it now does.
++
++## What an APK cannot do
++
++It is worth being blunt about this first, because everything below follows from it:
++
++- **It cannot repair `mali_kbase`.** That is a kernel module. An app cannot patch it, cannot
++  replace it, and cannot load a different one.
++- **It cannot disable a watchdog it does not own**, lower SELinux, or raise the fence timeout.
++- **It cannot read the kernel log.** `/proc/kmsg`, `/proc/last_kmsg` and DropBox are all closed to
++  an unprivileged app on a retail phone. The trace above came from `adb`, not from the app.
++- **It is not running when it happens.** By the time Android is back up, the only thing left is a
++  boot reason and whatever was written to disk before the reset.
++
++So the guard is not a fix, and nothing here claims the panic cannot happen again. What it does is
++make the panic much harder to repeat, and make every attempt leave evidence.
++
++## What the guard does
++
++### 1. Breaks the loop — the part that matters most
++
++`BootReason` reads `sys.boot.reason` (with vendor fallbacks) at every app start. It only counts a
++boot once: `SystemClock.elapsedRealtime()` is stored on each start, and a new boot is detected by
++the uptime going *backwards*, so opening the app ten times after one crash counts one crash.
++
++A boot recorded as a panic, a watchdog bite or a thermal shutdown:
++
++- raises the crash counter,
++- **engages the latch**, and
++- refuses every launch until the user reads the dialog and taps *I understand — re-arm*.
++
++An automatic start (Setup → "open straight into Steam") is refused outright, with no dialog: opening
++the app must never be the thing that puts the device back into the loop.
++
++The latch relaxes on evidence, not on a timer: three sessions in a row that end *normally* lift the
++lock on their own. A session the guard itself stopped resets the count to zero.
++
++This is the genuinely dangerous scenario it removes: a phone that panics shortly after every boot,
++before anyone can reach Settings.
++
++### 2. Reduces the load before it is applied — `SafeProfile`
++
++| | OFF | SAFE | STRICT |
++|---|---|---|---|
++| Output | as set | 720p ceiling | 576p ceiling |
++| Frame cap | as set | 30 fps ceiling | 24 fps ceiling |
++| HDR10 | as set | off | off |
++| Frame generation | as set | off | off |
++| Upscaler / effects | as set | as set | off |
++| gamescope realtime queues | as set | off | off |
++| Mesa shader cache | on | on | off |
++| Steam interface | Zink (GPU) | Zink (GPU) | **llvmpipe (CPU)** |
++| Second screen | as set | as set | off |
++
++`SAFE` is the default on a Mali device. `STRICT` is what a locked latch forces.
++
++The caps are applied in `SessionState` before both halves read it — the activity for the compositor
++and `PerfMode`, the service for gamescope's `-W/-H/-r` — so the two agree on one size.
++
++`STRICT`'s llvmpipe switch is a diagnostic as much as a restriction. A device that survives on
++`STRICT` but dies on `SAFE` has told you the fault is in the Vulkan path and not in the client's
++own interface.
++
++### 3. Tests the GPU before Steam does — `droiddeck-gpu-probe`
++
++A proot invocation, run after the session folder is open and before the guest command line is
++built. Three stages, each with its own clock:
++
++1. **Enumeration** — `vulkaninfo --summary` under `timeout`. A hang here (exit 124/137) is reported
++   as `DD_GPU_PROBE_SUBMIT_TIMEOUT`, because enumeration that does not finish is the same silence
++   that preceded the panic.
++2. **Submit** — a Python/ctypes `vkCmdFillBuffer` of 4 KB straight against the session's ICD, then
++   a fence wait (2 s, inside the kernel's own 3 s fence timeout).
++3. **Readback** — the bytes come back as they were written. A fence that is signalled without the
++   work having been done cannot pass.
++
++Only a fence that never signals counts as a hard failure. Anything that prevents the test being
++built — no `python3`, no suitable queue family, no host-visible memory, a struct the ICD refuses —
++is a **skip**, never a verdict against the GPU. A bug in this script must never be the thing that
++locks someone out of their own phone.
++
++The app owns the outer clock (60 s) as well as the guest's internal ones, and if the process is
++still alive it asks proot to wind its tree down (SIGTERM, then SIGKILL) before recording the
++timeout as an answer.
++
++### 4. Takes the session down first — `GpuWatchdog`
++
++Two samples a second, while a session runs:
++
++- **Frames.** `WaylandCompositor.recentFrameIntervalMs()`. gamescope presents continuously, so a
++  gap of seconds is not a heavy scene, it is a stopped session. One sample over budget warns; two
++  stop the session.
++- **Wedged processes.** Three or more processes of this app in uninterruptible sleep (`D` in
++  `/proc`) across three consecutive samples — a fence that will never be signalled parks every
++  thread waiting on it there. About 1.5 s to act, which is inside the kernel's own 3 s timeout.
++- **Temperature.** Battery (°C, the one thermal number an app may read on a stock phone; thermal
++  zones where the kernel lets us). Over the ceiling warns, and stops the session if it stays there.
++
++An abort ends the session, writes everything to `gpu-guard.log`, and sweeps anything still holding
++the rootfs or `/dev/mali0` four seconds later — a killed Steam client is a restart, a kernel that
++finds the wedge itself is a reboot.
++
++Both signals are skipped while the screen is off: a sleeping phone presents nothing by design.
++
++### 5. Records everything
++
++- `Download/DroidDeck/<session>/gpu-guard.log` — the boot reason, the profile, the probe verdict,
++  periodic samples, and every action the guard took.
++- `Download/DroidDeck/<session>/gpu-probe.log` — the probe's full output.
++- `device.txt` — a **GPU safety guard** section: crash count, lock state, the last probe.
++- Setup → **Safety** → *Copy* — all of it on the clipboard, ready to paste into a bug report.
++
++## Settings
++
++Setup gains a fifth tab, **Safety**, on a Mali device (or once the guard has been turned on
++anywhere). Everything in it is reversible, and the defaults are the conservative ones:
++
++| Setting | Default | What turning it off costs |
++|---|---|---|
++| GPU guard | on (Mali) | no watching, no probing, no latch |
++| Restrictions | Safe | the session runs at full size with every extra path on |
++| Refuse to start after a crash | on | one tap instead of a block after a reboot |
++| Test the GPU first | on | ~2–20 s added to every launch |
++| Watch for a stalled GPU | on | the session is never stopped for you |
++| No frame for | 5 s | — |
++| Temperature ceiling | 44 °C | the phone decides for itself |
++| Interface on the CPU | off | only under Strict |
++
++## Honest limits
++
++- **The probe can itself trigger the fault.** It is a much smaller target than Steam, it is
++  time-boxed, and it is logged — but it does push work through the same driver. If it hangs, the
++  kernel may still take the device down. That is the calculated trade: better a bounded, logged,
++  two-second workload discovering it than the client discovering it half a minute in with the user
++  mid-game.
++- **The watchdog cannot act before a `CS_FATAL` it did not see coming.** Once the GPU has raised a
++  fatal exception, the kernel's dump path is what panics, and nothing in userspace is consulted.
++  The watchdog is a net for soft stalls, heat and wedges, not a guarantee.
++- **The latch depends on the boot reason being readable and truthful.** Some vendors report
++  `hw_reset` or nothing at all. An unreadable reason is logged and left alone — the guard never
++  treats "I don't know" as "it was fine".
++
++## Where it lives
++
++```
++app/src/main/java/com/droiddeck/launcher/gpu/guard/
++    BootReason.kt       why the phone last started, and how that is classified
++    GpuSafetyPrefs.kt   the settings and the latch's memory
++    SafeProfile.kt      what Off / Safe / Strict change
++    GpuGuard.kt         the latch, the launch decision, the session's lifetime
++    GpuWatchdog.kt      frames, wedged processes, temperature
++    Probe.kt            runs the guest probe, owns the wall clock
++    GpuGuardLog.kt      the record
++tools/linuxfs/overlay/usr/local/bin/droiddeck-gpu-probe   the guest side of the probe
++app/src/main/java/com/droiddeck/launcher/ui/GpuSafetyPage.kt   the page and the lock dialog
++```
+diff --git a/docs/progress-log.md b/docs/progress-log.md
+index 4c67247..ecbdde8 100644
+--- a/docs/progress-log.md
++++ b/docs/progress-log.md
+@@ -7,6 +7,44 @@ the timeline, then lessons and backlog. Companion to the README (what the app *d
+ 
+ ---
+ 
++## 2026-10-10 - Mali-G615: the GPU safety guard
++
++A Steam session on the Mali-G615 did not fail, it took the phone with it. Android recorded the
++next boot as `kernel_panic` and the trace named the kernel's own module: `CS_FATAL` /
++`CS_BUS_FAULT`, `FENCE_SIGNAL timeout(3000 ms)`, then `Unexpected kernel BRK exception at EL1` in
++`kbasep_csf_sync_kcpu_dump_locked` (`mali_kbase_mt6897_r44`). What caused the first bus fault is
++still unknown; what is known is that the app is not running when it happens and cannot repair a
++kernel module it cannot see.
++
++So the guard is built around the four things an APK *can* do. Full write-up: `docs/gpu-safety.md`.
++
++- **Break the loop** (`BootReason`, the latch in `GpuGuard`). `sys.boot.reason` is read at every
++  app start and counted **once per boot** - `elapsedRealtime()` stored on each start, a new boot
++  detected by the uptime going backwards, so opening the app ten times after one crash counts one
++  crash. A fatal boot reason engages the latch and every launch is refused until the user re-arms;
++  an automatic start ("open straight into Steam") is refused with no dialog at all. Three sessions
++  ending normally lift the lock; a session the guard stopped resets the count.
++- **Ask less of the GPU** (`SafeProfile`). Safe = 720p / 30 fps with HDR, frame generation,
++  realtime queues, mangoapp and the clock pin off. Strict adds 576p / 24 fps, no shader cache, no
++  upscaler or effects, no second screen, and the client's interface on llvmpipe - which doubles as
++  a diagnosis: stable on Strict but not on Safe means the fault is in the Vulkan path.
++- **Test before Steam does** (`Probe`, `droiddeck-gpu-probe`). Enumeration under `timeout`, then a
++  ctypes `vkCmdFillBuffer` + fence wait against the session's ICD, then a readback. Only a fence
++  that never signals is a failure; anything that stops the test being built is a **skip**, so a bug
++  in the probe can never lock someone out of their own phone.
++- **Stop the session first** (`GpuWatchdog`). Frames (`recentFrameIntervalMs`), processes wedged in
++  `D` state (3+ of our own uid, 3 samples running, ~1.5 s - inside the kernel's 3 s fence timeout),
++  and temperature. An abort sweeps the tree four seconds later.
++- **Leave evidence.** `gpu-guard.log` and `gpu-probe.log` per session, a GPU-safety section in
++  `device.txt`, and a fifth Setup tab (**Safety**, Mali only) with a Copy button for bug reports.
++
++Deliberately not done, and documented as such in `docs/gpu-safety.md`: nothing touches the kernel
++module, SELinux, a watchdog, or the fence timeout - none of that is an app's to change, and the
++probe can itself provoke the fault it is looking for. The guard makes the panic harder to repeat
++and every attempt traceable; it does not make it impossible.
++
++---
++
+ ## 2026-10-08 - `feat/stores`: GOG, Epic Games and Amazon Games in the launcher (in progress)
+ 
+ A new **Stores** section - the three storefronts' libraries and public catalogs, one download
+diff --git a/tools/linuxfs/overlay/usr/local/bin/droiddeck-gpu-probe b/tools/linuxfs/overlay/usr/local/bin/droiddeck-gpu-probe
+new file mode 100755
+index 0000000..9525403
+--- /dev/null
++++ b/tools/linuxfs/overlay/usr/local/bin/droiddeck-gpu-probe
+@@ -0,0 +1,705 @@
++#!/usr/bin/env bash
++# SPDX-License-Identifier: GPL-3.0-only
++#
++# A bounded GPU smoke test, run inside DroidDeck's Linux guest before gamescope and Steam start.
++# Read-only and unprivileged: no su, no chmod, no SELinux or /vendor changes, nothing written
++# outside the session folder.
++#
++# Why it exists. On the Mali-G615 this integration targets, a Steam session ended in a kernel
++# panic inside mali_kbase (CS_FATAL / CS_BUS_FAULT -> FENCE_SIGNAL timeout(3000 ms) ->
++# "Unexpected kernel BRK exception at EL1" in kbasep_csf_sync_kcpu_dump_locked). An APK can
++# neither repair that module nor read the kernel log that would name the trigger. What it can do
++# is refuse to hand the GPU a 700 MB client before it has proven it can finish one 4 KB job.
++#
++# Three stages, each with its own timeout, each failure labelled:
++#   1. enumeration  - the ICD loads and the device names itself (Mali-G615).
++#   2. submit       - one vkCmdFillBuffer is queued and its fence waited for. A fence that never
++#                     signals is the exact shape of the fault that took the phone down, and it is
++#                     the only outcome this script reports as a hard failure.
++#   3. readback     - the bytes come back as they were written, so a driver that signals a fence
++#                     without having done the work cannot pass.
++#
++# Stage 2 and 3 are skipped, not failed, when they cannot be built (no python3, no matching queue
++# family, a struct the ICD refuses). A test that cannot be run is not evidence against the GPU, and
++# reporting it as one would lock the user out of their own phone over a bug in this script.
++#
++# Output, one per line, on stdout:
++#   DD_GPU_PROBE_OK: ...
++#   DD_GPU_PROBE_FAILED: ...           exit 78
++#   DD_GPU_PROBE_SUBMIT_TIMEOUT: ...   exit 78   (the GPU did not finish; do not start Steam)
++#   DD_GPU_PROBE_SKIPPED: ...          exit 0    (a stage could not be run)
++#
++set -u
++
++mode=${1:-safe}
++# The wall clock the app enforces as well; kept shorter here so the kernel, not this script, is
++# never the thing left holding a wedged queue.
++enum_seconds=${DD_GPU_PROBE_ENUM_SECONDS:-25}
++submit_seconds=${DD_GPU_PROBE_SUBMIT_SECONDS:-20}
++# Fence wait, inside python. A GPU that is working answers this in well under a millisecond; the
++# kernel's own fence timeout on this device is 3000 ms, so anything past ~2 s is already the fault
++# we are looking for and there is no point waiting longer to say so.
++fence_ns=${DD_GPU_PROBE_FENCE_NS:-2000000000}
++
++echo "== droiddeck-gpu-probe $(date -u +%H:%M:%S): profile=$mode enum=${enum_seconds}s submit=${submit_seconds}s"
++
++# ── Stage 0: what the session would hand the GPU ──────────────────────────────────────────────
++icd=${BL_VK_DRIVER:-${VK_DRIVER_FILES:-${VK_ICD_FILENAMES:-}}}
++if [ -z "$icd" ]; then
++    echo "DD_GPU_PROBE_FAILED: no Vulkan driver was selected for this session"
++    exit 78
++fi
++if [ ! -r "$icd" ]; then
++    echo "DD_GPU_PROBE_FAILED: the selected driver manifest is not readable: $icd"
++    exit 78
++fi
++echo "== driver manifest: $icd"
++if [ ! -c /dev/mali0 ]; then
++    echo "DD_GPU_PROBE_FAILED: /dev/mali0 is absent or is not a character device in the guest"
++    exit 78
++fi
++if command -v ls >/dev/null 2>&1; then
++    echo "== /dev/mali0: $(ls -l /dev/mali0 2>/dev/null | awk '{print $1, $5, $6}' || echo 'not statable')"
++fi
++
++# ── Stage 1: enumeration ──────────────────────────────────────────────────────────────────────
++if ! command -v vulkaninfo >/dev/null 2>&1; then
++    echo "DD_GPU_PROBE_SKIPPED: vulkaninfo is not installed; the device was not enumerated"
++    vulkan_summary=""
++else
++    if command -v timeout >/dev/null 2>&1; then
++        vulkan_summary=$(VK_LOADER_DEBUG=error timeout "${enum_seconds}s" vulkaninfo --summary 2>&1)
++        vulkan_status=$?
++    else
++        echo "DD_GPU_PROBE_SKIPPED: timeout is not installed; not running an unbounded GPU probe"
++        vulkan_summary=""
++        vulkan_status=0
++    fi
++    printf '%s\n' "$vulkan_summary" | sed 's/^/== vulkaninfo: /'
++    if [ "$vulkan_status" = 124 ] || [ "$vulkan_status" = 137 ]; then
++        # 124 = timed out, 137 = killed. Either way the GPU did not answer an enumeration in time,
++        # which on this device is the same silence that preceded the panic.
++        echo "DD_GPU_PROBE_SUBMIT_TIMEOUT: enumerating the device did not finish in ${enum_seconds}s (exit $vulkan_status)"
++        exit 78
++    fi
++    if [ "$vulkan_status" != 0 ]; then
++        echo "DD_GPU_PROBE_FAILED: vulkaninfo exited $vulkan_status; the driver did not enumerate"
++        exit 78
++    fi
++    if [ -n "$vulkan_summary" ] && ! printf '%s\n' "$vulkan_summary" | grep -Eq 'Mali-G615([[:space:]]|\(|$)'; then
++        echo "DD_GPU_PROBE_FAILED: the selected driver did not report a Mali-G615 ($(printf '%s\n' "$vulkan_summary" | grep -m1 -E 'deviceName|device Name' || echo 'no device name'))"
++        exit 78
++    fi
++fi
++
++# ── Stages 2 and 3: one job, and its answer ───────────────────────────────────────────────────
++if ! command -v python3 >/dev/null 2>&1; then
++    echo "DD_GPU_PROBE_OK: device enumerated; the submit stage was skipped (no python3)"
++    exit 0
++fi
++
++submit_seconds_int=${submit_seconds%s}
++if command -v timeout >/dev/null 2>&1; then
++    DD_GPU_PROBE_SUBMIT=1 DD_GPU_PROBE_FENCE_NS="$fence_ns" \
++        timeout "${submit_seconds_int}s" python3 - "$icd" <<'PY'
++import ctypes
++import json
++import os
++import pathlib
++import sys
++
++# A minimal Vulkan submit, straight against the session's ICD - no loader, so there is nothing
++# between this script and the driver the session itself would use. The whole point is the fence:
++# if the GPU completes the work it is signalled in microseconds, and if it does not, that is the
++# failure mode this probe exists to catch before Steam is asked to try the same thing.
++
++VK_SUCCESS = 0
++VK_TIMEOUT = 2
++VK_NULL = None
++
++ST_APPLICATION_INFO = 0
++ST_INSTANCE_CREATE_INFO = 1
++ST_DEVICE_QUEUE_CREATE_INFO = 2
++ST_DEVICE_CREATE_INFO = 3
++ST_SUBMIT_INFO = 4
++ST_MEMORY_ALLOCATE_INFO = 5
++ST_FENCE_CREATE_INFO = 8
++ST_BUFFER_CREATE_INFO = 12
++ST_COMMAND_POOL_CREATE_INFO = 39
++ST_COMMAND_BUFFER_ALLOCATE_INFO = 40
++ST_COMMAND_BUFFER_BEGIN_INFO = 42
++
++QUEUE_GRAPHICS = 0x1
++QUEUE_COMPUTE = 0x2
++QUEUE_TRANSFER = 0x4
++
++BUFFER_USAGE_TRANSFER_DST = 0x00000002
++MEMORY_HOST_VISIBLE = 0x00000002
++MEMORY_HOST_COHERENT = 0x00000004
++COMMAND_BUFFER_LEVEL_PRIMARY = 0
++COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT = 0x00000001
++
++SIZE = 4096
++PATTERN = 0x5AA5A55A
++
++
++class Fail(Exception):
++    """Something this script needs is missing: a skip, never a verdict on the GPU."""
++
++
++class VkApplicationInfo(ctypes.Structure):
++    _fields_ = [
++        ("sType", ctypes.c_uint32),
++        ("pNext", ctypes.c_void_p),
++        ("pApplicationName", ctypes.c_char_p),
++        ("applicationVersion", ctypes.c_uint32),
++        ("pEngineName", ctypes.c_char_p),
++        ("engineVersion", ctypes.c_uint32),
++        ("apiVersion", ctypes.c_uint32),
++    ]
++
++
++class VkInstanceCreateInfo(ctypes.Structure):
++    _fields_ = [
++        ("sType", ctypes.c_uint32),
++        ("pNext", ctypes.c_void_p),
++        ("flags", ctypes.c_uint32),
++        ("pApplicationInfo", ctypes.c_void_p),
++        ("enabledLayerCount", ctypes.c_uint32),
++        ("ppEnabledLayerNames", ctypes.c_void_p),
++        ("enabledExtensionCount", ctypes.c_uint32),
++        ("ppEnabledExtensionNames", ctypes.c_void_p),
++    ]
++
++
++class VkDeviceQueueCreateInfo(ctypes.Structure):
++    _fields_ = [
++        ("sType", ctypes.c_uint32),
++        ("pNext", ctypes.c_void_p),
++        ("flags", ctypes.c_uint32),
++        ("queueFamilyIndex", ctypes.c_uint32),
++        ("queueCount", ctypes.c_uint32),
++        ("pQueuePriorities", ctypes.c_void_p),
++    ]
++
++
++class VkDeviceCreateInfo(ctypes.Structure):
++    _fields_ = [
++        ("sType", ctypes.c_uint32),
++        ("pNext", ctypes.c_void_p),
++        ("flags", ctypes.c_uint32),
++        ("queueCreateInfoCount", ctypes.c_uint32),
++        ("pQueueCreateInfos", ctypes.c_void_p),
++        ("enabledLayerCount", ctypes.c_uint32),
++        ("ppEnabledLayerNames", ctypes.c_void_p),
++        ("enabledExtensionCount", ctypes.c_uint32),
++        ("ppEnabledExtensionNames", ctypes.c_void_p),
++    ]
++
++
++class VkBufferCreateInfo(ctypes.Structure):
++    _fields_ = [
++        ("sType", ctypes.c_uint32),
++        ("pNext", ctypes.c_void_p),
++        ("flags", ctypes.c_uint32),
++        ("size", ctypes.c_uint64),
++        ("usage", ctypes.c_uint32),
++        ("sharingMode", ctypes.c_uint32),
++        ("queueFamilyIndexCount", ctypes.c_uint32),
++        ("pQueueFamilyIndices", ctypes.c_void_p),
++    ]
++
++
++class VkMemoryAllocateInfo(ctypes.Structure):
++    _fields_ = [
++        ("sType", ctypes.c_uint32),
++        ("pNext", ctypes.c_void_p),
++        ("allocationSize", ctypes.c_uint64),
++        ("memoryTypeIndex", ctypes.c_uint32),
++    ]
++
++
++class VkMemoryRequirements(ctypes.Structure):
++    _fields_ = [
++        ("size", ctypes.c_uint64),
++        ("alignment", ctypes.c_uint64),
++        ("memoryTypeBits", ctypes.c_uint32),
++    ]
++
++
++class VkMemoryType(ctypes.Structure):
++    _fields_ = [("propertyFlags", ctypes.c_uint32), ("heapIndex", ctypes.c_uint32)]
++
++
++class VkMemoryHeap(ctypes.Structure):
++    _fields_ = [("size", ctypes.c_uint64), ("flags", ctypes.c_uint32)]
++
++
++class VkPhysicalDeviceMemoryProperties(ctypes.Structure):
++    _fields_ = [
++        ("memoryTypeCount", ctypes.c_uint32),
++        ("memoryTypes", VkMemoryType * 32),
++        ("memoryHeapCount", ctypes.c_uint32),
++        ("memoryHeaps", VkMemoryHeap * 16),
++    ]
++
++
++class VkExtent3D(ctypes.Structure):
++    _fields_ = [("width", ctypes.c_uint32), ("height", ctypes.c_uint32), ("depth", ctypes.c_uint32)]
++
++
++class VkQueueFamilyProperties(ctypes.Structure):
++    _fields_ = [
++        ("queueFlags", ctypes.c_uint32),
++        ("queueCount", ctypes.c_uint32),
++        ("timestampValidBits", ctypes.c_uint32),
++        ("minImageTransferGranularity", VkExtent3D),
++    ]
++
++
++class VkCommandPoolCreateInfo(ctypes.Structure):
++    _fields_ = [
++        ("sType", ctypes.c_uint32),
++        ("pNext", ctypes.c_void_p),
++        ("flags", ctypes.c_uint32),
++        ("queueFamilyIndex", ctypes.c_uint32),
++    ]
++
++
++class VkCommandBufferAllocateInfo(ctypes.Structure):
++    _fields_ = [
++        ("sType", ctypes.c_uint32),
++        ("pNext", ctypes.c_void_p),
++        ("commandPool", ctypes.c_uint64),
++        ("level", ctypes.c_uint32),
++        ("commandBufferCount", ctypes.c_uint32),
++    ]
++
++
++class VkCommandBufferBeginInfo(ctypes.Structure):
++    _fields_ = [
++        ("sType", ctypes.c_uint32),
++        ("pNext", ctypes.c_void_p),
++        ("flags", ctypes.c_uint32),
++        ("pInheritanceInfo", ctypes.c_void_p),
++    ]
++
++
++class VkSubmitInfo(ctypes.Structure):
++    _fields_ = [
++        ("sType", ctypes.c_uint32),
++        ("pNext", ctypes.c_void_p),
++        ("waitSemaphoreCount", ctypes.c_uint32),
++        ("pWaitSemaphores", ctypes.c_void_p),
++        ("pWaitDstStageMask", ctypes.c_void_p),
++        ("commandBufferCount", ctypes.c_uint32),
++        ("pCommandBuffers", ctypes.c_void_p),
++        ("signalSemaphoreCount", ctypes.c_uint32),
++        ("pSignalSemaphores", ctypes.c_void_p),
++    ]
++
++
++class VkFenceCreateInfo(ctypes.Structure):
++    _fields_ = [
++        ("sType", ctypes.c_uint32),
++        ("pNext", ctypes.c_void_p),
++        ("flags", ctypes.c_uint32),
++    ]
++
++
++class VkPhysicalDeviceProperties(ctypes.Structure):
++    # Only the first six members are named, because they are all this script reads. The driver
++    # writes the WHOLE struct - limits and sparse properties included, 824 bytes on a 64-bit
++    # target - so the tail must be reserved here or vkGetPhysicalDeviceProperties writes past the
++    # end of this object. Oversized on purpose: a Vulkan version that grows the struct must not
++    # turn this probe into memory corruption.
++    _fields_ = [
++        ("apiVersion", ctypes.c_uint32),
++        ("driverVersion", ctypes.c_uint32),
++        ("vendorID", ctypes.c_uint32),
++        ("deviceID", ctypes.c_uint32),
++        ("deviceType", ctypes.c_uint32),
++        ("deviceName", ctypes.c_char * 256),
++        ("_tail", ctypes.c_char * 2048),
++    ]
++
++
++def manifest_library(path_text):
++    manifest = pathlib.Path(path_text)
++    if manifest.suffix == ".json" and manifest.is_file():
++        try:
++            document = json.loads(manifest.read_text())
++        except Exception:
++            return None
++        if "ICD" in document:
++            library = document["ICD"].get("library_path", "")
++            if not library:
++                return None
++            candidate = pathlib.Path(library)
++            return candidate if candidate.is_absolute() else manifest.parent / candidate
++        if "library_path" in document:
++            candidate = pathlib.Path(document["library_path"])
++            return candidate if candidate.is_absolute() else manifest.parent / candidate
++        return None
++    return pathlib.Path(path_text)
++
++
++def check(result, what):
++    if result != VK_SUCCESS:
++        raise Fail("%s returned %d" % (what, result))
++    return result
++
++
++def main():
++    library = manifest_library(sys.argv[1])
++    if not library or not library.is_file():
++        raise Fail("the driver library could not be found from %s" % sys.argv[1])
++
++    # RTLD_NOW: a dependency this ICD cannot resolve must fail here, before anything is queued.
++    driver = ctypes.CDLL(str(library), mode=os.RTLD_NOW | os.RTLD_LOCAL)
++
++    negotiate = driver.vk_icdNegotiateLoaderICDInterfaceVersion
++    negotiate.argtypes = [ctypes.POINTER(ctypes.c_uint32)]
++    negotiate.restype = ctypes.c_int32
++    version = ctypes.c_uint32(7)
++    check(negotiate(ctypes.byref(version)), "vk_icdNegotiateLoaderICDInterfaceVersion")
++
++    gipa = driver.vk_icdGetInstanceProcAddr
++    gipa.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
++    gipa.restype = ctypes.c_void_p
++    if not gipa(None, b"vkCreateInstance"):
++        raise Fail("the ICD has no vkCreateInstance entry point")
++
++    def instance_fn(name, argtypes=None, restype=ctypes.c_int32):
++        address = gipa(None, name.encode())
++        if not address:
++            raise Fail("the ICD has no %s" % name.decode())
++        return ctypes.cast(address, ctypes.CFUNCTYPE(restype, *(() if argtypes is None else argtypes)))
++
++    vk_create_instance = instance_fn(
++        "vkCreateInstance",
++        [ctypes.c_void_p, ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint64)],
++    )
++    vk_destroy_instance = instance_fn(
++        "vkDestroyInstance", [ctypes.c_uint64, ctypes.c_void_p], ctypes.c_void_p
++    )
++    vk_enumerate_physical_devices = instance_fn(
++        "vkEnumeratePhysicalDevices",
++        [ctypes.c_uint64, ctypes.POINTER(ctypes.c_uint32), ctypes.POINTER(ctypes.c_uint64)],
++    )
++    vk_get_physical_device_properties = instance_fn(
++        "vkGetPhysicalDeviceProperties",
++        [ctypes.c_uint64, ctypes.POINTER(VkPhysicalDeviceProperties)],
++        ctypes.c_void_p,
++    )
++    vk_get_physical_device_memory_properties = instance_fn(
++        "vkGetPhysicalDeviceMemoryProperties",
++        [ctypes.c_uint64, ctypes.POINTER(VkPhysicalDeviceMemoryProperties)],
++        ctypes.c_void_p,
++    )
++    vk_get_physical_device_queue_family_properties = instance_fn(
++        "vkGetPhysicalDeviceQueueFamilyProperties",
++        [ctypes.c_uint64, ctypes.POINTER(ctypes.c_uint32), ctypes.POINTER(VkQueueFamilyProperties)],
++        ctypes.c_void_p,
++    )
++    vk_create_device = instance_fn(
++        "vkCreateDevice",
++        [
++            ctypes.c_uint64,
++            ctypes.c_void_p,
++            ctypes.c_void_p,
++            ctypes.POINTER(ctypes.c_uint64),
++        ],
++    )
++    vk_get_device_proc_addr = instance_fn(
++        "vkGetDeviceProcAddr",
++        [ctypes.c_uint64, ctypes.c_char_p],
++        ctypes.c_void_p,
++    )
++
++    application = VkApplicationInfo(
++        sType=ST_APPLICATION_INFO,
++        pNext=None,
++        pApplicationName=b"droiddeck-gpu-probe",
++        applicationVersion=1,
++        pEngineName=b"droiddeck",
++        engineVersion=1,
++        apiVersion=(1 << 22) | (1 << 12),  # Vulkan 1.1
++    )
++    instance_info = VkInstanceCreateInfo(sType=ST_INSTANCE_CREATE_INFO, pApplicationInfo=ctypes.cast(ctypes.byref(application), ctypes.c_void_p))
++    instance = ctypes.c_uint64(0)
++    check(vk_create_instance(ctypes.byref(instance_info), None, ctypes.byref(instance)), "vkCreateInstance")
++    instance_value = instance.value
++    if instance_value == 0:
++        raise Fail("vkCreateInstance reported success but handed back a null instance")
++
++    try:
++        count = ctypes.c_uint32(0)
++        check(vk_enumerate_physical_devices(instance_value, ctypes.byref(count), None), "vkEnumeratePhysicalDevices")
++        if count.value == 0:
++            raise Fail("the driver reports no physical device")
++        devices = (ctypes.c_uint64 * count.value)()
++        check(vk_enumerate_physical_devices(instance_value, ctypes.byref(count), devices), "vkEnumeratePhysicalDevices")
++
++        chosen = None
++        chosen_name = ""
++        chosen_vendor = 0
++        for index in range(count.value):
++            props = VkPhysicalDeviceProperties()
++            vk_get_physical_device_properties(devices[index], ctypes.byref(props))
++            name = props.deviceName.split(b"\x00")[0].decode("utf-8", "replace")
++            if chosen is None:
++                chosen_vendor = props.vendorID
++            if "Mali-G615" in name:
++                chosen = devices[index]
++                chosen_name = name
++                chosen_vendor = props.vendorID
++                break
++        if chosen is None:
++            props = VkPhysicalDeviceProperties()
++            vk_get_physical_device_properties(devices[0], ctypes.byref(props))
++            chosen = devices[0]
++            chosen_name = props.deviceName.split(b"\x00")[0].decode("utf-8", "replace")
++            chosen_vendor = props.vendorID
++            print("== note: no Mali-G615 among the devices; using %s" % chosen_name)
++        print("== device: %s (vendor 0x%x)" % (chosen_name, chosen_vendor))
++
++        families = ctypes.c_uint32(0)
++        vk_get_physical_device_queue_family_properties(chosen, ctypes.byref(families), None)
++        if families.value == 0:
++            raise Fail("the device reports no queue family")
++        family_list = (VkQueueFamilyProperties * families.value)()
++        vk_get_physical_device_queue_family_properties(chosen, ctypes.byref(families), family_list)
++
++        family_index = -1
++        for preference in (QUEUE_TRANSFER, QUEUE_COMPUTE, QUEUE_GRAPHICS):
++            for index in range(families.value):
++                if family_list[index].queueFlags & preference:
++                    family_index = index
++                    break
++            if family_index >= 0:
++                break
++        if family_index < 0:
++            raise Fail("no queue family supports transfer, compute or graphics work")
++        print("== queue family %d (flags 0x%x, %d queue(s))"
++              % (family_index, family_list[family_index].queueFlags, family_list[family_index].queueCount))
++
++        priority = ctypes.c_float(1.0)
++        queue_info = VkDeviceQueueCreateInfo(
++            sType=ST_DEVICE_QUEUE_CREATE_INFO,
++            queueFamilyIndex=family_index,
++            queueCount=1,
++            pQueuePriorities=ctypes.cast(ctypes.byref(priority), ctypes.c_void_p),
++        )
++        device_info = VkDeviceCreateInfo(
++            sType=ST_DEVICE_CREATE_INFO,
++            queueCreateInfoCount=1,
++            pQueueCreateInfos=ctypes.cast(ctypes.byref(queue_info), ctypes.c_void_p),
++        )
++        device = ctypes.c_uint64(0)
++        check(vk_create_device(chosen, ctypes.byref(device_info), None, ctypes.byref(device)), "vkCreateDevice")
++        device_value = device.value
++        if device_value == 0:
++            raise Fail("vkCreateDevice reported success but handed back a null device")
++
++        def device_fn(name, argtypes, restype=ctypes.c_int32):
++            address = vk_get_device_proc_addr(device_value, name.encode())
++            if not address:
++                address = gipa(instance_value, name.encode())
++            if not address:
++                raise Fail("the driver has no %s" % name)
++            return ctypes.cast(address, ctypes.CFUNCTYPE(restype, *argtypes))
++
++        vk_get_device_queue = device_fn(
++            "vkGetDeviceQueue",
++            [ctypes.c_uint64, ctypes.c_uint32, ctypes.c_uint32, ctypes.POINTER(ctypes.c_uint64)],
++            ctypes.c_void_p,
++        )
++        vk_create_buffer = device_fn(
++            "vkCreateBuffer",
++            [ctypes.c_uint64, ctypes.c_void_p, ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint64)],
++        )
++        vk_destroy_buffer = device_fn("vkDestroyBuffer", [ctypes.c_uint64, ctypes.c_uint64, ctypes.c_void_p], ctypes.c_void_p)
++        vk_get_buffer_memory_requirements = device_fn(
++            "vkGetBufferMemoryRequirements",
++            [ctypes.c_uint64, ctypes.c_uint64, ctypes.POINTER(VkMemoryRequirements)],
++            ctypes.c_void_p,
++        )
++        vk_allocate_memory = device_fn(
++            "vkAllocateMemory",
++            [ctypes.c_uint64, ctypes.c_void_p, ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint64)],
++        )
++        vk_free_memory = device_fn("vkFreeMemory", [ctypes.c_uint64, ctypes.c_uint64, ctypes.c_void_p], ctypes.c_void_p)
++        vk_bind_buffer_memory = device_fn("vkBindBufferMemory", [ctypes.c_uint64, ctypes.c_uint64, ctypes.c_uint64, ctypes.c_uint64])
++        vk_map_memory = device_fn(
++            "vkMapMemory",
++            [ctypes.c_uint64, ctypes.c_uint64, ctypes.c_uint64, ctypes.c_uint64, ctypes.c_uint32, ctypes.POINTER(ctypes.c_void_p)],
++        )
++        vk_unmap_memory = device_fn("vkUnmapMemory", [ctypes.c_uint64, ctypes.c_uint64])
++        vk_create_command_pool = device_fn(
++            "vkCreateCommandPool",
++            [ctypes.c_uint64, ctypes.c_void_p, ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint64)],
++        )
++        vk_destroy_command_pool = device_fn("vkDestroyCommandPool", [ctypes.c_uint64, ctypes.c_uint64, ctypes.c_void_p], ctypes.c_void_p)
++        vk_allocate_command_buffers = device_fn(
++            "vkAllocateCommandBuffers",
++            [ctypes.c_uint64, ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint64)],
++        )
++        vk_free_command_buffers = device_fn(
++            "vkFreeCommandBuffers", [ctypes.c_uint64, ctypes.c_uint64, ctypes.c_uint32, ctypes.c_void_p], ctypes.c_void_p
++        )
++        vk_begin_command_buffer = device_fn("vkBeginCommandBuffer", [ctypes.c_uint64, ctypes.c_void_p])
++        vk_cmd_fill_buffer = device_fn(
++            "vkCmdFillBuffer", [ctypes.c_uint64, ctypes.c_uint64, ctypes.c_uint64, ctypes.c_uint64, ctypes.c_uint32], ctypes.c_void_p
++        )
++        vk_end_command_buffer = device_fn("vkEndCommandBuffer", [ctypes.c_uint64])
++        vk_create_fence = device_fn(
++            "vkCreateFence",
++            [ctypes.c_uint64, ctypes.c_void_p, ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint64)],
++        )
++        vk_destroy_fence = device_fn("vkDestroyFence", [ctypes.c_uint64, ctypes.c_uint64, ctypes.c_void_p], ctypes.c_void_p)
++        vk_queue_submit = device_fn("vkQueueSubmit", [ctypes.c_uint64, ctypes.c_uint32, ctypes.c_void_p, ctypes.c_uint64])
++        vk_wait_for_fences = device_fn(
++            "vkWaitForFences", [ctypes.c_uint64, ctypes.c_uint32, ctypes.c_void_p, ctypes.c_uint32, ctypes.c_uint64]
++        )
++        vk_destroy_device = device_fn("vkDestroyDevice", [ctypes.c_uint64, ctypes.c_void_p], ctypes.c_void_p)
++
++        queue = ctypes.c_uint64(0)
++        vk_get_device_queue(device_value, family_index, 0, ctypes.byref(queue))
++
++        memory_properties = VkPhysicalDeviceMemoryProperties()
++        vk_get_physical_device_memory_properties(chosen, ctypes.byref(memory_properties))
++
++        buffer_info = VkBufferCreateInfo(sType=ST_BUFFER_CREATE_INFO, size=SIZE, usage=BUFFER_USAGE_TRANSFER_DST)
++        buffer = ctypes.c_uint64(0)
++        check(vk_create_buffer(device_value, ctypes.byref(buffer_info), None, ctypes.byref(buffer)), "vkCreateBuffer")
++        buffer_value = buffer.value
++
++        requirements = VkMemoryRequirements()
++        vk_get_buffer_memory_requirements(device_value, buffer_value, ctypes.byref(requirements))
++
++        memory_type = -1
++        for index in range(memory_properties.memoryTypeCount):
++            if requirements.memoryTypeBits & (1 << index):
++                flags = memory_properties.memoryTypes[index].propertyFlags
++                if flags & MEMORY_HOST_VISIBLE and flags & MEMORY_HOST_COHERENT:
++                    memory_type = index
++                    break
++        if memory_type < 0:
++            raise Fail("no host-visible, host-coherent memory type for the probe's buffer")
++
++        allocate_info = VkMemoryAllocateInfo(
++            sType=ST_MEMORY_ALLOCATE_INFO, allocationSize=requirements.size, memoryTypeIndex=memory_type
++        )
++        memory = ctypes.c_uint64(0)
++        check(vk_allocate_memory(device_value, ctypes.byref(allocate_info), None, ctypes.byref(memory)), "vkAllocateMemory")
++        memory_value = memory.value
++        check(vk_bind_buffer_memory(device_value, buffer_value, memory_value, 0), "vkBindBufferMemory")
++
++        mapped = ctypes.c_void_p(0)
++        check(vk_map_memory(device_value, memory_value, 0, SIZE, 0, ctypes.byref(mapped)), "vkMapMemory")
++        try:
++            ctypes.memset(mapped, 0, SIZE)
++        except Exception:
++            pass
++
++        pool_info = VkCommandPoolCreateInfo(sType=ST_COMMAND_POOL_CREATE_INFO, queueFamilyIndex=family_index)
++        pool = ctypes.c_uint64(0)
++        check(vk_create_command_pool(device_value, ctypes.byref(pool_info), None, ctypes.byref(pool)), "vkCreateCommandPool")
++        pool_value = pool.value
++
++        allocate_buffers = VkCommandBufferAllocateInfo(
++            sType=ST_COMMAND_BUFFER_ALLOCATE_INFO,
++            commandPool=pool_value,
++            level=COMMAND_BUFFER_LEVEL_PRIMARY,
++            commandBufferCount=1,
++        )
++        command_buffer = ctypes.c_uint64(0)
++        check(vk_allocate_command_buffers(device_value, ctypes.byref(allocate_buffers), ctypes.byref(command_buffer)), "vkAllocateCommandBuffers")
++        command_buffer_value = command_buffer.value
++
++        begin_info = VkCommandBufferBeginInfo(sType=ST_COMMAND_BUFFER_BEGIN_INFO, flags=COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT)
++        check(vk_begin_command_buffer(command_buffer_value, ctypes.byref(begin_info)), "vkBeginCommandBuffer")
++        vk_cmd_fill_buffer(command_buffer_value, buffer_value, 0, SIZE, PATTERN)
++        check(vk_end_command_buffer(command_buffer_value), "vkEndCommandBuffer")
++
++        fence_info = VkFenceCreateInfo(sType=ST_FENCE_CREATE_INFO)
++        fence = ctypes.c_uint64(0)
++        check(vk_create_fence(device_value, ctypes.byref(fence_info), None, ctypes.byref(fence)), "vkCreateFence")
++        fence_value = fence.value
++
++        submit_info = VkSubmitInfo(sType=ST_SUBMIT_INFO, commandBufferCount=1)
++        submit_info.pCommandBuffers = ctypes.cast(ctypes.byref(command_buffer), ctypes.c_void_p)
++        check(vk_queue_submit(queue.value, 1, ctypes.byref(submit_info), fence_value), "vkQueueSubmit")
++        sys.stdout.write("== submitted one %d-byte fill; waiting for its fence\n" % SIZE)
++        sys.stdout.flush()
++
++        # ── From here on, the GPU's answer is the only thing being measured. ──────────────────
++        fence_array = (ctypes.c_uint64 * 1)(fence_value)
++        status = vk_wait_for_fences(device_value, 1, fence_array, 1, int(os.environ.get("DD_GPU_PROBE_FENCE_NS", "2000000000")))
++        if status == VK_TIMEOUT:
++            # Not a skip and not a script fault: work was queued and the GPU did not finish it.
++            print("DD_GPU_PROBE_SUBMIT_TIMEOUT: a queued %d-byte fill did not complete within the fence wait" % SIZE)
++            sys.exit(78)
++        check(status, "vkWaitForFences")
++
++        words = ctypes.cast(mapped, ctypes.POINTER(ctypes.c_uint32))
++        bad = -1
++        for index in range(SIZE // 4):
++            if words[index] != PATTERN:
++                bad = index
++                break
++        if bad >= 0:
++            print("DD_GPU_PROBE_FAILED: the fence was signalled but the buffer reads 0x%08x at word %d (expected 0x%08x)"
++                  % (words[bad], bad, PATTERN))
++            sys.exit(78)
++
++        print("== read back %d bytes, all 0x%08x" % (SIZE, PATTERN))
++
++        vk_destroy_fence(device_value, fence_value, None)
++        vk_free_command_buffers(device_value, pool_value, 1, ctypes.cast(ctypes.byref(command_buffer), ctypes.c_void_p))
++        vk_destroy_command_pool(device_value, pool_value, None)
++        vk_unmap_memory(device_value, memory_value)
++        vk_destroy_buffer(device_value, buffer_value, None)
++        vk_free_memory(device_value, memory_value, None)
++        vk_destroy_device(device_value, None)
++    finally:
++        vk_destroy_instance(instance_value, None)
++
++    print("DD_GPU_PROBE_OK: the device enumerated and finished a queued job")
++
++
++try:
++    main()
++except Fail as error:
++    print("DD_GPU_PROBE_SKIPPED: %s" % error)
++    sys.exit(0)
++except SystemExit:
++    raise
++except BaseException as error:
++    # Anything unexpected - a struct the driver disagrees with, a Python quirk - is a test that
++    # could not be run, and must never be reported as the GPU having failed.
++    print("DD_GPU_PROBE_SKIPPED: the submit stage could not be built: %s: %s" % (type(error).__name__, error))
++    sys.exit(0)
++PY
++    probe_status=$?
++else
++    echo "DD_GPU_PROBE_SKIPPED: timeout is not installed; the submit stage was not run"
++    probe_status=0
++fi
++
++if [ "$probe_status" = 124 ] || [ "$probe_status" = 137 ]; then
++    echo "DD_GPU_PROBE_SUBMIT_TIMEOUT: the submit stage did not finish in ${submit_seconds_int}s (exit $probe_status)"
++    exit 78
++fi
++if [ "$probe_status" = 78 ]; then
++    # The python stage already said why.
++    exit 78
++fi
++if [ "$probe_status" != 0 ]; then
++    echo "DD_GPU_PROBE_SKIPPED: the submit stage exited $probe_status"
++    exit 0
++fi
++
++echo "== droiddeck-gpu-probe $(date -u +%H:%M:%S): done"
++exit 0
+-- 
+2.39.5
+

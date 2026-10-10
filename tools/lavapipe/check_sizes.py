@@ -57,9 +57,17 @@ def main():
                                                               "meta.json" if name == "meta.json"
                                                               else "per-library"))
     total = os.path.getsize(args.archive)
-    rows.append("| **archive** | %s | %s |" % (format(total, ","), format(lim["MAX_ARCHIVE_BYTES"], ",")))
-    if total > lim["MAX_ARCHIVE_BYTES"]:
-        bad.append("the archive is %s bytes over MAX_ARCHIVE_BYTES" % format(total - lim["MAX_ARCHIVE_BYTES"], ","))
+    # The importer's MAX_ARCHIVE_BYTES bounds what it *writes*, not what it downloads, and the two are a
+    # factor 3.3 apart here. Reporting only the compressed size would have said "40 MB, limit 134 MB"
+    # about a package that unpacks to 133.7 MB - under the ceiling by 0.4%, which is the kind of margin a
+    # summary exists to make visible.
+    written = sum(os.path.getsize(os.path.join(args.stage, n)) for n in os.listdir(args.stage))
+    rows.append("| unpacked total (what the importer writes) | %s | %s |"
+                % (format(written, ","), format(lim["MAX_ARCHIVE_BYTES"], ",")))
+    rows.append("| archive as downloaded (no limit; shown for the phone) | %s | - |" % format(total, ","))
+    if written > lim["MAX_ARCHIVE_BYTES"]:
+        bad.append("the package writes %s bytes, %s over MAX_ARCHIVE_BYTES"
+                   % (format(written, ","), format(written - lim["MAX_ARCHIVE_BYTES"], ",")))
     if args.zip:
         import json
         import zipfile

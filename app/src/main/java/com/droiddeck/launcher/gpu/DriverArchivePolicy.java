@@ -4,10 +4,41 @@ package com.droiddeck.launcher.gpu;
 /** Pure filename/API policy for the experimental Linux driver import. No Android dependency. */
 public final class DriverArchivePolicy {
     public static final String BACKEND_NAME = "libpanvk_backend.so";
-    public static final long MAX_ARCHIVE_BYTES = 128L << 20;
-    public static final long MAX_LIBRARY_BYTES = 96L << 20;
+    /**
+     * What one driver package may write, unpacked. The number is Debian's rather than ours: the software
+     * (lavapipe) package carries {@code libLLVM.so.19.1} at 123,242,120 bytes next to a 10,451,865 byte
+     * driver, 133,695,570 unpacked, and the 128 MiB this used to carry left 522 KB of margin - a
+     * package that fits by 0.4% is a package that stops fitting at the next Mesa revision. A limit that
+     * cannot hold the one library a mode depends on is not a safety limit either; it is an outage with a
+     * error dialog.
+     */
+    public static final long MAX_ARCHIVE_BYTES = 256L << 20;
+    /** One library, unpacked. 96 MiB was fine for Turnip and refused Debian's LLVM by 22 MB. */
+    public static final long MAX_LIBRARY_BYTES = 192L << 20;
     public static final int MAX_META_BYTES = 64 << 10;
+    /** The headroom {@link #requiredFreeSpace} always asks for, whatever the zip claims. */
+    public static final long MIN_FREE_BYTES = 32L << 20;
     private DriverArchivePolicy() {}
+
+    /**
+     * Free space an import of this archive size should be allowed to need.
+     *
+     * Raising the size ceilings without asking this would have been half the change: the importer writes
+     * into the app's own files directory, so on a nearly full device the failure mode of a 133 MB driver
+     * is not a clean refusal but a partition filled mid-extraction. A {@code .so} of this shape
+     * compresses about 3.3x - 40.6 MB of zip for 133.7 MB written - so four times the archive plus a
+     * floor is comfortably more than the files inside it and much less than a device with room to spare
+     * would notice. The answer is capped by the extraction ceiling, because nothing above it can be
+     * written here at all.
+     *
+     * @param archiveBytes the size of the zip being imported, or 0 when it could not be measured
+     *                     (a content provider that will not say is not a reason to refuse an import)
+     */
+    public static long requiredFreeSpace(long archiveBytes) {
+        if (archiveBytes <= 0) return 0;
+        if (archiveBytes > Long.MAX_VALUE / 4) return MAX_ARCHIVE_BYTES;
+        return Math.min(archiveBytes * 4 + MIN_FREE_BYTES, MAX_ARCHIVE_BYTES);
+    }
 
     public static boolean isMainLibrary(String name) {
         return name != null && name.matches("libvulkan_[A-Za-z0-9][A-Za-z0-9_.-]*\\.so");

@@ -1,0 +1,93 @@
+From b2dcf432d62c370cfaa0cc2dc30139c9706f66ac Mon Sep 17 00:00:00 2001
+From: Arena Agent <agent@arena.ai>
+Date: Sat, 10 Oct 2026 12:45:45 +0000
+Subject: [PATCH 14/29] Make the loader the probe opens selectable, and stop
+ testing an empty machine
+
+The new probe tests failed on the runner and passed here, and the log the
+previous commit added said exactly which case: "no loader at all". ubuntu-24.04
+runners ship a system libvulkan.so.1, so that case was never testing absence, it
+was testing Mesa with no ICD behind it. A test that asserts what only some
+machines do is worse than no test - it fails on the machine that has nothing to
+do with the app.
+
+DD_GPU_PROBE_LOADER now names the loader to open, which makes "the loader I told
+you about is not there" deterministic everywhere, and is a knob worth having by
+hand when someone wants to try a probe against a particular loader build. It is
+reported as a probe that could not be run, which is what the app already treats
+as a failure, so a wrong name stops the session rather than waving it through.
+
+Six cases now: pass, the device naming itself Mali-G615 MC6, a fence that never
+signals, a fence that signals without doing the work, a loader named and
+missing, and no driver present - the last of those asserting only that it never
+reads as a pass, whatever the machine answers.
+
+Co-authored-by: arena-agent <297053741+arena-agent@users.noreply.github.com>
+---
+ .../overlay/usr/local/bin/droiddeck-gpu-probe | 12 +++++++++
+ tools/test/run_probe_tests.sh                 | 25 +++++++++++++++----
+ 2 files changed, 32 insertions(+), 5 deletions(-)
+
+diff --git a/tools/linuxfs/overlay/usr/local/bin/droiddeck-gpu-probe b/tools/linuxfs/overlay/usr/local/bin/droiddeck-gpu-probe
+index afe2ff5..33e0059 100755
+--- a/tools/linuxfs/overlay/usr/local/bin/droiddeck-gpu-probe
++++ b/tools/linuxfs/overlay/usr/local/bin/droiddeck-gpu-probe
+@@ -377,6 +377,18 @@ def open_loader():
+     the session started with no GPU test behind it at all. Dispatching entry points is precisely
+     what the loader exists to do, and it is the path the real session takes as well.
+     """
++    # DD_GPU_PROBE_LOADER picks the loader to open. It exists for the test suite in tools/test,
++    # which has to be able to ask "what happens when there is no loader" on a machine where one
++    # happens to be installed, and it is useful by hand: a build of the loader can be pointed at
++    # without touching the session. A name given and not openable is an error, not a skip - being
++    # told which loader to use and not finding it is reported, not swallowed: it arrives as a
++    # probe that could not be run, which the app already treats as one that failed.
++    override = os.environ.get("DD_GPU_PROBE_LOADER", "").strip()
++    if override:
++        try:
++            return ctypes.CDLL(override, mode=os.RTLD_NOW | os.RTLD_LOCAL), override
++        except OSError as error:
++            raise Fail("DD_GPU_PROBE_LOADER=%s cannot be opened (%s)" % (override, error))
+     tried = []
+     for name in ("libvulkan.so.1", "libvulkan.so"):
+         try:
+diff --git a/tools/test/run_probe_tests.sh b/tools/test/run_probe_tests.sh
+index 3fd5fcf..64d8eb6 100755
+--- a/tools/test/run_probe_tests.sh
++++ b/tools/test/run_probe_tests.sh
+@@ -75,12 +75,27 @@ check "the device is reported as the Mali-G615" ""                   "Mali-G615
+ check "a fence that never signals blocks"       "MOCK_FENCE_RESULT=2" "DD_GPU_PROBE_SUBMIT_TIMEOUT: "  78
+ check "a fence that lies about the work blocks" "MOCK_SKIP_FILL=1"     "DD_GPU_PROBE_FAILED: "          78
+ 
+-# No loader at all: the probe must report a skip and must never block the launch.
+-out=$(python3 "$WORK/probe.py" /nonexistent/icd.json 2>&1); status=$?
+-if printf '%s\n' "$out" | grep -q "DD_GPU_PROBE_SKIPPED: no Vulkan loader" && [ "$status" = 0 ]; then
+-    echo "  ok   no loader is a skip, and a skip never blocks"
++# A loader that was asked for by name and is not there. Deterministic, unlike "no loader at all":
++# ubuntu-24.04 runners ship a system libvulkan.so.1, so a case built on its absence passed at home
++# and did the opposite here - which is the whole reason the loader is selectable by name.
++out=$(env DD_GPU_PROBE_LOADER="$WORK/nope.so" python3 "$WORK/probe.py" /nonexistent/icd.json 2>&1); status=$?
++if printf '%s\n' "$out" | grep -q "DD_GPU_PROBE_LOADER=.*cannot be opened" && [ "$status" = 0 ]; then
++    echo "  ok   a loader named and missing is named back, as a probe that could not run"
+ else
+-    echo "  FAIL no loader is a skip, and a skip never blocks (exit $status)"
++    echo "  FAIL a loader named and missing is named back, as a probe that could not run (exit $status)"
++    printf '%s\n' "$out" | tail -3 | sed 's/^/       /'
++    FAILED=1
++fi
++
++# No driver manifest. On a machine with a loader the loader answers and finds nothing behind it;
++# on a machine without one the probe reports a skip. Either way it must not claim the GPU works,
++# and only those two answers are allowed - anything else is an unhandled death.
++out=$(env LD_LIBRARY_PATH="$WORK/empty" python3 "$WORK/probe.py" "$WORK/absent.json" 2>&1); status=$?
++if ! printf '%s\n' "$out" | grep -q "DD_GPU_PROBE_OK" && { [ "$status" = 0 ] || [ "$status" = 78 ]; }; then
++    echo "  ok   no driver present never reads as a pass"
++else
++    echo "  FAIL no driver present never reads as a pass (exit $status)"
++    printf '%s\n' "$out" | tail -3 | sed 's/^/       /'
+     FAILED=1
+ fi
+ 
+-- 
+2.39.5
+

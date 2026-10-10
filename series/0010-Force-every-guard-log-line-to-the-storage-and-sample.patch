@@ -1,0 +1,138 @@
+From 6d6c743eca2729d16c5cfd63ad55de3c4dd026eb Mon Sep 17 00:00:00 2001
+From: Arena Agent <agent@arena.ai>
+Date: Sat, 10 Oct 2026 02:58:26 +0000
+Subject: [PATCH 10/29] Force every guard log line to the storage, and sample
+ once a second
+
+The first crash on the phone left a log that stopped at 22:33:06 with the
+reboot recorded at 22:34:23. The obvious reading is that the watchdog stopped
+sampling; it did not. File.appendText puts the bytes in the page cache, the
+writeback timer is up to thirty seconds behind, and a kernel panic takes the
+page cache with it - so every line written in the seconds before the panic was
+gone, and the log ended a minute and a half before the event it exists to
+record.
+
+Each line is now written and fsync'd, which costs microseconds on a file this
+quiet and puts the last line before a panic where it can be read afterwards.
+With that paid for, the periodic sample can be every second instead of every
+four, and every 500 ms once anything is out of the ordinary: the seconds before
+a panic are the only seconds that matter afterwards, and a four-second gap is
+most of them.
+
+Also documents it in docs/gpu-safety.md, because a log that loses the end is a
+log that lies about what the watchdog was doing.
+
+Co-authored-by: arena-agent <297053741+arena-agent@users.noreply.github.com>
+---
+ .../launcher/gpu/guard/GpuGuardLog.kt         | 25 ++++++++++++++++++-
+ .../launcher/gpu/guard/GpuWatchdog.kt         | 15 ++++++++---
+ docs/gpu-safety.md                            |  9 +++++++
+ 3 files changed, 44 insertions(+), 5 deletions(-)
+
+diff --git a/app/src/main/java/com/droiddeck/launcher/gpu/guard/GpuGuardLog.kt b/app/src/main/java/com/droiddeck/launcher/gpu/guard/GpuGuardLog.kt
+index e94165c..ecbcdb3 100644
+--- a/app/src/main/java/com/droiddeck/launcher/gpu/guard/GpuGuardLog.kt
++++ b/app/src/main/java/com/droiddeck/launcher/gpu/guard/GpuGuardLog.kt
+@@ -3,6 +3,7 @@ package com.droiddeck.launcher.gpu.guard
+ 
+ import android.util.Log
+ import java.io.File
++import java.io.FileOutputStream
+ import java.text.SimpleDateFormat
+ import java.util.Date
+ import java.util.Locale
+@@ -64,7 +65,7 @@ object GpuGuardLog {
+         for (file in targets) {
+             try {
+                 file.parentFile?.mkdirs()
+-                file.appendText(line)
++                append(file, line)
+             } catch (e: Exception) {
+                 // A log that cannot be written must never take the session with it.
+             }
+@@ -72,6 +73,28 @@ object GpuGuardLog {
+         trim()
+     }
+ 
++    /**
++     * Appends one line and forces it to the storage.
++     *
++     * `File.appendText` is not enough, and the difference is the entire point of this file. A
++     * plain write reaches the kernel's page cache and returns; the bytes reach the storage when
++     * the writeback timer gets to them, which on Android is up to thirty seconds later. A kernel
++     * panic takes the page cache with it, so every line written in the seconds before one is
++     * simply gone - and the log then looks as though the watchdog stopped sampling, when in truth
++     * it was sampling until the device died. That is what the first crash on the Mali-G615 looked
++     * like: samples every four seconds up to 22:33:06, then nothing, and a reboot recorded at
++     * 22:34:23 with a log that ended a minute and a half before it.
++     *
++     * An fsync per line costs microseconds on a file this quiet, and it puts the last line before
++     * a panic where it can actually be read afterwards.
++     */
++    private fun append(file: File, line: String) {
++        FileOutputStream(file, true).use { stream ->
++            stream.write(line.toByteArray(Charsets.UTF_8))
++            stream.fd.sync()
++        }
++    }
++
+     /** The persistent copy's tail, newest last, for the settings page and the device report. */
+     fun read(context: android.content.Context, lines: Int = 120): String {
+         val file = File(context.applicationContext.filesDir, FILE)
+diff --git a/app/src/main/java/com/droiddeck/launcher/gpu/guard/GpuWatchdog.kt b/app/src/main/java/com/droiddeck/launcher/gpu/guard/GpuWatchdog.kt
+index 474d5a4..9e64746 100644
+--- a/app/src/main/java/com/droiddeck/launcher/gpu/guard/GpuWatchdog.kt
++++ b/app/src/main/java/com/droiddeck/launcher/gpu/guard/GpuWatchdog.kt
+@@ -174,9 +174,12 @@ class GpuWatchdog(
+         val thermal = thermalCelsius()
+         lastThermalC = thermal
+ 
+-        // A periodic reading, so a crash has a run-up recorded and not just a last word.
++        // A periodic reading, so a crash has a run-up recorded and not just a last word. Once
++        // anything is out of the ordinary it becomes every sample: the seconds before a panic are
++        // the only seconds that matter afterwards, and a four-second gap is most of them.
+         val now = SystemClock.elapsedRealtime()
+-        if (lastSampleAt == 0L || now - lastSampleAt >= TRACE_MS) {
++        val urgent = warned || wedged > 0 || (frame >= 0 && frame > budgetMs / 2)
++        if (lastSampleAt == 0L || urgent || now - lastSampleAt >= TRACE_MS) {
+             lastSampleAt = now
+             GpuGuardLog.log(TAG, "sample: frames " +
+                 (if (frame < 0) "unavailable" else "${frame}ms") +
+@@ -311,8 +314,12 @@ class GpuWatchdog(
+          *  enough to run for hours (one /proc read per process per sample). */
+         const val SAMPLE_MS = 500L
+ 
+-        /** A periodic line in the log, so a crash has a run-up and not just a last word. */
+-        const val TRACE_MS = 4000L
++        /**
++         * A periodic line in the log, so a crash has a run-up and not just a last word. One
++         * second rather than four: the samples are forced to the storage individually now, so
++         * finer costs nothing, and a log that stops is only as good as its last line.
++         */
++        const val TRACE_MS = 1000L
+ 
+         /** Processes in uninterruptible sleep that count as "the GPU has stopped". */
+         const val WEDGED_COUNT = 3
+diff --git a/docs/gpu-safety.md b/docs/gpu-safety.md
+index ea8d4dc..3fed494 100644
+--- a/docs/gpu-safety.md
++++ b/docs/gpu-safety.md
+@@ -124,6 +124,15 @@ Both signals are skipped while the screen is off: a sleeping phone presents noth
+ - `device.txt` — a **GPU safety guard** section: crash count, lock state, the last probe.
+ - Setup → **Safety** → *Copy* — all of it on the clipboard, ready to paste into a bug report.
+ 
++Every line is forced to the storage with an `fsync` as it is written, and the samples are logged
++once a second (every 500 ms once anything is out of the ordinary) rather than every four. That is
++not tidiness, it is the difference between a record and no record: a plain `File.appendText` puts
++the bytes in the kernel's page cache, and a kernel panic takes the page cache with it. The first
++crash this was tested against showed exactly that — samples every four seconds up to 22:33:06,
++then nothing, and the reboot recorded at 22:34:23 with a log ending a minute and a half earlier.
++It looked like the watchdog had stopped sampling. It had not: it had been sampling until the
++device died, and the panic had eaten the evidence.
++
+ ## Settings
+ 
+ Setup gains a fifth tab, **Safety**, on a Mali device (or once the guard has been turned on
+-- 
+2.39.5
+

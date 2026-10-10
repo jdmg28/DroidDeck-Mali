@@ -1,0 +1,140 @@
+From 2650f4a806f0ec8ed8727377438c735e527f8f88 Mon Sep 17 00:00:00 2001
+From: Arena Agent <agent@arena.ai>
+Date: Sat, 10 Oct 2026 01:18:54 +0000
+Subject: [PATCH 04/29] Fix the 15 compile errors the first build found
+
+@Volatile cannot be applied to a delegated property, so GpuGuard.alert drops it:
+the state object is what makes the field safe to write from the watchdog's
+thread and read from the UI's.
+
+This project's Kotlin is older than the 'break and continue in inline lambdas'
+language feature, so the watchdog's loop cannot break out of a synchronized { }
+block; the running flag is read through a function instead and the loop body
+moves into its own method.
+
+ActionRow's last parameter is 'progress', not the click, so the two trailing
+lambdas on the settings page landed on the wrong one and left onClick missing;
+both now pass it by name. The alert composable needed the foundation imports
+for padding, height, fillMaxSize and background.
+
+Everything else in the guard compiled on the first attempt.
+
+Co-authored-by: arena-agent <297053741+arena-agent@users.noreply.github.com>
+---
+ .../droiddeck/launcher/gpu/guard/GpuGuard.kt  |  7 ++-
+ .../launcher/gpu/guard/GpuWatchdog.kt         | 48 +++++++++++--------
+ .../droiddeck/launcher/ui/GpuSafetyPage.kt    |  8 +++-
+ 3 files changed, 39 insertions(+), 24 deletions(-)
+
+diff --git a/app/src/main/java/com/droiddeck/launcher/gpu/guard/GpuGuard.kt b/app/src/main/java/com/droiddeck/launcher/gpu/guard/GpuGuard.kt
+index f9420cc..30c2559 100644
+--- a/app/src/main/java/com/droiddeck/launcher/gpu/guard/GpuGuard.kt
++++ b/app/src/main/java/com/droiddeck/launcher/gpu/guard/GpuGuard.kt
+@@ -81,8 +81,11 @@ object GpuGuard {
+     var levelReason: String = ""
+         private set
+ 
+-    /** A notice to show over a running session ("the GPU has stalled"); cleared when it ends. */
+-    @Volatile
++    /**
++     * A notice to show over a running session ("the GPU has stalled"); cleared when it ends. The
++     * state object is itself the thread-safe part - it is written from the watchdog's thread and
++     * read from the UI's - so no @Volatile here (it cannot be applied to a delegated property).
++     */
+     var alert by mutableStateOf<String?>(null)
+         internal set
+ 
+diff --git a/app/src/main/java/com/droiddeck/launcher/gpu/guard/GpuWatchdog.kt b/app/src/main/java/com/droiddeck/launcher/gpu/guard/GpuWatchdog.kt
+index 1a5b46e..4ff94be 100644
+--- a/app/src/main/java/com/droiddeck/launcher/gpu/guard/GpuWatchdog.kt
++++ b/app/src/main/java/com/droiddeck/launcher/gpu/guard/GpuWatchdog.kt
+@@ -89,27 +89,35 @@ class GpuWatchdog(
+             thermalTripped = false
+             lastSampleAt = 0L
+         }
+-        thread = Thread({
+-            GpuGuardLog.log(TAG, "watchdog on: frame budget ${budgetMs}ms, thermal ceiling " +
+-                (if (thermalCeilingC > 0) "${thermalCeilingC}C" else "off"))
+-            while (true) {
+-                synchronized(lock) { if (!running) break }
+-                try {
+-                    Thread.sleep(SAMPLE_MS)
+-                } catch (e: InterruptedException) {
+-                    break
+-                }
+-                synchronized(lock) { if (!running) break }
+-                try {
+-                    sample()
+-                } catch (t: Throwable) {
+-                    // A watchdog that dies on an unexpected exception is worse than none: it
+-                    // leaves the session running with nothing watching it, silently.
+-                    GpuGuardLog.log(TAG, "sample failed: $t")
+-                }
++        thread = Thread({ runLoop() }, "gpu-watchdog").apply { isDaemon = true; start() }
++    }
++
++    /**
++     * Whether the thread should keep going, read under the lock. It is a function and not a
++     * `break` inside `synchronized { }` because this project's Kotlin is older than the
++     * "break and continue in inline lambdas" language feature.
++     */
++    private fun isRunning(): Boolean = synchronized(lock) { running }
++
++    private fun runLoop() {
++        GpuGuardLog.log(TAG, "watchdog on: frame budget ${budgetMs}ms, thermal ceiling " +
++            (if (thermalCeilingC > 0) "${thermalCeilingC}C" else "off"))
++        while (isRunning()) {
++            try {
++                Thread.sleep(SAMPLE_MS)
++            } catch (e: InterruptedException) {
++                break
++            }
++            if (!isRunning()) break
++            try {
++                sample()
++            } catch (t: Throwable) {
++                // A watchdog that dies on an unexpected exception is worse than none: it
++                // leaves the session running with nothing watching it, silently.
++                GpuGuardLog.log(TAG, "sample failed: $t")
+             }
+-            GpuGuardLog.log(TAG, "watchdog off")
+-        }, "gpu-watchdog").apply { isDaemon = true; start() }
++        }
++        GpuGuardLog.log(TAG, "watchdog off")
+     }
+ 
+     fun stop() {
+diff --git a/app/src/main/java/com/droiddeck/launcher/ui/GpuSafetyPage.kt b/app/src/main/java/com/droiddeck/launcher/ui/GpuSafetyPage.kt
+index 8e6d7b3..e86759e 100644
+--- a/app/src/main/java/com/droiddeck/launcher/ui/GpuSafetyPage.kt
++++ b/app/src/main/java/com/droiddeck/launcher/ui/GpuSafetyPage.kt
+@@ -4,10 +4,14 @@ package com.droiddeck.launcher.ui
+ import android.content.ClipData
+ import android.content.ClipboardManager
+ import android.content.Context
++import androidx.compose.foundation.background
+ import androidx.compose.foundation.layout.Box
+ import androidx.compose.foundation.layout.Column
++import androidx.compose.foundation.layout.fillMaxSize
+ import androidx.compose.foundation.layout.fillMaxWidth
++import androidx.compose.foundation.layout.height
+ import androidx.compose.foundation.layout.heightIn
++import androidx.compose.foundation.layout.padding
+ import androidx.compose.foundation.rememberScrollState
+ import androidx.compose.foundation.verticalScroll
+ import androidx.compose.material3.AlertDialog
+@@ -139,9 +143,9 @@ internal fun GpuSafetyPanel(host: MenuHost, modifier: Modifier = Modifier) {
+ 
+         SettingsGroup(stringResource(R.string.gpu_safety_record)) {
+             ActionRow(stringResource(R.string.gpu_safety_copy), stringResource(R.string.gpu_safety_copy_hint),
+-                stringResource(R.string.gpu_safety_copy_button)) { copyReport(context) }
++                stringResource(R.string.gpu_safety_copy_button), onClick = { copyReport(context) })
+             ActionRow(stringResource(R.string.gpu_safety_forget), stringResource(R.string.gpu_safety_forget_hint),
+-                stringResource(R.string.gpu_safety_forget_button)) { GpuGuard.forget(context); apply() }
++                stringResource(R.string.gpu_safety_forget_button), onClick = { GpuGuard.forget(context); apply() })
+             if (log.isNotEmpty()) {
+                 Text(log, fontSize = 11.sp, fontFamily = FontFamily.Monospace,
+                     color = MaterialTheme.colorScheme.onSurfaceVariant,
+-- 
+2.39.5
+

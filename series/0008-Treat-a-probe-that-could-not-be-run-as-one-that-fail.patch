@@ -1,0 +1,127 @@
+From ea7203da8e764eae874cf8cae926147ba0bfda1e Mon Sep 17 00:00:00 2001
+From: Arena Agent <agent@arena.ai>
+Date: Sat, 10 Oct 2026 02:40:29 +0000
+Subject: [PATCH 08/29] Treat a probe that could not be run as one that failed
+
+The phone rebooted with a guard installed whose report said the probe had
+passed, when in truth it had never run: a skip and a pass were the same thing
+to everything that read them. A skip means the GPU was never asked, so nothing
+was shown to work, and starting Steam anyway is how a session reaches the
+kernel before the guard does.
+
+On by default on a Mali device, off elsewhere. The way past it is deliberate
+and stated in the message: this switch, or the droiddeck-no-gpu-probe file.
+
+Co-authored-by: arena-agent <297053741+arena-agent@users.noreply.github.com>
+---
+ .../launcher/gpu/guard/GpuSafetyPrefs.kt          | 15 +++++++++++++++
+ .../droiddeck/launcher/session/SessionService.kt  | 13 ++++++++++---
+ .../com/droiddeck/launcher/ui/GpuSafetyPage.kt    |  6 ++++++
+ app/src/main/res/values-es/strings.xml            |  3 +++
+ app/src/main/res/values/strings.xml               |  3 +++
+ 5 files changed, 37 insertions(+), 3 deletions(-)
+
+diff --git a/app/src/main/java/com/droiddeck/launcher/gpu/guard/GpuSafetyPrefs.kt b/app/src/main/java/com/droiddeck/launcher/gpu/guard/GpuSafetyPrefs.kt
+index 3c8444e..820f4d6 100644
+--- a/app/src/main/java/com/droiddeck/launcher/gpu/guard/GpuSafetyPrefs.kt
++++ b/app/src/main/java/com/droiddeck/launcher/gpu/guard/GpuSafetyPrefs.kt
+@@ -50,6 +50,21 @@ object GpuSafetyPrefs {
+         prefs(context).edit().putBoolean("lockAfterFatalBoot", on).apply()
+ 
+     /** A bounded GPU smoke test inside the runtime before gamescope and Steam are started. */
++    /**
++     * Whether a probe that could not be run blocks the launch, as one that failed does.
++     *
++     * On by default on the device this build exists for. A skip means the GPU was never asked, so
++     * starting Steam is starting it blind - which is exactly how this phone came to reboot with a
++     * guard installed and "passed" in its report. Blocking costs a session you then have to allow
++     * on purpose (the `droiddeck-no-gpu-probe` file, or this switch); not blocking costs the
++     * thing the guard is for.
++     */
++    fun probeRequired(context: Context): Boolean =
++        prefs(context).getBoolean("probeRequired", DeviceSupport.mali())
++
++    fun setProbeRequired(context: Context, on: Boolean) =
++        prefs(context).edit().putBoolean("probeRequired", on).apply()
++
+     fun preflightProbe(context: Context): Boolean =
+         prefs(context).getBoolean("preflightProbe", true)
+ 
+diff --git a/app/src/main/java/com/droiddeck/launcher/session/SessionService.kt b/app/src/main/java/com/droiddeck/launcher/session/SessionService.kt
+index c8dfab2..265c705 100644
+--- a/app/src/main/java/com/droiddeck/launcher/session/SessionService.kt
++++ b/app/src/main/java/com/droiddeck/launcher/session/SessionService.kt
+@@ -359,12 +359,19 @@ class SessionService : Service() {
+         if (gen == sessionGen && SessionState.running && guardPrefs.guardEnabled(this) && guardPrefs.preflightProbe(this)) {
+             val probe = com.droiddeck.launcher.gpu.guard.Probe.run(this, guard.profile)
+             com.droiddeck.launcher.gpu.guard.Probe.write(sessionDir, probe)
+-            if (!probe.ok) {
++            // A skip is not a pass. The GPU was not asked, so nothing has been shown to work, and
++            // launching anyway is how a session reaches the kernel before the guard does.
++            val required = probe.skipped && guardPrefs.probeRequired(this)
++            if (!probe.ok || required) {
+                 Log.e(TAG, "gpu guard: the pre-flight probe did not pass: ${probe.summary}")
+-                com.droiddeck.launcher.gpu.guard.GpuGuardLog.log("guard", "refusing to start: ${probe.verdict}")
++                com.droiddeck.launcher.gpu.guard.GpuGuardLog.log("guard",
++                    "refusing to start: ${probe.verdict}" + if (required)
++                        " (a probe that could not be run counts as one that failed)" else "")
+                 SessionEvents.fail("GPU_PROBE_FAILED", probe.summary, null)
+                 mainHandler.post {
+-                    android.widget.Toast.makeText(this, getString(R.string.gpu_guard_probe_failed), android.widget.Toast.LENGTH_LONG).show()
++                    android.widget.Toast.makeText(this, getString(
++                        if (required) R.string.gpu_guard_probe_skipped_blocked else R.string.gpu_guard_probe_failed),
++                        android.widget.Toast.LENGTH_LONG).show()
+                 }
+                 guard.noteGuardStop(this, probe.summary)
+                 stopSession(-1)
+diff --git a/app/src/main/java/com/droiddeck/launcher/ui/GpuSafetyPage.kt b/app/src/main/java/com/droiddeck/launcher/ui/GpuSafetyPage.kt
+index 168694a..021aa11 100644
+--- a/app/src/main/java/com/droiddeck/launcher/ui/GpuSafetyPage.kt
++++ b/app/src/main/java/com/droiddeck/launcher/ui/GpuSafetyPage.kt
+@@ -58,6 +58,7 @@ internal fun GpuSafetyPanel(host: MenuHost, modifier: Modifier = Modifier) {
+     val profileId = remember(tick) { p.chosenProfile(context) }
+     val lock = remember(tick) { p.lockAfterFatalBoot(context) }
+     val probe = remember(tick) { p.preflightProbe(context) }
++    val probeRequired = remember(tick) { p.probeRequired(context) }
+     val watchdog = remember(tick) { p.liveWatchdog(context) }
+     val stall = remember(tick) { p.stallBudgetMs(context) }
+     val thermal = remember(tick) { p.thermalCeilingC(context) }
+@@ -130,6 +131,11 @@ internal fun GpuSafetyPanel(host: MenuHost, modifier: Modifier = Modifier) {
+                 stringResource(R.string.gpu_safety_probe_hint), probe, enabled = enabled) { on ->
+                 p.setPreflightProbe(context, on); apply()
+             }
++            ToggleRow(host, "gpu-probe-required", stringResource(R.string.gpu_safety_probe_required),
++                stringResource(R.string.gpu_safety_probe_required_hint), probeRequired,
++                enabled = enabled && probe) { on ->
++                p.setProbeRequired(context, on); apply()
++            }
+         }
+ 
+         SettingsGroup(stringResource(R.string.gpu_safety_during)) {
+diff --git a/app/src/main/res/values-es/strings.xml b/app/src/main/res/values-es/strings.xml
+index f620965..b4838b5 100644
+--- a/app/src/main/res/values-es/strings.xml
++++ b/app/src/main/res/values-es/strings.xml
+@@ -2152,4 +2152,7 @@
+     <string name="gpu_guard_session_stopped">La sesión se detuvo para proteger el dispositivo.</string>
+     <string name="gpu_safety_probe_skipped">salteada: no se probó la GPU</string>
+     <string name="gpu_safety_boot_blind">No se pudo leer el motivo del arranque (%1$s), así que la guardia no puede ver un fallo desde el teléfono mismo. Lo detecta con su propio registro: una sesión que quedó abierta cuando el uptime volvió hacia atrás.</string>
++    <string name="gpu_safety_probe_required">Tratar una prueba que no se pudo correr como un fallo</string>
++    <string name="gpu_safety_probe_required_hint">Si no se puede probar la GPU, no arrancar Steam. Apagado, una prueba salteada arranca igual - que es cómo una sesión llega al kernel sin que nada se haya probado.</string>
++    <string name="gpu_guard_probe_skipped_blocked">No se pudo correr la prueba de GPU, así que Steam no arrancó. Apagalo en Configuración, Seguridad, o creá el archivo droiddeck-no-gpu-probe en la carpeta de la app.</string>
+ </resources>
+diff --git a/app/src/main/res/values/strings.xml b/app/src/main/res/values/strings.xml
+index 885ca95..cd60287 100644
+--- a/app/src/main/res/values/strings.xml
++++ b/app/src/main/res/values/strings.xml
+@@ -2176,4 +2176,7 @@
+     <string name="gpu_guard_session_stopped">The session was stopped to keep the device safe.</string>
+     <string name="gpu_safety_probe_skipped">skipped: no GPU test was run</string>
+     <string name="gpu_safety_boot_blind">The boot reason could not be read (%1$s), so the guard cannot see a crash from the phone itself. It detects one from its own record instead: a session left running when the uptime went backwards.</string>
++    <string name="gpu_safety_probe_required">Treat a probe that could not run as a failure</string>
++    <string name="gpu_safety_probe_required_hint">If the GPU cannot be tested, do not start Steam. Off, a skipped probe launches anyway - which is how a session reaches the kernel with nothing having been shown to work.</string>
++    <string name="gpu_guard_probe_skipped_blocked">The GPU test could not be run, so Steam was not started. Turn it off in Setup, Safety, or create the file droiddeck-no-gpu-probe in the app's folder.</string>
+ </resources>
+-- 
+2.39.5
+

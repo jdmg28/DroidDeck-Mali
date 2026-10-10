@@ -159,6 +159,21 @@ public class LinuxVulkanDriverManager {
         File tmpDir = newStagingDir();
         boolean keep = false;
         try {
+            // Before reading the archive at all: the ceilings below allow a package of over a hundred
+            // megabytes, and the answer to "there is no room" has to arrive as a named refusal, not as a
+            // write that fails halfway through and leaves the staging directory behind.
+            long zipBytes = 0;
+            try (android.os.ParcelFileDescriptor pfd =
+                         context.getContentResolver().openFileDescriptor(zipUri, "r")) {
+                if (pfd != null) zipBytes = pfd.getStatSize();
+            } catch (Exception ignored) {
+                // A size nobody would tell us is not grounds to refuse anybody's driver.
+            }
+            long need = DriverArchivePolicy.requiredFreeSpace(zipBytes);
+            long free = tmpDir.getUsableSpace();
+            if (need > free)
+                throw new IOException("not enough free space to import a driver of this size: about "
+                        + (need >> 20) + " MB needed, " + (free >> 20) + " MB available");
             String soName = null;
             JSONObject zipMeta = null;
             long unpacked = 0;

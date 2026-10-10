@@ -1,0 +1,83 @@
+From 6c26b351c915ffb773d0e7ebc20f26e29f0bf217 Mon Sep 17 00:00:00 2001
+From: Arena Agent <agent@arena.ai>
+Date: Sat, 10 Oct 2026 12:43:07 +0000
+Subject: [PATCH 13/29] Make the build step leave a log behind whatever it does
+
+The previous run died one second into the build step and published "(no build
+log)", because the log is written by the gradle command and the step failed
+before it: three test -f checks and the probe tests ran unlogged. The whole step
+is now wrapped in a group whose output is tee'd to the file the publishing step
+reads, with pipefail so a failure is still a failure.
+
+The probe tests announce the toolchain they run against and parse-check the
+python they extract from the shell script before executing it, so a runner that
+differs from the one this was written on says so instead of exiting 1.
+
+Co-authored-by: arena-agent <297053741+arena-agent@users.noreply.github.com>
+---
+ .github/workflows/gpu-guard-ci.yml | 21 +++++++++++++--------
+ tools/test/run_probe_tests.sh      | 16 ++++++++++++++++
+ 2 files changed, 29 insertions(+), 8 deletions(-)
+
+diff --git a/.github/workflows/gpu-guard-ci.yml b/.github/workflows/gpu-guard-ci.yml
+index 25f1a4e..2389f3f 100644
+--- a/.github/workflows/gpu-guard-ci.yml
++++ b/.github/workflows/gpu-guard-ci.yml
+@@ -40,14 +40,19 @@ jobs:
+         id: build
+         run: |
+           set -o pipefail
+-          test -f app/src/main/java/com/droiddeck/launcher/gpu/DriverArchivePolicy.java
+-          test -f tools/linuxfs/overlay/usr/local/bin/droiddeck-mali-check
+-          test -f tools/linuxfs/overlay/usr/local/bin/droiddeck-gpu-probe
+-          # Before the app: the probe decides whether Steam may touch the GPU at all, and it has
+-          # twice shipped broken in ways that only showed up on the phone. It is tested here
+-          # against a fake loader, which needs no GPU and takes seconds.
+-          bash tools/test/run_probe_tests.sh
+-          bash tools/build_local.sh 2>&1 | tee /tmp/droiddeck-build.log
++          # Everything the step does goes into the log the next step publishes. An earlier run
++          # died in one second, before the build, and published "(no build log)": the step that
++          # failed was the one nobody could read. pipefail keeps the failure visible as a failure.
++          {
++            test -f app/src/main/java/com/droiddeck/launcher/gpu/DriverArchivePolicy.java
++            test -f tools/linuxfs/overlay/usr/local/bin/droiddeck-mali-check
++            test -f tools/linuxfs/overlay/usr/local/bin/droiddeck-gpu-probe
++            # Before the app: the probe decides whether Steam may touch the GPU at all, and it has
++            # twice shipped broken in ways that only showed up on the phone. It is tested here
++            # against a fake loader, which needs no GPU and takes seconds.
++            bash tools/test/run_probe_tests.sh
++            bash tools/build_local.sh
++          } 2>&1 | tee /tmp/droiddeck-build.log
+       # The machine working on this branch cannot download Actions logs, only talk to the API, so
+       # on failure the log is published as a check run where it can be read back.
+       - name: Publish the build log
+diff --git a/tools/test/run_probe_tests.sh b/tools/test/run_probe_tests.sh
+index 49fbd87..3fd5fcf 100755
+--- a/tools/test/run_probe_tests.sh
++++ b/tools/test/run_probe_tests.sh
+@@ -28,6 +28,22 @@ if [ ! -s "$WORK/probe.py" ]; then
+     echo "FAIL: could not extract the probe's python from $SCRIPT"
+     exit 1
+ fi
++if python3 -c 'import ast,sys; ast.parse(open(sys.argv[1]).read())' "$WORK/probe.py" 2>"$WORK/syntax.log"; then
++    echo "probe python: $(wc -l < "$WORK/probe.py") lines, parses"
++else
++    echo "FAIL: the extracted probe python does not parse"
++    cat "$WORK/syntax.log"
++    echo "--- first 5 and last 5 extracted lines ---"
++    head -5 "$WORK/probe.py"
++    echo "..."
++    tail -5 "$WORK/probe.py"
++    exit 1
++fi
++
++for tool in gcc python3; do
++    command -v "$tool" >/dev/null 2>&1 || { echo "FAIL: $tool is not on this machine"; exit 1; }
++done
++echo "machine: $(uname -sr)  gcc: $(gcc -dumpversion)  python: $(python3 -V 2>&1)"
+ 
+ if ! gcc -shared -fPIC -o "$WORK/libvulkan.so.1" "$HERE/mock_vulkan.c" 2>"$WORK/gcc.log"; then
+     echo "FAIL: the fake loader did not build"
+-- 
+2.39.5
+
