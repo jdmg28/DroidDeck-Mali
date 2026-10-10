@@ -7,6 +7,52 @@ the timeline, then lessons and backlog. Companion to the README (what the app *d
 
 ---
 
+## 2026-10-10 (evening) - the guard held the door, then measured its own limit
+
+The probe bugs fixed this afternoon let a session through, and the session went the way the driver
+does. The log is the most useful thing in this whole effort, because it is the guard working
+correctly and the phone rebooting anyway:
+
+```
+10:15:06.597 probe: the device enumerated and finished a queued job     <- the fix works
+10:15:28.644 sample: frames 105ms                                        <- last good frame
+10:15:29.664 sample: frames 1126ms
+10:15:30.690 sample: frames 2154ms
+10:15:30.693 no frame for 2154ms (budget 2000ms)
+10:15:31.215 ABORT: the session presented no frame for 2s
+10:15:31.235 session ended: abnormal
+10:17:19.733 boot: app started on a new boot (1m up); boot reason: not readable [UNKNOWN]
+10:17:19.739 no boot reason and no interrupted session: ... leaves the latch as it is
+```
+
+Three conclusions, in order of importance.
+
+1. **The abort was 300 ms ahead of the kernel's own 3 s fence timer and it did not matter.** The
+   phone restarted 48 s later. So the fault is committed before userspace sees the stall: the fence
+   timeout is downstream of `CS_FATAL`, not the cause of the reboot, and no timing in an app can win
+   that race. Every earlier estimate of what the watchdog could prevent was too optimistic, and this
+   is the measurement that replaces it.
+2. **The latch missed the crash, and that was a real bug.** `session ended: abnormal` had already
+   cleaned up the open-session mark, so at the next boot there was nothing "interrupted" to blame
+   the restart on, and the next attempt would have been free. Detection now reads how a session
+   *ended* (abnormal, or guard-stopped, within ten minutes of a restart), and a guard abort is
+   recorded at the moment it is decided - the teardown is precisely when the kernel may take the
+   phone. `pstore` was added as a third witness, and the panel now says whether it is absent or
+   merely unreadable, because those need different answers.
+3. **`0 / 3` clean sessions and `battery 34C` are the good news.** The workload never got far enough
+   to heat anything, the thermal ceiling was never approached, and the driver's behaviour is now
+   characterised by a number rather than a fear: a 4 KB fill finishes in seconds (probe OK); the
+   session then ran 23 s before the compositor presented anything at all (every sample said "frames
+   unavailable"), presented two frames - 250 ms, then 105 ms - and stopped. Two frames and a hang,
+   in the present path, with the GPU otherwise idle. That is a driver bug in the WSI/present route
+   rather than in submit, and it is why the answer is a newer PanVK-kbase and not a gentler
+   profile: nothing about 720p-versus-1080p or 30-versus-60 is involved in the first two frames.
+
+The guard's remaining job, stated plainly: it cannot save a session. It can make sure the *next*
+session does not start on its own.
+
+---
+
 ## 2026-10-10 - Mali-G615: the GPU safety guard
 
 A Steam session on the Mali-G615 did not fail, it took the phone with it. Android recorded the

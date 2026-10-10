@@ -231,6 +231,51 @@ object GpuSafetyPrefs {
         .remove("openSessionId")
         .apply()
 
+    /**
+     * The last session the app saw end. Kept alongside [OpenSession] because an end is evidence
+     * too: the guard's own abort is the last thing it records before the phone reboots, and if the
+     * only mark that survives is "no session open", the crash looks clean and the next attempt is
+     * free. That is exactly how a real panic on a real device got past the latch on 2026-10-10:
+     * the watchdog stopped the session at 2.2 s, the device restarted 48 s later, and the guard
+     * found nothing open to blame it on.
+     */
+    class SessionEnd(
+        val id: String,
+        /** Whether the session finished on its own, with no fault and no abort. */
+        val normally: Boolean,
+        /** Whether the guard was the thing that stopped it. */
+        val byGuard: Boolean,
+        val wallMs: Long,
+        val uptimeMs: Long,
+    )
+
+    fun lastSessionEnd(context: Context): SessionEnd? {
+        val store = prefs(context)
+        val id = store.getString("lastEndId", "") ?: ""
+        if (id.isEmpty()) return null
+        return SessionEnd(
+            id,
+            store.getBoolean("lastEndNormally", false),
+            store.getBoolean("lastEndByGuard", false),
+            store.getLong("lastEndWall", 0L),
+            store.getLong("lastEndUptime", 0L),
+        )
+    }
+
+    fun markSessionEnd(context: Context, id: String, normally: Boolean, byGuard: Boolean) =
+        prefs(context).edit()
+            .putString("lastEndId", id)
+            .putBoolean("lastEndNormally", normally)
+            .putBoolean("lastEndByGuard", byGuard)
+            .putLong("lastEndWall", System.currentTimeMillis())
+            .putLong("lastEndUptime", SystemClock.elapsedRealtime())
+            .apply()
+
+    /** An end is counted once. Whatever it said, it is not evidence about a second restart. */
+    fun clearSessionEnd(context: Context) = prefs(context).edit()
+        .remove("lastEndId")
+        .apply()
+
     /** Clears the crash history and the lock. The counters are evidence; this throws it away. */
     fun reset(context: Context) = prefs(context).edit()
         .putInt("fatalBootCount", 0)

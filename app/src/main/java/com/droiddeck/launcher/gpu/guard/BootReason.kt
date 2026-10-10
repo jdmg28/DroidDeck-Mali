@@ -47,6 +47,28 @@ object BootReason {
         override fun toString(): String = if (raw.isEmpty()) kind.name else "$raw [$kind]"
     }
 
+    private val PSTORE_PATHS = listOf(
+        "/sys/fs/pstore/console-ramoops-0",
+        "/sys/fs/pstore/console-ramoops",
+        "/sys/fs/pstore/dmesg-ramoops-0",
+        "/sys/fs/pstore/dmesg-ramoops-1",
+    )
+
+    /** Strings that mean the kernel stopped by itself. MediaTek's Mali module has its own two. */
+    private val PANIC_MARKS = listOf(
+        "Kernel panic",
+        "Attempted to kill init",
+        "Unable to handle kernel",
+        "Unexpected kernel BRK exception",
+        "soft lockup",
+        "hung_task",
+        "CS_FATAL",
+        "FENCE_SIGNAL timeout",
+        "watchdog: ",
+    )
+
+    private const val PSTORE_TAIL_BYTES = 512 * 1024
+
     /** Shutdown reasons read by name, so the SDK level decides what exists and not the compiler. */
     private val SHUTDOWN_REASONS = listOf(
         "SHUTDOWN_REASON_SHUTDOWN" to "shutdown",
@@ -106,10 +128,71 @@ object BootReason {
             }
         }
 
+        // Nothing the framework says worked, so ask the kernel what it wrote on the way down.
+        // A panic found there is the answer; anything else pstore has to say is only worth keeping
+        // as the reason the guard is blind, because that decides what to do about it.
+        val witness = pstore()
+        if (witness != null && witness.fatal) return witness
+
         Log.i(TAG, "boot reason: no property under any of $KEYS could be read by any means " +
-            "(SystemProperties refused, getprop ${if (properties.isEmpty()) "unavailable" else "had none of them"})")
-        return Reading("", Kind.UNKNOWN, "not readable")
+            "(SystemProperties refused, getprop ${if (properties.isEmpty()) "unavailable" else "had none of them"}); " +
+            (witness?.source ?: "no pstore buffer present"))
+        return Reading("", Kind.UNKNOWN, witness?.source ?: "not readable")
     }
+
+    /**
+     * The kernel's own account of the previous boot's last moments.
+     *
+     * On a device that refuses every boot property the way this one does, `pstore` is what is left:
+     * RAM the kernel reserves for its console, left standing across a panic and dumped into
+     * `/sys/fs/pstore` by the boot after it. It is usually root-only, and nothing here assumes
+     * otherwise - the value is in the two answers it can give. A buffer that can be read and names
+     * a panic is the strongest evidence the guard can get, and turns "the phone restarted" into the
+     * line that says why (`CS_FATAL`, `FENCE_SIGNAL timeout`, the BRK at EL1). A buffer that exists
+     * but cannot be opened is a different diagnosis from one that is not there at all: the guard is
+     * blind by permission, not by design, and the user can fix it once from a root shell or adb
+     * instead of being told the platform says nothing.
+     */
+    private fun pstore(): Reading? {
+        var refused = ""
+        for (path in PSTORE_PATHS) {
+            val file = java.io.File(path)
+            if (!file.exists()) continue
+            val text = try {
+                readTail(file)
+            } catch (error: Exception) {
+                if (refused.isEmpty()) {
+                    refused = "${file.name} exists but this app cannot read it " +
+                        "(${error.javaClass.simpleName}) - it would be readable to root"
+                }
+                continue
+            }
+            if (text.isBlank()) continue
+            for (mark in PANIC_MARKS) {
+                val at = text.lastIndexOf(mark, ignoreCase = true)
+                if (at < 0) continue
+                val from = text.lastIndexOf('\n', at) + 1
+                val to = text.indexOf('\n', at).let { if (it < 0) text.length else it }
+                return Reading(text.substring(from, to).trim().take(240), Kind.KERNEL_PANIC,
+                    "pstore ${file.name}")
+            }
+            // Readable and no mark: the kernel did not die, it was told to stop. Worth saying out
+            // loud - and it does not clear a latch by itself, the session evidence is checked apart.
+            return Reading("", Kind.UNKNOWN,
+                "pstore ${file.name} was readable and holds no panic marker")
+        }
+        return if (refused.isEmpty()) null else Reading("", Kind.UNKNOWN, "pstore: $refused")
+    }
+
+    /** The end of the buffer, which is where a panic is; these files can be a megabyte or more. */
+    private fun readTail(file: java.io.File): String =
+        java.io.RandomAccessFile(file, "r").use { handle ->
+            val size = minOf(handle.length(), PSTORE_TAIL_BYTES.toLong()).toInt()
+            handle.seek(handle.length() - size)
+            val bytes = ByteArray(size)
+            handle.readFully(bytes)
+            String(bytes, Charsets.UTF_8)
+        }
 
     /**
      * Every property the phone has, read by running `getprop` once.

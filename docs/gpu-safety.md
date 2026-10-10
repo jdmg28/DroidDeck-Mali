@@ -49,6 +49,17 @@ the app must never be the thing that puts the device back into the loop.
 The latch relaxes on evidence, not on a timer: three sessions in a row that end *normally* lift the
 lock on their own. A session the guard itself stopped resets the count to zero.
 
+The property is only one of three witnesses, because on the device this was written for it cannot
+be read at all. A new boot is therefore also fatal when **a session of ours was open** when the
+uptime went backwards, or when **the last session ended badly** — abnormal, or stopped by the guard
+itself — within ten minutes of the restart. The second of those is not a refinement: the guard ends
+the session before the kernel reboots the phone, so a check that only looks for an open session sees
+a tidy night and lets the next attempt through. It saw that happen on real hardware.
+
+And the kernel is asked directly, last: `pstore` (`/sys/fs/pstore/console-ramoops-*`) holds the
+previous boot's console tail, which is the panic itself. It is normally root-only; the panel says
+which way it failed, since "no buffer" and "buffer we cannot read" want different answers.
+
 This is the genuinely dangerous scenario it removes: a phone that panics shortly after every boot,
 before anyone can reach Settings.
 
@@ -187,12 +198,31 @@ anywhere). Everything in it is reversible, and the defaults are the conservative
   kernel may still take the device down. That is the calculated trade: better a bounded, logged,
   two-second workload discovering it than the client discovering it half a minute in with the user
   mid-game.
-- **The watchdog cannot act before a `CS_FATAL` it did not see coming.** Once the GPU has raised a
-  fatal exception, the kernel's dump path is what panics, and nothing in userspace is consulted.
-  The watchdog is a net for soft stalls, heat and wedges, not a guarantee.
-- **The latch depends on the boot reason being readable and truthful.** Some vendors report
-  `hw_reset` or nothing at all. An unreadable reason is logged and left alone — the guard never
-  treats "I don't know" as "it was fine".
+- **The watchdog cannot outrun a `CS_FATAL`.** This is measured now, not argued: on 2026-10-10 at
+  `10:15:28.6` a session presented its last frame; the watchdog saw the budget go (1126 ms, 1642,
+  2154), said `no frame for 2154ms (budget 2000ms)`, and aborted at `10:15:31.2` — **300 ms before
+  the kernel's own 3 s fence timer would have fired**, with the process tree swept. The phone
+  restarted anyway, 48 s later. Nothing was wrong with the timing; the assumption was. The bus
+  fault comes *first* and the fence timeout is downstream of it, so by the moment frames stop the
+  kernel is already committed and no amount of userspace speed is in the race. The watchdog is a
+  net for soft stalls, heat and wedges. It is not, and cannot be, a way to survive this driver.
+- **What that leaves, and what was broken.** If the app cannot stop the reboot, the only thing it
+  can still do is refuse the *next* attempt — which is the latch's whole job, and on that same boot
+  the latch did not engage. The log says why: `session ended: abnormal` at 10:15:31, and at the
+  next boot `no boot reason and no interrupted session`. The guard had already cleaned up its own
+  abort, so nothing was "open" when the phone came back, and a check that only looks for a session
+  still running at boot finds no victim. It now reads how the session *ended* too: an abnormal end
+  or a guard abort followed within ten minutes by a restart is a fatal boot, and a guard abort is
+  written at the moment it is decided, because the teardown is exactly when the kernel may take the
+  phone. The cost of a false lock is one tap; the cost of a false clear is the device.
+- **The boot reason is not readable on this device — and that is no longer the end of it.** Some
+  vendors report `hw_reset`, MediaTek here reports nothing at all: `sys.boot.reason` is refused,
+  `getprop` has no key, `getLastShutdownReason` does not exist at this SDK. The guard now asks the
+  kernel directly through `pstore` (`/sys/fs/pstore/console-ramoops-0`), which holds the previous
+  boot's console tail and *is* the panic line. It is normally root-only, so this is not assumed to
+  work; what is guaranteed is which answer you get, because the panel distinguishes "no pstore
+  buffer present" from "the buffer exists and this app cannot read it". Only the second has a fix.
+  An unreadable reason is never treated as "it was fine".
 
 ## Where it lives
 

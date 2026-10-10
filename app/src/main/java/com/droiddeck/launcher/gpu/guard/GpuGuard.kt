@@ -91,6 +91,9 @@ object GpuGuard {
 
     /** The guard ended this session itself, so the notice over it says stopped, not stalled. */
     var sessionStopped by mutableStateOf(false)
+
+    /** The folder name of the running session, so its ending can be named in the log. */
+    private var sessionId = "session"
         private set
 
     /** The last pre-flight probe's verdict, for the settings page. */
@@ -109,6 +112,9 @@ object GpuGuard {
      * for is a whole boot's worth of uptime, never a minute's.
      */
     private const val REBOOT_SLACK_MS = 10L * 60L * 1000L
+
+    /** How long after a bad session end a restart still counts as the same event. */
+    private const val BAD_END_WINDOW_MS = 10L * 60L * 1000L
 
     /** No frame budget above this can fire before the kernel does; see [startWatchdog]. */
     private const val MAX_STALL_BUDGET_MS = 2_000L
@@ -148,15 +154,21 @@ object GpuGuard {
         // when it restarted", which is the thing that has to be refused next time.
         val interrupted = if (com.droiddeck.launcher.session.SessionState.running) null else interruptedSession(app, uptime)
 
+        // The end mark is read on every new boot, whatever else the evidence says. Leaving it in
+        // place would let a session that went wrong in March blame an unrelated restart in June.
+        val badEnd = if (com.droiddeck.launcher.session.SessionState.running)
+            null else badEndBeforeThisBoot(app, uptime)
+
         when {
             reading.fatal -> noteFatalBoot(app, reading.toString())
             interrupted?.rebooted == true -> noteFatalBoot(app, interrupted.reason)
             interrupted != null -> GpuGuardLog.log("boot",
                 "session ${interrupted.id} was left open, but the uptime never went backwards: the app " +
                     "was killed rather than the phone restarted (${formatUptime(uptime)} up)")
+            badEnd != null -> noteFatalBoot(app, badEnd)
             reading.kind == BootReason.Kind.UNKNOWN -> GpuGuardLog.log("boot",
-                "no boot reason and no interrupted session: the guard cannot tell whether the last " +
-                    "power-off was clean and leaves the latch as it is")
+                "no boot reason, no session left open and no bad session end on record: the guard " +
+                    "cannot tell whether the last power-off was clean and leaves the latch as it is")
         }
         refresh(app)
     }
@@ -186,6 +198,36 @@ object GpuGuard {
     }
 
     private class Interruption(val id: String, val rebooted: Boolean, val reason: String)
+
+    /**
+     * A session that did not end well, and ended shortly before this boot, leaving no open mark.
+     *
+     * This closes the gap the guard's own success opens: the watchdog sees the stall, takes the
+     * session down, logs a clean end - and the kernel, already past the point of no return,
+     * reboots the phone a minute later. A check that only looks for a session still running at boot
+     * finds no victim and calls the night uneventful, which is precisely what happened on the
+     * device this guard was written for: abort at 2.2 s into the stall, restart 48 s later, latch
+     * never engaged, and the next attempt would have been free.
+     *
+     * The wall clock is the only thing that can measure "shortly before" across a restart, so a
+     * clock that moved backwards is read as recent rather than as long ago. The asymmetry is the
+     * point: a false lock costs one tap on the Safety page, a false clear costs the phone.
+     */
+    private fun badEndBeforeThisBoot(app: android.content.Context, uptime: Long): String? {
+        val end = GpuSafetyPrefs.lastSessionEnd(app) ?: return null
+        GpuSafetyPrefs.clearSessionEnd(app)
+        if (end.normally && !end.byGuard) return null
+        val elapsed = System.currentTimeMillis() - end.wallMs
+        if (elapsed > BAD_END_WINDOW_MS) {
+            GpuGuardLog.log("boot", "session ${end.id} ended badly ${formatGap(elapsed / 1000 * 1000)} " +
+                "ago, outside the ${BAD_END_WINDOW_MS / 60000}-minute window: not read as this boot")
+            return null
+        }
+        if (uptime >= end.uptimeMs) return null   // the uptime never went backwards: no restart
+        val how = if (end.byGuard) "the guard stopped it" else "it ended abnormally"
+        return "the device restarted ${formatGap(elapsed)} after session ${end.id}, which $how - an " +
+            "ending the guard forced is the last thing it records before a kernel fault, not a clean end"
+    }
 
     /** Records a crash on the latch's books, whether it was proved by the platform or by us. */
     private fun noteFatalBoot(app: android.content.Context, reason: String) {
@@ -294,7 +336,8 @@ object GpuGuard {
         // Left on the books so that, if the phone dies under this session, the next start can
         // prove it from the uptime alone - which is the only way to detect a crash on a device
         // whose boot reason cannot be read.
-        GpuSafetyPrefs.markSessionOpen(app, sessionDir?.name ?: "session", profile.id)
+        sessionId = sessionDir?.name ?: "session"
+        GpuSafetyPrefs.markSessionOpen(app, sessionId, profile.id)
         GpuGuardLog.openSession(sessionDir, listOf(
             "level $level, profile ${profile.id}",
             "output ${SessionState.outputSize.first}x${SessionState.outputSize.second}" +
@@ -381,6 +424,7 @@ object GpuGuard {
         // The app has seen this session end, so it stops being evidence of a crash. It must happen
         // before the early return below: an ending the guard forced is an ending all the same.
         GpuSafetyPrefs.clearOpenSession(app)
+        GpuSafetyPrefs.markSessionEnd(app, sessionId, endedNormally, sessionStopped)
         GpuGuardLog.closeSession(if (endedNormally) "clean" else "abnormal")
         // An ending the guard forced keeps its notice on screen: the user has to be told why the
         // session they were playing is gone. It is cleared when the next one starts.
@@ -402,6 +446,11 @@ object GpuGuard {
         val app = context.applicationContext
         GpuSafetyPrefs.countGuardStop(app)
         GpuSafetyPrefs.setCleanSessionsSinceFatal(app, 0)
+        // Recorded here as well as in noteSessionEnded, because the teardown is the dangerous
+        // moment: a kernel that is minutes into a GPU fault can take the phone down while the app
+        // is still killing processes. If this is the last thing the guard ever writes, it still
+        // reads as an abnormal end on the next boot rather than as nothing at all.
+        GpuSafetyPrefs.markSessionEnd(app, sessionId, false, true)
         alert = reason
         sessionStopped = true
         GpuGuardLog.log("guard", "session stopped by the guard: $reason")
@@ -463,6 +512,13 @@ object GpuGuard {
                 "  <- Steam was started WITHOUT the GPU having been tested" else "")
         }
         return lines.joinToString("\n")
+    }
+
+    /** Like [formatUptime] but honest under a minute: a session stopped 48 s before a reboot is
+        the story, and "0m" would throw it away. */
+    private fun formatGap(millis: Long): String {
+        val seconds = millis / 1000
+        return if (seconds < 60) "${seconds}s" else formatUptime(millis)
     }
 
     private fun formatUptime(millis: Long): String {
