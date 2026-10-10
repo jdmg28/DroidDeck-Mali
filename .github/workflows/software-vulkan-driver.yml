@@ -347,7 +347,18 @@ jobs:
       - name: It enumerates a device in the runtime
         run: |
           set -euo pipefail
+          cat > "$RUNNER_TEMP/probe.sh" <<'EOS'
+          set -euo pipefail
           lib=rootfs/usr/lib
+          complain() { # title ...lines
+            { echo; echo "### $1"; echo '```'; shift; printf '%s\n' "$@"; echo '```'; } >> report.md
+          }
+          if [ ! -e "$lib/libvulkan.so.1" ]; then
+            complain "the runtime has no Vulkan loader at \$lib/libvulkan.so.1" \
+              "the runtime's /usr/lib has: $(ls "$lib" | grep -i vulkan || echo 'nothing named vulkan')" \
+              "$(find rootfs -name 'libvulkan.so*' | head -5)"
+            exit 1
+          fi
           ls -l "$lib"/libvulkan.so.1*
           mkdir -p probe
           # A manifest of our own for the probe: the app writes the same three lines, with the
@@ -355,12 +366,15 @@ jobs:
           jq -n --arg path "$PWD/stage/libvulkan_lvp.so" \
             '{file_format_version:"1.0.0", ICD:{library_path:$path, api_version:"1.1.274"}}' > probe/icd.json
           cat probe/icd.json
-          aarch64-linux-gnu-gcc -O1 -o probe/probe tools/software-driver/probe.c -ldl
+          if ! out=$(aarch64-linux-gnu-gcc -O1 -o probe/probe tools/software-driver/probe.c -ldl 2>&1); then
+            complain "the probe did not compile" "$out"
+            exit 1
+          fi
           ls -l probe/probe
           set +e
           out=$(VK_DRIVER_FILES="$PWD/probe/icd.json" VK_ICD_FILENAMES="$PWD/probe/icd.json" \
             VK_LOADER_DRIVERS_SELECT='*lvp*' \
-            qemu-aarch64-static -L rootfs -E LD_LIBRARY_PATH="$lib" \
+            timeout 600 qemu-aarch64-static -L rootfs -E LD_LIBRARY_PATH="$lib" \
               probe/probe "$lib/libvulkan.so.1" "$PWD/probe/icd.json" 2>&1)
           result=$?
           set -e
@@ -376,6 +390,8 @@ jobs:
             echo "</details>"
           } >> report.md
           [ "$result" = 0 ] || { echo "::error::the probe did not complete (exit $result; see the report)"; exit 1; }
+          EOS
+          bash tools/ci/with-report.sh "It enumerates a device in the runtime" "$RUNNER_TEMP/probe.sh"
 
       - name: Write the package
         id: zip

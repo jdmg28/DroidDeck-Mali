@@ -64,6 +64,8 @@ jobs:
           TAG: ${{ env.BASELINE_TAG }}
         run: |
           set -euo pipefail
+          cat > "$RUNNER_TEMP/read-published.sh" <<'EOS'
+          set -euo pipefail
           work=$RUNNER_TEMP/baseline
           mkdir -p "$work"
           # Another branch's workflow publishes to this tag, and the release is briefly gone, or
@@ -85,9 +87,7 @@ jobs:
             sleep 20
           done
           if [ -z "$names" ]; then
-            # Not "nothing is published": what gh said, so the report can tell the two apart.
-            printf '%s\n' "${err:-the release exists and has no .apk asset}" > baseline-error.txt
-            echo "No apk on $TAG: $(cat baseline-error.txt)"
+            echo "No apk on $TAG: ${err:-the release exists and has no .apk asset}"
             echo "found=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -97,14 +97,6 @@ jobs:
           # it has nothing to match, and the report says what went wrong instead of an empty cell.
           if ! identity=$(bash tools/release/apk-identity.sh "$work/$name" 2>&1); then
             echo "::error::cannot read the identity of $name: $identity"
-            {
-              echo "## Baseline: what is published as $TAG"
-              echo
-              echo "\`$name\` could not be read:"
-              echo '```'
-              echo "$identity"
-              echo '```'
-            } > report.md
             exit 1
           fi
           read -r package code cert <<<"$identity"
@@ -116,6 +108,8 @@ jobs:
             echo "version_code=$code"
             echo "cert_sha256=$cert"
           } >> "$GITHUB_OUTPUT"
+          EOS
+          bash tools/ci/with-report.sh "Read the published APK" "$RUNNER_TEMP/read-published.sh"
 
       - name: Report
         if: always()
@@ -131,12 +125,7 @@ jobs:
           {
             echo "## Baseline: what is published as $BASELINE_TAG"
             echo
-            if [ "$FOUND" != true ] && [ -f baseline-error.txt ]; then
-              echo "Nothing could be read from it. gh said:"
-              echo '```'
-              cat baseline-error.txt
-              echo '```'
-            elif [ "$FOUND" = true ]; then
+            if [ "$FOUND" = true ]; then
               echo "| | |"
               echo "|---|---|"
               echo "| asset | \`$OLD_NAME\` |"
@@ -275,12 +264,7 @@ jobs:
             echo "| | applicationId | versionCode | signing certificate (SHA-256) |"
             echo "|---|---|---|---|"
             echo "| this build | \`$THIS_PACKAGE\` | $THIS_CODE | \`$THIS_CERT\` |"
-            if [ "$FOUND" != true ] && [ -f baseline-error.txt ]; then
-              echo "Nothing could be read from it. gh said:"
-              echo '```'
-              cat baseline-error.txt
-              echo '```'
-            elif [ "$FOUND" = true ]; then
+            if [ "$FOUND" = true ]; then
               echo "| published \`$BASELINE_TAG\` ($OLD_NAME) | \`$OLD_PACKAGE\` | $OLD_CODE | \`$OLD_CERT\` |"
             else
               echo "| published \`$BASELINE_TAG\` | - | - | - (nothing published yet) |"
