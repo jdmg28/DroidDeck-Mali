@@ -54,10 +54,14 @@ typedef int32_t (*list_devices_fn)(void *, uint32_t *, void **);
 typedef void (*properties_fn)(void *, struct device_properties *);
 typedef void (*destroy_instance_fn)(void *, const void *);
 
+/* Four buffers, because two versions are printed in one call: one shared buffer would make every
+ * version in the line read as the last one formatted. */
 static const char *version(uint32_t v) {
-    static char text[32];
-    snprintf(text, sizeof text, "%u.%u.%u", v >> 22, (v >> 12) & 0x3ffu, v & 0xfffu);
-    return text;
+    static char text[4][32];
+    static unsigned which;
+    char *out = text[which++ % 4];
+    snprintf(out, 32, "%u.%u.%u", v >> 22, (v >> 12) & 0x3ffu, v & 0xfffu);
+    return out;
 }
 
 static void *entry(gipa_fn gipa, void *instance, const char *name, int required) {

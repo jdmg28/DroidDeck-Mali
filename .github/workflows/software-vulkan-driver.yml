@@ -432,6 +432,8 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
+          cat > "$RUNNER_TEMP/package.sh" <<'EOS'
+          set -euo pipefail
           driver=stage/libvulkan_lvp.so
           # Every library in the package except the driver itself: what the importer has to copy
           # beside it, and what its policy has to recognise.
@@ -503,6 +505,8 @@ jobs:
             echo "zip_bytes=$(stat -c %s "$RELEASE_ASSET")"
             echo "contents=$(cd stage && ls *.so* | jq -R . | jq -sc .)"
           } >> "$GITHUB_OUTPUT"
+          EOS
+          bash tools/ci/with-report.sh "Write the package" "$RUNNER_TEMP/package.sh"
 
       - name: Summary
         env:
