@@ -58,6 +58,12 @@ jobs:
           sudo apt-get install -y --no-install-recommends gh jq
           sdkmanager 'build-tools;34.0.0'
 
+      - name: Start the report
+        run: |
+          set -euo pipefail
+          echo "## Baseline: what is published as $BASELINE_TAG" > report.md
+          echo >> report.md
+
       - name: Read the published APK
         id: published
         env:
@@ -123,8 +129,6 @@ jobs:
         run: |
           set -euo pipefail
           {
-            echo "## Baseline: what is published as $BASELINE_TAG"
-            echo
             if [ "$FOUND" = true ]; then
               echo "| | |"
               echo "|---|---|"
@@ -133,11 +137,11 @@ jobs:
               echo "| versionCode | **$OLD_CODE** |"
               echo "| signing certificate SHA-256 | \`$OLD_CERT\` |"
             else
-              echo "No apk published as \`$BASELINE_TAG\`."
+              echo "Nothing published as \`$BASELINE_TAG\` could be read. See above for why."
             fi
             echo
             echo "Read by [this run]($RUN_URL)."
-          } > report.md
+          } >> report.md
           cat report.md >> "$GITHUB_STEP_SUMMARY"
           if ! gh release view ci-report-latest -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release create ci-report-latest -R "$GITHUB_REPOSITORY" --prerelease \
