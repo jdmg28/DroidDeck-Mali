@@ -112,6 +112,26 @@ public class LinuxVulkanDriverManager {
                 DriverArchivePolicy.isMaliRuntimeLibrary(meta.optString("sourceLibraryName", ""));
     }
 
+    /** "software", "mali", "adreno" or "" - what the installed driver drives. */
+    public String getGpuVendor(String id) {
+        JSONObject m = readMeta(id);
+        if (m == null) return "";
+        String v = m.optString("gpuVendor", "");
+        return !v.isEmpty() ? v : DriverArchivePolicy.gpuVendor(m.optString("sourceLibraryName", ""));
+    }
+
+    /** A driver that needs no GPU at all: the one a "never touch the hardware" session may use. */
+    public boolean isSoftwareDriver(String id) {
+        return isInstalled(id) && "software".equals(getGpuVendor(id));
+    }
+
+    /** Installed software drivers, newest name first - what Auto picks on a GPU with no safe driver. */
+    public List<String> softwareDriverIds() {
+        List<String> out = new ArrayList<>();
+        for (String id : enumerateInstalledDrivers()) if (isSoftwareDriver(id)) out.add(id);
+        return out;
+    }
+
     public String getDriverVersion(String id) {
         JSONObject m = readMeta(id);
         return m != null ? m.optString("driverVersion", "") : "";
@@ -143,6 +163,7 @@ public class LinuxVulkanDriverManager {
             JSONObject zipMeta = null;
             long unpacked = 0;
             boolean backendSeen = false;
+            List<String> companions = new ArrayList<>();
             try (InputStream is = context.getContentResolver().openInputStream(zipUri);
                  ZipInputStream zis = new ZipInputStream(is)) {
                 if (is == null) throw new IOException("cannot open " + zipUri);
@@ -162,6 +183,13 @@ public class LinuxVulkanDriverManager {
                         if (backendSeen) throw new IllegalArgumentException("duplicate PanVK backend in driver zip");
                         backendSeen = true;
                         unpacked += copyBounded(zis, new File(tmpDir, DriverArchivePolicy.BACKEND_NAME), DriverArchivePolicy.MAX_LIBRARY_BYTES);
+                    } else if (DriverArchivePolicy.isCompanionLibrary(base)) {
+                        if (companions.size() >= DriverArchivePolicy.MAX_COMPANIONS)
+                            throw new IllegalArgumentException("too many companion libraries in driver zip");
+                        if (companions.contains(base))
+                            throw new IllegalArgumentException("duplicate companion library " + base + " in driver zip");
+                        companions.add(base);
+                        unpacked += copyBounded(zis, new File(tmpDir, base), DriverArchivePolicy.MAX_LIBRARY_BYTES);
                     } else if (base.equals(META_NAME)) {
                         try {
                             zipMeta = new JSONObject(new String(readAllBounded(zis, DriverArchivePolicy.MAX_META_BYTES), StandardCharsets.UTF_8));
@@ -174,7 +202,7 @@ public class LinuxVulkanDriverManager {
                     // Package ICDs are dropped; adopt() writes a safe absolute library path.
                 }
             }
-            String id = adopt(tmpDir, soName, zipMeta, displayName);
+            String id = adopt(tmpDir, soName, zipMeta, displayName, companions);
             keep = true;
             return id;
         } finally {
@@ -196,6 +224,18 @@ public class LinuxVulkanDriverManager {
      * deletes {@code tmpDir} when this throws.
      */
     String adopt(File tmpDir, String soName, JSONObject zipMeta, String displayName) throws IOException {
+        return adopt(tmpDir, soName, zipMeta, displayName, Collections.emptyList());
+    }
+
+    /**
+     * As {@link #adopt}, with the companion libraries the zip carried beside the driver (a software
+     * Mesa ICD needs its libLLVM, and nothing else in the runtime has it). They are checked with the
+     * same two rules as the driver itself - AArch64, glibc - and accepted only if meta.json declared
+     * exactly this set: a file copied into the app's files dir next to a driver the loader will
+     * dlopen is not something to take on trust from an arbitrary zip.
+     */
+    String adopt(File tmpDir, String soName, JSONObject zipMeta, String displayName,
+                 List<String> companions) throws IOException {
         try {
             if (soName == null) {
                 throw new IllegalArgumentException(context.getString(R.string.lvd_no_library));
@@ -215,6 +255,35 @@ public class LinuxVulkanDriverManager {
                 throw new IllegalArgumentException("DroidDeck Mali adapter is missing libpanvk_backend.so");
             if (backend.isFile() && (!isAarch64Elf(backend) || !containsAscii(backend, "libc.so.6")))
                 throw new IllegalArgumentException("PanVK backend must be AArch64 Linux/glibc, not Android/Bionic");
+            java.util.Set<String> declared = new java.util.LinkedHashSet<>();
+            if (zipMeta != null) {
+                org.json.JSONArray listed = zipMeta.optJSONArray("companions");
+                for (int i = 0; listed != null && i < listed.length(); i++) {
+                    String name = listed.optString(i, "");
+                    if (!name.isEmpty()) declared.add(new File(name).getName());   // accept a path, store a name
+                }
+            }
+            if (!companions.isEmpty() && declared.isEmpty()) {
+                throw new IllegalArgumentException("driver zip carries companion libraries but its "
+                        + "meta.json declares none ("companions": ["libLLVM.so.19.1"], ...)");
+            }
+            if (!declared.isEmpty() && !declared.containsAll(companions)) {
+                throw new IllegalArgumentException("meta.json declares a companion the zip does not "
+                        + "carry: " + declared);
+            }
+            for (String name : companions) {
+                File f = new File(tmpDir, name);
+                if (!isAarch64Elf(f) || !containsAscii(f, "libc.so.6")) {
+                    throw new IllegalArgumentException("companion " + name + " must be AArch64 Linux/glibc");
+                }
+            }
+            // What makes a companion findable is the driver's own DT_RUNPATH ("$ORIGIN"), which is the
+            // packaging step's job, not the importer's: the zip is built with patchelf and CI asserts
+            // `readelf -d` agrees. Reading it here would mean an ELF parser in the app for a check
+            // that has already been made once, on the machine that wrote the file.
+            Log.i(TAG, "driver " + soName + " carries " + companions.size() + " companion librar"
+                    + (companions.size() == 1 ? "y" : "ies"));
+            String vendor = DriverArchivePolicy.gpuVendor(soName);
             String kind = zipMeta != null ? zipMeta.optString("kind", "") : "";
             if (!kind.isEmpty() && !"linux-vulkan-icd".equals(kind)) {
                 Log.w(TAG, "meta.json says kind=" + kind + ", importing anyway (the binary is glibc)");
@@ -249,6 +318,12 @@ public class LinuxVulkanDriverManager {
             meta.put("libc", "glibc");
             meta.put("minGlibc", minGlibc);
             meta.put("sourceLibraryName", soName);
+            meta.put("gpuVendor", vendor);
+            if (!companions.isEmpty()) {
+                org.json.JSONArray names = new org.json.JSONArray();
+                for (String name : companions) names.put(name);
+                meta.put("companions", names);
+            }
             meta.put("vulkanApiVersion", apiVersion);
             meta.put("importedAt", System.currentTimeMillis());
             if (!FileUtils.writeString(new File(tmpDir, META_NAME), meta.toString(2))) throw new IOException("cannot write meta.json");

@@ -65,6 +65,19 @@ object GpuGuard {
         val blocked: Boolean get() = !allowed
     }
 
+    /**
+     * Must this guest see the GPU? Asked by `LinuxRuntime` before anything is bound, from Java,
+     * which is why it is a static rather than a session field: the answer has to be the same for
+     * every process the runtime starts, not only the one that launches Steam.
+     *
+     * The *chosen* profile counts even with the guard switched off. "Do not touch the GPU" is a
+     * statement about the machine, not about the guard's bookkeeping, and a mode that silently
+     * disappears when someone disables the latch would be the most dangerous kind of switch.
+     */
+    @JvmStatic
+    fun avoidsGpu(context: android.content.Context): Boolean =
+        SafeProfile.of(GpuSafetyPrefs.chosenProfile(context)).avoidsGpu || profile.avoidsGpu
+
     private val stamp = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US)
 
     @Volatile

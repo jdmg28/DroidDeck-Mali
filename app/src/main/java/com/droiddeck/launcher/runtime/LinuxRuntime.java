@@ -268,8 +268,12 @@ public final class LinuxRuntime {
                 bind(cmd, fake.getPath() + ":" + entry[1]);
             }
         }
-        bindGpuNode(context, cmd);
-        bindAdrenoStats(cmd, extraBinds);
+        if (com.droiddeck.launcher.gpu.guard.GpuGuard.avoidsGpu(context)) {
+            hideGpuNodes(root, cmd);
+        } else {
+            bindGpuNode(context, cmd);
+            bindAdrenoStats(cmd, extraBinds);
+        }
         bindCpuTemps(cmd, root);
         if (extraBinds != null) {
             for (String spec : extraBinds) bind(cmd, spec);
@@ -277,6 +281,38 @@ public final class LinuxRuntime {
         List<String> specs = new ArrayList<>();
         for (int i = 0; i + 1 < cmd.size(); i += 2) specs.add(cmd.get(i + 1));
         return specs;
+    }
+
+    /**
+     * Software mode: take the GPU away rather than ask the session to avoid it.
+     *
+     * Two halves, and the order of importance is the reverse of how they sound. Not calling
+     * {@link #bindGpuNode} is the one that matters: that is where the session's fake
+     * {@code /dev/dri/renderD128} and its {@code /sys/dev/char} stand-in come from, and with them
+     * every path a compositor takes toward the GPU. The shadows below then cover what the wholesale
+     * {@code -b /dev} already gave the guest - PanVK's kernel interface is {@code /dev/mali0}, opened
+     * by name, and Turnip's is {@code /dev/kgsl-3d0}.
+     *
+     * A shadow, not a removal: PRoot has no way to hide one entry of a bound directory, so the name
+     * still appears when {@code /dev} is listed and {@code open()} succeeds - on a zero-length regular
+     * file. That is deliberate and it is the second thing worth knowing here: {@code /dev/null} would
+     * be the obvious choice and is the wrong one, because /dev/null IS a character device, so
+     * {@code stat()} looks like a GPU node, the {@code S_ISCHR} checks pass, and this adapter's own
+     * ICD would cheerfully advertise major 1 / minor 3 to gamescope as a render node. A regular file
+     * fails that probe, which is the behaviour the driver package was already written to handle ("no
+     * node present" - the same path the test suite exercises). Either way no ioctl reaches kbase:
+     * {@code ENOTTY} on a regular file is not a GPU.
+     *
+     * Not claimed: this cannot touch a process that already had the node open before the mode was
+     * switched, and it does not hide the read-only sysfs entries under {@code /sys} (nothing there can
+     * submit work). The mechanism is the one this class has used for years to shadow
+     * {@code /sys/fs/selinux}.
+     */
+    private static void hideGpuNodes(File root, List<String> cmd) {
+        File empty = new File(root, "etc/droiddeck/empty");
+        if (!empty.isFile()) return;      // the unbound-node half above already holds
+        bind(cmd, empty.getPath() + ":" + MALI_DEVICE);
+        bind(cmd, empty.getPath() + ":" + KGSL_DEVICE);
     }
 
     /**

@@ -42,6 +42,12 @@ enum class SafeProfile(
     val softwareUi: Boolean,
     /** Stop Mesa keeping a shader cache: a bad cached program is one more unvalidated input. */
     val disableShaderCache: Boolean,
+    /**
+     * The session must not be able to reach the GPU at all. Not "asked politely": [SOFTWARE] leaves
+     * the render node unbound and shadows the device node, so there is nothing to open, and the
+     * guest's own driver choice is made final there instead of falling back to the runtime's.
+     */
+    val avoidsGpu: Boolean,
 ) {
     /** Nothing is changed; the guard only watches and reports. */
     OFF(
@@ -49,6 +55,7 @@ enum class SafeProfile(
         allowsHdr = true, allowsFrameGen = true, allowsUpscaling = true, allowsScreenEffects = true,
         allowsGpuClockPin = true, allowsMangoapp = true, allowsRealtimeQueues = true,
         allowsSecondScreen = true, softwareUi = false, disableShaderCache = false,
+        avoidsGpu = false,
     ),
 
     /**
@@ -60,6 +67,7 @@ enum class SafeProfile(
         allowsHdr = false, allowsFrameGen = false, allowsUpscaling = true, allowsScreenEffects = true,
         allowsGpuClockPin = false, allowsMangoapp = false, allowsRealtimeQueues = false,
         allowsSecondScreen = true, softwareUi = false, disableShaderCache = false,
+        avoidsGpu = false,
     ),
 
     /**
@@ -71,6 +79,24 @@ enum class SafeProfile(
         allowsHdr = false, allowsFrameGen = false, allowsUpscaling = false, allowsScreenEffects = false,
         allowsGpuClockPin = false, allowsMangoapp = false, allowsRealtimeQueues = false,
         allowsSecondScreen = false, softwareUi = true, disableShaderCache = true,
+        avoidsGpu = false,
+    ),
+
+    /**
+     * Software only: no GPU at all. [avoidsGpu] is enforced where the guest is built, not in the
+     * environment, because an environment variable is a request and a bind mount is a fact.
+     *
+     * What it is for: the whole stack above the driver - native ARM64 Steam, FEX for the x86 game,
+     * Proton, DXVK, Wine, gamescope - can be exercised and debugged while the GPU is not in the
+     * picture, so a failure here is a stack failure and not a Mali failure. Steam runs on
+     * lavapipe/llvmpipe slowly; that is the cost of the isolation, not a bug to chase.
+     */
+    SOFTWARE(
+        id = GpuSafetyPrefs.PROFILE_SOFTWARE, maxPixels = 1024 * 576, maxFps = 24,
+        allowsHdr = false, allowsFrameGen = false, allowsUpscaling = false, allowsScreenEffects = false,
+        allowsGpuClockPin = false, allowsMangoapp = false, allowsRealtimeQueues = false,
+        allowsSecondScreen = false, softwareUi = true, disableShaderCache = true,
+        avoidsGpu = true,
     ),
     ;
 
@@ -106,6 +132,9 @@ enum class SafeProfile(
         if (this != OFF) lines.add("BL_MALI_GUARD_MAX_PIXELS=$maxPixels")
         if (this != OFF) lines.add("BL_MALI_GUARD_MAX_FPS=$maxFps")
         if (disableShaderCache) lines.add("MESA_SHADER_CACHE_DISABLE=1")
+        // Read by droiddeck-session: it makes the software driver final, skips the Mali driver
+        // requirement and the Mali pre-flight check, and refuses to fall back to the runtime's own.
+        if (avoidsGpu) lines.add("BL_SOFTWARE_VULKAN=1")
         return lines
     }
 

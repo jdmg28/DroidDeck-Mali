@@ -29,6 +29,9 @@ object GpuSafetyPrefs {
     /** What runs after the device has crashed once: the smallest session that still starts Steam. */
     const val PROFILE_STRICT = "strict"
 
+    /** Nothing but the CPU: the GPU is not bound into the guest at all. See [SafeProfile.SOFTWARE]. */
+    const val PROFILE_SOFTWARE = "software"
+
     /** How many clean session ends in a row relax a lock the guard engaged by itself. */
     const val CLEAN_RUNS_TO_RELAX = 3
 
