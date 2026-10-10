@@ -319,7 +319,13 @@ class SessionService : Service() {
             return
         }
 
-        if (com.droiddeck.launcher.core.DeviceSupport.mali() &&
+        // Software mode (GpuSafety) is exempt from this gate: it asks for the one driver the
+        // session is deliberately not going to use, and it stopped a software session dead before
+        // proot had even started - a guest that exits in 80 ms with status -1 and a toast telling
+        // you to import PanVK, while the driver you did import is the CPU one. Outside software
+        // mode nothing changes: on Mali a session still needs the imported PanVK package.
+        if (!com.droiddeck.launcher.gpu.GpuSafety.software(this) &&
+            com.droiddeck.launcher.core.DeviceSupport.mali() &&
             (android.os.Build.VERSION.SDK_INT < 35 ||
              LinuxVulkanDriver.resolveIcdPath(this, SessionPrefs.linuxDriver(this)) == null ||
              !LinuxVulkanDriverManager(this).isMaliRuntimeDriver(SessionPrefs.linuxDriver(this)))) {
