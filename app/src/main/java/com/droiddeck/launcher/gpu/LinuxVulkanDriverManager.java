@@ -280,7 +280,7 @@ public class LinuxVulkanDriverManager {
             }
             if (!companions.isEmpty() && declared.isEmpty()) {
                 throw new IllegalArgumentException("driver zip carries companion libraries but its "
-                        + "meta.json declares none ("companions": ["libLLVM.so.19.1"], ...)");
+                        + "meta.json declares none (\"companions\": [\"libLLVM.so.19.1\"], ...)");
             }
             if (!declared.isEmpty() && !declared.containsAll(companions)) {
                 throw new IllegalArgumentException("meta.json declares a companion the zip does not "
