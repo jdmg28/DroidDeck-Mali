@@ -43,3 +43,6 @@ app/src/main/assets/directaudio/
 # Driver packages built by drivers/mali-g615/build.sh - the 21 MB backend is
 # upstream's binary and belongs in a release asset, never in the tree.
 dist/
+
+# tools/make_patch_zip.sh wrote its commit series here while -o was still a relative path.
+/series/

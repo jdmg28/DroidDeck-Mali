@@ -17,9 +17,13 @@ REPO=$(git rev-parse --show-toplevel)
 OUT=${2:-"$(dirname "$REPO")/DroidDeck-GPU-Guard-patch.zip"}
 HEAD=$(git rev-parse --short HEAD)
 BRANCH=$(git rev-parse --abbrev-ref HEAD)
-mkdir -p /tmp/patchzip
-rm -rf /tmp/patchzip && mkdir -p /tmp/patchzip/series
-cd /tmp/patchzip
+# A temp dir of its own, and an absolute -o for format-patch below. `git -C "$REPO" format-patch -o
+# series` resolves that path against the repo rather than against the shell's cwd, which is how 29
+# generated .patch files once landed in the tree - and a later `git add -A` committed them.
+WORK=$(mktemp -d "${TMPDIR:-/tmp}/droiddeck-patchzip.XXXXXX")
+trap 'rm -rf "$WORK"' EXIT
+mkdir -p "$WORK/series"
+cd "$WORK"
 
 # 1. every changed file, at its real path, so `unzip -o` onto a checkout is a complete update.
 git -C "$REPO" diff --name-only "$BASE..HEAD" > files.txt
@@ -33,7 +37,9 @@ done < files.txt
 git -C "$REPO" diff --name-status "$BASE..HEAD" > CHANGED.txt
 
 # 2. the series, for anyone who would rather have the history than overwrite files.
-git -C "$REPO" format-patch "$BASE..HEAD" -o series > /dev/null
+git -C "$REPO" format-patch "$BASE..HEAD" -o "$WORK/series" > /dev/null
+[ -n "$(ls -A "$WORK/series" 2>/dev/null)" ] || { echo "format-patch produced no series in $WORK/series"; exit 1; }
+[ -d "$REPO/series" ] && { echo "format-patch wrote into the repo again ($REPO/series); refusing to leave it"; exit 1; }
 
 # 3. the instructions, generated from the tree so the numbers and the list cannot be stale.
 {
