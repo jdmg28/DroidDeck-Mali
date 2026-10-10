@@ -307,6 +307,20 @@ What it changes, and what it was verified against:
   refused, `DD_SOFTWARE_GLIBC_OLD`, before anything is exported. Unknown: one line in the log and
   continue - refusing on a missing `getconf` would punish images that are fine. CI does not judge the
   rootfs because it cannot see it.
+  What the current package says, measured from Debian trixie's own build (Mesa 25.0.7-2+deb13u1, LLVM
+  1:19.1.7-3+b1): **`minGlibc 2.38`**, with `libLLVM.so.19.1` at 123,242,120 bytes and
+  `libvulkan_lvp.so` at 10,451,865 - 40,605,954 bytes of zip. So a rootfs on Ubuntu 24.04 (2.39) or
+  Debian 13 (2.41) is fine; **Debian 12 (2.36) is not**, and will be refused at the start of the session
+  rather than half-loading a driver.
+- **The companion is found by `RUNPATH`, and the mode makes that authoritative.** Nothing on the guest
+  side sets `LD_LIBRARY_PATH` for drivers - every write of it in the app is the host-side proot library
+  path - so the `$ORIGIN` written at packaging time is what locates `libLLVM` at all. glibc searches
+  `LD_LIBRARY_PATH` *before* `DT_RUNPATH` (and `ld.so.cache` after it), so software mode prepends the
+  driver's own directory rather than hoping the caller's path is empty. The ceilings moved with it:
+  `MAX_LIBRARY_BYTES` 96 → 192 MiB and `MAX_ARCHIVE_BYTES` 128 → 256 MiB, because Debian's libLLVM
+  exceeded the old per-library limit by 22 MB and the whole package fitted the old total by 522 KB. In
+  exchange the importer now refuses before reading anything when the device cannot show room for it
+  (`requiredFreeSpace`, four times the archive plus 32 MiB, capped at the ceiling it is guarding).
 
 Honest limits of the mode:
 

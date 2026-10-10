@@ -283,8 +283,8 @@ jobs:
           finds its LLVM beside itself after DroidDeck's importer renames and relocates it.
 
           This build's own numbers, so they can be read off the release without opening the run:
-          \`minGlibc ${{ steps.pack.outputs.min_glibc }}\`, per-library sizes \`${{ steps.pack.outputs.sizes }}\`
-          bytes, provenance \`${{ github.run_id }}\` from \`${{ github.sha }}\`. The run's summary adds every
+          \`minGlibc ${{ steps.pack.outputs.min_glibc }}\`, per-library sizes \`${{ steps.pack.outputs.sizes }}\`,
+          provenance \`${{ github.run_id }}\` from \`${{ github.sha }}\`. The run's summary adds every
           \`NEEDED\` entry and every size against the limits the importer enforces.
 
           Import it under Components -> Controladores de GPU -> Importar .zip, then set the GPU safety
