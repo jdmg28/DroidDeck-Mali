@@ -2137,6 +2137,8 @@
     <string name="gpu_safety_profile_hint">What a session gives up to keep the GPU out of trouble. Applied when the session starts.</string>
     <string name="gpu_safety_profile_off">Off - nothing is changed</string>
     <string name="gpu_safety_profile_safe">Safe - 720p, 30 fps, no extras</string>
+    <string name="gpu_safety_profile_software">Software (lavapipe) - no GPU at all</string>
+    <string name="gpu_safety_software_note">This one is not a smaller session, it is a different machine: the guest is never given a render node, the GPU device nodes are shadowed by an empty file, the driver package is not loaded, and the pre-flight probe does not run - there is no GPU to prove. It needs an imported software Vulkan driver (Mesa\'s libvulkan_lvp.so with its libLLVM beside it); without one the session is refused rather than quietly started on the GPU. Everything runs on the CPU, so expect seconds per frame, not 30: the point is to find out whether Steam, FEX, Proton and the games themselves are sound while the Mali stack is out of the picture.</string>
     <string name="gpu_safety_profile_strict">Strict - 576p, 24 fps, interface on the CPU</string>
     <string name="gpu_safety_lock_after_crash">Refuse to start after a crash</string>
     <string name="gpu_safety_lock_after_crash_hint">After a boot recorded as a crash, no session starts until you re-arm. This is what stops a crash from repeating on every boot.</string>

@@ -59,6 +59,28 @@ public final class LinuxVulkanDriver {
     }
 
     /**
+     * The driver id a session must use, which is not always the one stored. A session chosen to stay
+     * off the GPU cannot end up on a hardware driver merely because that is what was selected last,
+     * and on a Mali device "no choice" is itself a choice: the runtime's built-in ICD is PanVK.
+     *
+     * @return an imported driver's id, or "" for "no Vulkan driver at all" - which the session script
+     *         reads as final, precisely so that the absence is the user's decision and not an
+     *         accident of a missing import.
+     */
+    public static String driverForSession(Context context, String stored) {
+        if (!com.droiddeck.launcher.gpu.guard.GpuGuard.avoidsGpu(context)) return stored;
+        LinuxVulkanDriverManager m = new LinuxVulkanDriverManager(context);
+        List<String> software = m.softwareDriverIds();
+        if (!software.isEmpty()) {
+            Log.i(TAG, "software mode: drawing with the imported software driver " + software.get(0));
+            return software.get(0);
+        }
+        Log.w(TAG, "software mode: no software Vulkan driver is installed (import Mesa's libvulkan_lvp"
+                + " package); the session gets no Vulkan device at all rather than the GPU's");
+        return "";
+    }
+
+    /**
      * The ICD manifest path to hand the session, or null to leave the runtime's own driver alone.
      * An id whose import is gone resolves to null rather than failing the launch.
      */

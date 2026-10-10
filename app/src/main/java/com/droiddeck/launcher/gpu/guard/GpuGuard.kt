@@ -500,6 +500,13 @@ object GpuGuard {
         // able to tell anything.
         val reading = BootReason.read(app)
         val reasonBlind = reading.kind == BootReason.Kind.UNKNOWN
+        val software = avoidsGpu(app)
+        lines.add("  gpu access: " + if (software)
+            "SOFTWARE - the guest gets no render node, /dev/mali0 and /dev/kgsl-3d0 are shadowed by " +
+            "an empty file, the driver package is not loaded, and the pre-flight probe is skipped " +
+            "because there is no GPU to prove. Every stall/thermal/watchdog number below describes a " +
+            "session that cannot be a GPU fault."
+        else "the driver the session was configured with")
         lines.add("  boot reason (this boot): $reading (from ${reading.source})")
         lines.add("  crash detection: " + if (reasonBlind)
             "the guard's session record ONLY - the boot reason is not readable on this device, " +

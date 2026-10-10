@@ -2113,6 +2113,8 @@
     <string name="gpu_safety_profile_hint">A qué renuncia una sesión para no forzar la GPU. Se aplica al iniciar la sesión.</string>
     <string name="gpu_safety_profile_off">Desactivado: no cambia nada</string>
     <string name="gpu_safety_profile_safe">Seguro: 720p, 30 fps, sin extras</string>
+    <string name="gpu_safety_profile_software">Software (lavapipe) - sin tocar la GPU</string>
+    <string name="gpu_safety_software_note">Esta opcion no es una sesion mas chica, es otra maquina: al guest nunca se le da un render node, los nodos de la GPU se tapan con un archivo vacio, el paquete del driver no se carga, y la prueba de pre-vuelo no corre - no hay GPU que demostrar. Necesita un driver Vulkan de software importado (el libvulkan_lvp.so de Mesa con su libLLVM al lado); sin el, la sesion se rechaza en vez de arrancar escondidos sobre la GPU. Todo corre en el CPU, asi que prepara para segundos por fotograma, no 30: el punto es saber si Steam, FEX, Proton y los juegos estan bien mientras el stack de Mali no esta en la foto.</string>
     <string name="gpu_safety_profile_strict">Estricto: 576p, 24 fps, interfaz en la CPU</string>
     <string name="gpu_safety_lock_after_crash">No iniciar tras un fallo</string>
     <string name="gpu_safety_lock_after_crash_hint">Tras un arranque registrado como fallo, no se inicia ninguna sesión hasta que rearme. Es lo que evita que el fallo se repita en cada arranque.</string>

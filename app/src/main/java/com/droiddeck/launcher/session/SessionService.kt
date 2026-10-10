@@ -356,7 +356,18 @@ class SessionService : Service() {
         val guard = com.droiddeck.launcher.gpu.guard.GpuGuard
         guard.beginSession(this, sessionDir)
         val guardPrefs = com.droiddeck.launcher.gpu.guard.GpuSafetyPrefs
-        if (gen == sessionGen && SessionState.running && guardPrefs.guardEnabled(this) && guardPrefs.preflightProbe(this)) {
+        if (guard.avoidsGpu(this)) {
+            // The probe's whole job is to submit work to the GPU and wait for it. In software mode
+            // that is the exact thing the session is not supposed to do, so the probe is skipped by
+            // design - and said out loud, into the log and the settings page, because a skipped
+            // check that reads as a passed one is how a safety feature turns into a rumour.
+            val note = com.droiddeck.launcher.gpu.guard.Probe.Result.of(0, listOf(
+                "DD_GPU_PROBE_SKIPPED: software mode - the GPU is not exposed to the guest, so " +
+                "there is nothing here for the probe to test and nothing it could prove"))
+            com.droiddeck.launcher.gpu.guard.Probe.write(sessionDir, note)
+            guard.noteProbe(this, note)
+            Log.i(TAG, "gpu guard: software mode, pre-flight probe skipped by design")
+        } else if (gen == sessionGen && SessionState.running && guardPrefs.guardEnabled(this) && guardPrefs.preflightProbe(this)) {
             val probe = com.droiddeck.launcher.gpu.guard.Probe.run(this, guard.profile)
             com.droiddeck.launcher.gpu.guard.Probe.write(sessionDir, probe)
             // A skip is not a pass. The GPU was not asked, so nothing has been shown to work, and
@@ -702,8 +713,14 @@ class SessionService : Service() {
         guest.add("GALLIUM_DRIVER=" + (if (guardSoftwareUi) "llvmpipe" else "zink"))
         guest.add("LIBGL_KOPPER_DRI2=true")
         val mali = com.droiddeck.launcher.core.DeviceSupport.mali()
-        if (!mali) LinuxRuntime.vulkanIcd(this)?.let { guest.add("VK_ICD_FILENAMES=" + it.path) }
+        if (!mali && !guardProfile.avoidsGpu)
+            LinuxRuntime.vulkanIcd(this)?.let { guest.add("VK_ICD_FILENAMES=" + it.path) }
         if (mali) {
+            // The three switches below tune the Mali driver package. They are left alone in software
+            // mode on purpose: with no render node bound and the loader's search replaced by
+            // BL_SOFTWARE_VULKAN (see droiddeck-session) that driver is never loaded, so setting its
+            // knobs would be theatre - and "harmless" flags are how a session ends up looking like it
+            // is configured for something it is not running.
             guest.add("BL_GPU_FAMILY=mali")
             // The driver package's own instrument. "1" means "into the session folder", which the
             // adapter resolves from BL_DEBUG_DIR set above; it never writes anywhere the app has
@@ -738,7 +755,9 @@ class SessionService : Service() {
         // import falls back to. One driver for every session: the driver's shader cache is keyed on
         // its build, and with one per mode every emulator compiled its shaders twice.
         val linuxDriverId = SessionPrefs.linuxDriver(this)
-        LinuxVulkanDriver.resolveIcdPath(this, linuxDriverId)
+        // Software mode overrides it; see LinuxVulkanDriver.driverForSession. An empty result is not
+        // "fall back", it is "no driver", and the guest script is written to honour that.
+        LinuxVulkanDriver.resolveIcdPath(this, LinuxVulkanDriver.driverForSession(this, linuxDriverId))
             ?.let { guest.add(LinuxVulkanDriver.ENV + "=" + it) }
         // Turnip's own debug switches, for the runtime's driver and everything on it. The file in
         // Downloads holds the value verbatim ("sysmem", "sysmem,deck_emu"); with nothing there, an

@@ -66,7 +66,38 @@ trap 'collect_steam_logs 2>/dev/null || true' TERM INT HUP
 # VK_DRIVER_FILES REPLACES the loader's search, so a manifest whose library is unreadable would
 # leave the session with no Vulkan at all - check both before setting it, and say so in the log
 # rather than fail silently half a minute later.
-if [ "${BL_GPU_FAMILY:-}" = mali ] && [ -z "${BL_VK_DRIVER:-}" ]; then
+# Software mode ("no GPU at all"): the app bound no render node and shadowed the device nodes, so
+# reaching for hardware from here would be a bug in this script and not a fallback. Two rules follow
+# from that, and both are about refusing rather than degrading:
+#   - VK_DRIVER_FILES replaces the loader's whole search. Setting it to the imported software
+#     manifest is what keeps the runtime's own (PanVK on this device, Turnip elsewhere) out.
+#   - "the manifest is unreadable" is NOT a reason to fall back. Falling back is how a session that
+#     was promised no GPU ends up opening one, so the mode is refused instead - and said in the log
+#     with the name of what to import, because a bare exit 78 teaches nobody anything.
+if [ "${BL_SOFTWARE_VULKAN:-}" = 1 ]; then
+  bl_soft_lib=""
+  if [ -n "${BL_VK_DRIVER:-}" ] && [ -r "$BL_VK_DRIVER" ]; then
+    bl_soft_lib=$(sed -n 's/.*"library_path"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$BL_VK_DRIVER" | head -1)
+    # JSON escapes the separator (org.json writes "\/data\/..."); an unescaped path looks relative
+    # and would be glued onto the manifest's own directory.
+    bl_soft_lib=$(printf '%s' "$bl_soft_lib" | sed 's|\\/|/|g')
+    case $bl_soft_lib in
+      /*) ;;
+      ?*) bl_soft_lib="$(dirname "$BL_VK_DRIVER")/$bl_soft_lib" ;;
+    esac
+  fi
+  if [ -z "$bl_soft_lib" ] || [ ! -r "$bl_soft_lib" ]; then
+    echo "DD_SOFTWARE_DRIVER_MISSING: software mode needs an imported software Vulkan driver - a zip" \
+         "with Mesa's libvulkan_lvp.so and its libLLVM beside it (Components -> drivers -> import" \
+         ".zip). The session is refused rather than started on the GPU."
+    exit 78
+  fi
+  export VK_DRIVER_FILES="$BL_VK_DRIVER"
+  export VK_ICD_FILENAMES="$BL_VK_DRIVER"
+  echo "== vulkan driver: software only, $bl_soft_lib"
+  unset bl_soft_lib
+fi
+if [ "${BL_GPU_FAMILY:-}" = mali ] && [ "${BL_SOFTWARE_VULKAN:-}" != 1 ] && [ -z "${BL_VK_DRIVER:-}" ]; then
   echo "DD_MALI_DRIVER_REQUIRED: import/select the Linux PanVK package; Turnip cannot run on Mali"
   exit 78
 fi
@@ -94,7 +125,7 @@ if [ -n "${BL_VK_DRIVER:-}" ]; then
   fi
   unset bl_icd_lib
 fi
-if [ "${BL_GPU_FAMILY:-}" = mali ] && [ -z "${BL_INSIDE:-}" ]; then
+if [ "${BL_GPU_FAMILY:-}" = mali ] && [ "${BL_SOFTWARE_VULKAN:-}" != 1 ] && [ -z "${BL_INSIDE:-}" ]; then
   /usr/local/bin/droiddeck-mali-check || exit 78
 fi
 # The app's gamescope build (tools/gamescope) asks for realtime-priority Vulkan queues on this

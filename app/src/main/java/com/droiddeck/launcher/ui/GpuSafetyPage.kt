@@ -120,8 +120,14 @@ internal fun GpuSafetyPanel(host: MenuHost, modifier: Modifier = Modifier) {
                     GpuSafetyPrefs.PROFILE_OFF to stringResource(R.string.gpu_safety_profile_off),
                     GpuSafetyPrefs.PROFILE_SAFE to stringResource(R.string.gpu_safety_profile_safe),
                     GpuSafetyPrefs.PROFILE_STRICT to stringResource(R.string.gpu_safety_profile_strict),
+                    GpuSafetyPrefs.PROFILE_SOFTWARE to stringResource(R.string.gpu_safety_profile_software),
                 ), profileId, enabled = enabled, onPick = { id -> p.setChosenProfile(context, id); apply() },
             )
+            if (profileId == GpuSafetyPrefs.PROFILE_SOFTWARE) {
+                // Said here because it is the one setting on this page that changes what the guest can
+                // see at all, and because "software mode" would otherwise be assumed to mean "slow".
+                Note(stringResource(R.string.gpu_safety_software_note))
+            }
             ToggleRow(host, "gpu-lock", stringResource(R.string.gpu_safety_lock_after_crash),
                 stringResource(R.string.gpu_safety_lock_after_crash_hint), lock, enabled = enabled) { on ->
                 p.setLockAfterFatalBoot(context, on); apply()
