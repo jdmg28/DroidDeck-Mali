@@ -29,14 +29,25 @@ So the guard is built around the four things an APK *can* do. Full write-up: `do
   upscaler or effects, no second screen, and the client's interface on llvmpipe - which doubles as
   a diagnosis: stable on Strict but not on Safe means the fault is in the Vulkan path.
 - **Test before Steam does** (`Probe`, `droiddeck-gpu-probe`). Enumeration under `timeout`, then a
-  ctypes `vkCmdFillBuffer` + fence wait against the session's ICD, then a readback. Only a fence
-  that never signals is a failure; anything that stops the test being built is a **skip**, so a bug
-  in the probe can never lock someone out of their own phone.
+  ctypes `vkCmdFillBuffer` + fence wait against the session's ICD, then a readback. A fence that
+  never signals is a failure against the GPU; anything that stops the test being built is a **skip**
+  - "the GPU was not tested", which the app now treats as a reason not to launch, because untested
+  and about-to-hang are indistinguishable from here and only one of them is reversible.
 - **Stop the session first** (`GpuWatchdog`). Frames (`recentFrameIntervalMs`), processes wedged in
   `D` state (3+ of our own uid, 3 samples running, ~1.5 s - inside the kernel's 3 s fence timeout),
   and temperature. An abort sweeps the tree four seconds later.
 - **Leave evidence.** `gpu-guard.log` and `gpu-probe.log` per session, a GPU-safety section in
   `device.txt`, and a fifth Setup tab (**Safety**, Mali only) with a Copy button for bug reports.
+
+**First field result (same day, on the device).** Four launches, four refusals, **no reboot** - the
+uptime in the log runs 10h42m across the attempts, so the phone stayed up all night with the guard
+holding the door. Three of the four refusals were the guard's own bug, not the GPU's: the probe
+asked the loader for an instance-level entry point with no instance and read the correct NULL as a
+fault. Both that bug and a second one (a `VkPhysicalDeviceProperties` missing its first two
+fields, which made every device property read 16 bytes low) are now caught by a probe test suite
+that runs against a fake Vulkan loader in CI, before the app is built. The panel also shows what
+`sys.boot.reason` looks like on this device: "not readable" - it is refused here, so the guard's
+own session record is the mechanism that matters, and it worked. See `docs/gpu-safety.md`.
 
 Deliberately not done, and documented as such in `docs/gpu-safety.md`: nothing touches the kernel
 module, SELinux, a watchdog, or the fence timeout - none of that is an app's to change, and the

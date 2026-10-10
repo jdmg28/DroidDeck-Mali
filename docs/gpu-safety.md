@@ -88,14 +88,45 @@ built. Three stages, each with its own clock:
 3. **Readback** — the bytes come back as they were written. A fence that is signalled without the
    work having been done cannot pass.
 
-Only a fence that never signals counts as a hard failure. Anything that prevents the test being
-built — no `python3`, no suitable queue family, no host-visible memory, a struct the ICD refuses —
-is a **skip**, never a verdict against the GPU. A bug in this script must never be the thing that
-locks someone out of their own phone.
+Only a fence that never signals counts as a hard verdict **against the GPU**. Anything that
+prevents the test being built — no `python3`, no suitable queue family, no host-visible memory, a
+struct the ICD refuses — is reported as a **skip**, which says "the GPU was not tested".
+
+Since 2026-10-10 the app treats a skip as a reason **not to launch** (it is labelled
+`DD_GPU_PROBE_SKIPPED` in the log and the panel), which is a change from the original intent, and
+it was made after the skip path was observed on a real device doing exactly what a skip cannot
+distinguish: an ICD that refused the probe and an ICD that would have hung the phone look the same
+from here. The cost is honest and it has been paid — a bug in the probe now locks the session out
+(see below), and it is unlocked from the Security panel, not by bricking the device. The guard
+errs that way on purpose: the reversible error is the cheap one.
 
 The app owns the outer clock (60 s) as well as the guest's internal ones, and if the process is
 still alive it asks proot to wind its tree down (SIGTERM, then SIGKILL) before recording the
 timeout as an answer.
+
+#### Two bugs the probe shipped with, and the test that now runs them
+
+Worth writing down because both were invisible in exactly the way that matters.
+
+1. It asked `vkGetInstanceProcAddr(NULL, "vkDestroyInstance")` and took the NULL as news about the
+   driver. A loader only has to answer global commands with no instance, and `vkDestroyInstance`
+   is instance-level: it was the probe asking the wrong question, and the answer was correct. The
+   result was a skip on every launch — which, since the paragraph above, blocks the launch. Three
+   attempts on a real phone, all stopped by a bug in the test, none by the GPU.
+2. `VkPhysicalDeviceProperties` was declared without its leading `sType` and `pNext`, so every
+   field was read 16 bytes low. The "device name" was the driver version. The check meant to prove
+   the right ICD had answered was reading the wrong bytes and saying nothing was wrong.
+
+Neither would have survived being run once, so it is run: `tools/test/mock_vulkan.c` is a fake
+Vulkan loader (gcc, python3, nothing destined for the phone) that answers NULL for instance
+commands until an instance exists, reports a Mali-G615 MC6, performs the fill for real, and can be
+told what the fence says. `tools/test/run_probe_tests.sh` drives it through six cases and the
+build workflow runs it **before** gradle, so a broken probe fails the build instead of the phone.
+
+That harness also caught a third thing, about itself: the case "no loader can be opened" passed
+here and failed on `ubuntu-24.04`, because the runner ships a system `libvulkan.so.1`. A test that
+asserts what only some machines do is worse than no test. The loader is now selectable by name
+(`DD_GPU_PROBE_LOADER`), which makes the case deterministic everywhere.
 
 ### 4. Takes the session down first — `GpuWatchdog`
 
