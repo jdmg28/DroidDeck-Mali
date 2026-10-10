@@ -136,10 +136,35 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p pkg stage
+          # Each failure below says what it got: the run's log is not the only place a refusal can
+          # be read, and a checksum mismatch or a renamed .so has to be visible outside it.
           fetch() { # name url sha256
-            curl -fsSL --retry 3 -o "pkg/$1.deb" "$2"
-            echo "$3  pkg/$1.deb" | sha256sum -c -
-            dpkg-deb -x "pkg/$1.deb" "pkg/$1"
+            local name=$1 url=$2 sha=$3 out
+            if ! out=$(curl -fsSL --retry 3 -o "pkg/$name.deb" "$url" 2>&1); then
+              {
+                echo
+                echo "### fetching $name failed"
+                echo '```'
+                echo "$url"
+                echo "$out"
+                echo '```'
+              } >> report.md
+              echo "::error::fetching $name failed (see the report)"
+              exit 1
+            fi
+            if ! out=$(echo "$sha  pkg/$name.deb" | sha256sum -c - 2>&1); then
+              {
+                echo
+                echo "### $name's checksum is not the one this workflow pins"
+                echo '```'
+                echo "$out"
+                echo '```'
+              } >> report.md
+              echo "::error::$name checksum mismatch (see the report)"
+              exit 1
+            fi
+            dpkg-deb -x "pkg/$name.deb" "pkg/$name"
+            echo "fetched $name: $(stat -c %s "pkg/$name.deb") bytes, $url"
           }
           fetch mesa "$MESA_DEB_URL" "$MESA_DEB_SHA256"
           fetch llvm "$LLVM_DEB_URL" "$LLVM_DEB_SHA256"
@@ -148,14 +173,34 @@ jobs:
           fetch libbsd "$LIBBSD_DEB_URL" "$LIBBSD_DEB_SHA256"
           # The driver, then every library it loads that the runtime does not have: found by
           # measurement, not by assuming - libLLVM needed libedit, which needed the other two.
+          {
+            echo
+            echo "| library | bytes |"
+            echo "|---|---|"
+          } >> report.md
           for so in libvulkan_lvp.so libLLVM.so.19.1 libedit.so.2 libtinfo.so.6 libbsd.so.0; do
             found=$(find pkg -name "$so" -type f | head -1)
-            [ -n "$found" ] || { echo "::error::$so is in none of the packages fetched"; exit 1; }
+            if [ -z "$found" ]; then
+              {
+                echo
+                echo "### $so is in none of the packages fetched"
+                echo '```'
+                find pkg -name '*.so*' | head -40
+                echo '```'
+              } >> report.md
+              echo "::error::$so is missing from the packages (see the report)"
+              exit 1
+            fi
             cp "$found" "stage/$so"
+            echo "| \`$so\` | $(stat -c %s "$found") |" >> report.md
           done
           ls -l stage
           # What the whole set asks of the C library, which is the number the gate is about.
-          needs=$(objdump -T stage/*.so* | grep -oE 'GLIBC_2\.[0-9]+' | sort -uV | tail -1)
+          needs=$(objdump -T stage/*.so* | grep -oE 'GLIBC_2\.[0-9]+' | sort -uV | tail -1 || true)
+          if [ -z "$needs" ]; then
+            echo "::error::no GLIBC_x.y version found in the libraries; the gate would be meaningless"
+            exit 1
+          fi
           version=$(dpkg-deb -f pkg/mesa.deb Version)
           echo "driver: mesa $version, needs $needs"
           echo "version=$version" >> "$GITHUB_OUTPUT"
