@@ -240,8 +240,23 @@ meta["minGlibc"] = "2.39"; meta["companions"] = []
 with zipfile.ZipFile(w / "undecl.zip", "w") as z:
     for n in sorted(os.listdir(stage)):
         z.write(stage / n, n)
+# Two shapes the gate has rules for and this suite had no fixture for: a companion the metadata promises
+# and the archive does not carry, and a libraryName pointing at a file that is not there. Each is refused
+# on the phone too (adopt() for the companion, the icd.json path for the main library), so publishing one
+# with a green check mark is the same mistake the 96 MiB ceiling was - only quieter, because the refusal
+# arrives on somebody else's device a week later.
+meta["companions"] = ["libLLVM.so.19.1", "libghost.so.2"]
+(stage / "meta.json").write_text(json.dumps(meta))
+with zipfile.ZipFile(w / "short.zip", "w") as z:      # neither of those two is in this archive
+    z.write(stage / "libvulkan_lvp.so", "libvulkan_lvp.so")
+    z.write(stage / "meta.json", "meta.json")
+meta["companions"] = ["libLLVM.so.19.1"]; meta["libraryName"] = "libvulkan_zzz.so"
+(stage / "meta.json").write_text(json.dumps(meta))
+with zipfile.ZipFile(w / "swap.zip", "w") as z:       # the file it names is not the file it carries
+    for n in sorted(os.listdir(stage)):
+        z.write(stage / n, n)
 FIX2
-for case in "full.zip:0" "nomin.zip:1" "undecl.zip:1"; do
+for case in "full.zip:0" "nomin.zip:1" "undecl.zip:1" "short.zip:1" "swap.zip:1"; do
     z=${case%%:*}; want=${case##*:}
     python3 "$HERE/check_archive.py" "$W/$z" >"$W/o" 2>&1; st=$?
     if [ "$st" = "$want" ]; then ok "check_archive: $z exits $want as expected"
@@ -253,6 +268,14 @@ python3 "$HERE/check_archive.py" "$W/undecl.zip" 2>&1 | grep -qF "libLLVM.so.19.
 python3 "$HERE/check_archive.py" "$W/nomin.zip" 2>&1 | grep -qF "droiddeck-session compares" \
     && ok "  ...and an empty minGlibc is called an off switch, not a default" \
     || fail "  ...and an empty minGlibc is called an off switch"
+python3 "$HERE/check_archive.py" "$W/short.zip" 2>&1 \
+    | grep -qF "meta.json declares libLLVM.so.19.1 and the archive does not carry it" \
+    && ok "  ...and a promised companion the archive lacks is refused, named" \
+    || fail "  ...and a promised companion the archive lacks is refused"
+python3 "$HERE/check_archive.py" "$W/swap.zip" 2>&1 \
+    | grep -qF "libraryName is 'libvulkan_zzz.so' and no such file is in the archive" \
+    && ok "  ...and a libraryName pointing at nothing is refused, with the name it looked for" \
+    || fail "  ...and a libraryName pointing at nothing is refused"
 
 printf '| a | 1.0 MB, needs at most GLIBC_2.39 |\n| b | 2.0 MB, needs at most GLIBC_2.41 |\n' > "$W/rep"
 python3 "$HERE/min_glibc.py" --report "$W/rep" --out "$W/min" >/dev/null 2>&1 \
