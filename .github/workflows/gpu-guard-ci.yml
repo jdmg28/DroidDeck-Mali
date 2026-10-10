@@ -146,6 +146,19 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -e
+          # Two pushes in quick succession are two runs, and the older one can finish last - it then
+          # overwrites the release pointer with an APK from a superseded commit, which is a confusing way
+          # to be technically correct. This happened: the notes cited the previous commit while the patch
+          # zip carried the next one. A successful run cannot be re-run through the API to fix a pointer
+          # afterwards, so the run decides for itself whether it still owns the tag.
+          BRANCH=${{ github.ref_name }}
+          THIS=${{ github.sha }}
+          HEAD_SHA=$(gh api "repos/${{ github.repository }}/commits/$BRANCH" -q .sha)
+          if [ "$HEAD_SHA" != "$THIS" ]; then
+            echo "superseded: $BRANCH is at ${HEAD_SHA:0:7} and this run built ${THIS:0:7}."
+            echo "The gpu-guard-latest pointer is left where it is; the newer run publishes its own APK."
+            exit 0
+          fi
           APK=$(ls app/build/outputs/apk/debug/*.apk | head -1)
           echo "== file: $APK"
           ls -l "$APK"
