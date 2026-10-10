@@ -31,8 +31,9 @@ public final class DriverArchivePolicy {
 
     /**
      * A library the driver loads rather than the driver itself, kept beside it in its own
-     * directory: lavapipe's LLVM, and what libLLVM itself loads (Debian builds it with libedit,
-     * which wants libbsd and libtinfo, none of which the Arch runtime carries).
+     * directory: lavapipe's LLVM, and the closure LLVM and lavapipe load on top of it (Debian's
+     * LLVM is built with libedit and Z3; libedit wants libbsd, libtinfo and libmd). The runtime
+     * carries none of them, so the package does.
      *
      * Each is named rather than globbed, so a zip cannot smuggle in an arbitrary .so and have it
      * sit in front of the runtime's.
@@ -42,7 +43,9 @@ public final class DriverArchivePolicy {
                 && (name.matches("libLLVM(-19|\\.so\\.19)(\\.[0-9]+)*")
                         || name.matches("libedit\\.so\\.[0-9]+")
                         || name.matches("libtinfo\\.so\\.[0-9]+")
-                        || name.matches("libbsd\\.so\\.[0-9]+"));
+                        || name.matches("libbsd\\.so\\.[0-9]+")
+                        || name.matches("libmd\\.so\\.[0-9]+")
+                        || name.matches("libz3\\.so\\.[0-9]+"));
     }
     public static boolean isBackendLibrary(String name) {
         return BACKEND_NAME.equals(name);

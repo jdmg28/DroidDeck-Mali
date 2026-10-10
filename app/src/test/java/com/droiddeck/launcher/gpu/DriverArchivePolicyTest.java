@@ -33,6 +33,8 @@ public class DriverArchivePolicyTest {
         assertTrue(DriverArchivePolicy.isRuntimeLibrary("libedit.so.2"));
         assertTrue(DriverArchivePolicy.isRuntimeLibrary("libtinfo.so.6"));
         assertTrue(DriverArchivePolicy.isRuntimeLibrary("libbsd.so.0"));
+        assertTrue(DriverArchivePolicy.isRuntimeLibrary("libmd.so.0"));
+        assertTrue(DriverArchivePolicy.isRuntimeLibrary("libz3.so.4"));
         assertFalse(DriverArchivePolicy.isRuntimeLibrary("libedit.so"));
         assertFalse(DriverArchivePolicy.isRuntimeLibrary("libvulkan.so.1"));
         assertFalse(DriverArchivePolicy.isRuntimeLibrary("libLLVM.so.19.1.so"));

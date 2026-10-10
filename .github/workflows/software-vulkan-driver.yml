@@ -37,6 +37,10 @@ env:
   LIBTINFO_DEB_SHA256: 2a747f7fff3c2347c357387a7133df997410f07ba1b1df1a1461a97bd7fbc2fc
   LIBBSD_DEB_URL: https://deb.debian.org/debian/pool/main/libb/libbsd/libbsd0_0.12.2-2_arm64.deb
   LIBBSD_DEB_SHA256: 6827c1b3ad8dcbf3478803f9150359433e3376a3bde01c4503888a22eb3924e3
+  LIBMD_DEB_URL: https://deb.debian.org/debian/pool/main/libm/libmd/libmd0_1.1.0-2+b1_arm64.deb
+  LIBMD_DEB_SHA256: 772e86842fd3fa1816a0cfee4833a73996aaa550461491543b886b9c8f999052
+  LIBZ3_DEB_URL: https://deb.debian.org/debian/pool/main/z/z3/libz3-4_4.13.3-1_arm64.deb
+  LIBZ3_DEB_SHA256: 29a7b924a5a38c9ac4e2a64aa11586a9c54f26b579b18e4f75adf8f7c1106e45
   # Where the app installs the runtime from, and the file inside it whose glibc decides whether
   # anything built for 2.38 can load at all.
   RUNTIME_CATALOG: https://raw.githubusercontent.com/The412Banner/winlator-contents/main/linuxfs.json
@@ -136,74 +140,105 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p pkg stage
-          # Each failure below says what it got: the run's log is not the only place a refusal can
-          # be read, and a checksum mismatch or a renamed .so has to be visible outside it.
-          fetch() { # name url sha256
-            local name=$1 url=$2 sha=$3 out
-            if ! out=$(curl -fsSL --retry 3 -o "pkg/$name.deb" "$url" 2>&1); then
-              {
-                echo
-                echo "### fetching $name failed"
-                echo '```'
-                echo "$url"
-                echo "$out"
-                echo '```'
-              } >> report.md
-              echo "::error::fetching $name failed (see the report)"
-              exit 1
-            fi
-            if ! out=$(echo "$sha  pkg/$name.deb" | sha256sum -c - 2>&1); then
-              {
-                echo
-                echo "### $name's checksum is not the one this workflow pins"
-                echo '```'
-                echo "$out"
-                echo '```'
-              } >> report.md
-              echo "::error::$name checksum mismatch (see the report)"
-              exit 1
-            fi
-            dpkg-deb -x "pkg/$name.deb" "pkg/$name"
-            echo "fetched $name: $(stat -c %s "pkg/$name.deb") bytes, $url"
+          : > packages.tsv
+          # A soname this workflow knows how to get, with the package it comes from and the
+          # checksum the download has to match. Nothing here is fetched unless the driver needs it
+          # and the runtime does not already have it, and a soname that is not listed here stops
+          # the job with its name in the report rather than being quietly left out.
+          source_for() { # soname -> "url sha256 package"
+            case "$1" in
+              libvulkan_lvp.so) echo "$MESA_DEB_URL $MESA_DEB_SHA256 mesa-vulkan-drivers" ;;
+              libLLVM.so.19.1) echo "$LLVM_DEB_URL $LLVM_DEB_SHA256 libllvm19" ;;
+              libedit.so.2) echo "$LIBEDIT_DEB_URL $LIBEDIT_DEB_SHA256 libedit2" ;;
+              libtinfo.so.6) echo "$LIBTINFO_DEB_URL $LIBTINFO_DEB_SHA256 libtinfo6" ;;
+              libbsd.so.0) echo "$LIBBSD_DEB_URL $LIBBSD_DEB_SHA256 libbsd0" ;;
+              libmd.so.0) echo "$LIBMD_DEB_URL $LIBMD_DEB_SHA256 libmd0" ;;
+              libz3.so.4) echo "$LIBZ3_DEB_URL $LIBZ3_DEB_SHA256 libz3-4" ;;
+              *) return 1 ;;
+            esac
           }
-          fetch mesa "$MESA_DEB_URL" "$MESA_DEB_SHA256"
-          fetch llvm "$LLVM_DEB_URL" "$LLVM_DEB_SHA256"
-          fetch libedit "$LIBEDIT_DEB_URL" "$LIBEDIT_DEB_SHA256"
-          fetch libtinfo "$LIBTINFO_DEB_URL" "$LIBTINFO_DEB_SHA256"
-          fetch libbsd "$LIBBSD_DEB_URL" "$LIBBSD_DEB_SHA256"
-          # The driver, then every library it loads that the runtime does not have: found by
-          # measurement, not by assuming - libLLVM needed libedit, which needed the other two.
-          {
-            echo
-            echo "| library | bytes |"
-            echo "|---|---|"
-          } >> report.md
-          for so in libvulkan_lvp.so libLLVM.so.19.1 libedit.so.2 libtinfo.so.6 libbsd.so.0; do
+          # Every failure below says what it got: the run's log is not the only place a refusal can
+          # be read, and a checksum mismatch or a renamed .so has to be visible outside it.
+          complain() { # title ...lines
+            { echo; echo "### $1"; echo '```'; shift; printf '%s\n' "$@"; echo '```'; } >> report.md
+          }
+          fetch_soname() { # soname
+            local so=$1 url sha pkgname deb out found
+            if ! read -r url sha pkgname < <(source_for "$so" 2>/dev/null); then
+              complain "nothing here can supply $so" \
+                "Debian trixie arm64 is the source of every library in this package. Add it to" \
+                "source_for in this workflow, with the URL and sha256 of the .deb it comes from."
+              return 1
+            fi
+            deb="pkg/$pkgname.deb"
+            if [ ! -f "$deb" ]; then
+              if ! out=$(curl -fsSL --retry 3 -o "$deb" "$url" 2>&1); then
+                complain "fetching $pkgname failed" "$url" "$out"
+                return 1
+              fi
+              if ! out=$(echo "$sha  $deb" | sha256sum -c - 2>&1); then
+                complain "$pkgname's checksum is not the one this workflow pins" "$out"
+                return 1
+              fi
+              dpkg-deb -x "$deb" "pkg/$pkgname"
+            fi
             # -L: Debian ships libedit.so.2 and libtinfo.so.6 as symlinks to the versioned file,
             # and find does not call a symlink to a regular file a regular file.
-            found=$(find -L pkg -name "$so" -type f | head -1)
+            found=$(find -L "pkg/$pkgname" -name "$so" -type f | head -1)
             if [ -z "$found" ]; then
-              {
-                echo
-                echo "### $so is in none of the packages fetched"
-                echo '```'
-                find pkg -name '*.so*' | head -40
-                echo '```'
-              } >> report.md
-              echo "::error::$so is missing from the packages (see the report)"
-              exit 1
+              complain "$so is not in $pkgname" "$(find pkg/"$pkgname" -name '*.so*' | head -20)"
+              return 1
             fi
             cp -L "$found" "stage/$so"
-            echo "| \`$so\` | $(stat -c %s "$found") |" >> report.md
+            printf '%s\t%s\t%s\t%s\t%s\n' "$so" "$pkgname" "$(dpkg-deb -f "$deb" Version)" \
+              "$url" "$sha" >> packages.tsv
+          }
+          fetch_soname libvulkan_lvp.so
+          # Then the closure: what the driver and every library beside it ask for, minus what the
+          # runtime already carries. Measured, not assumed - libLLVM turned out to want libedit,
+          # which wants libbsd and libtinfo, which want libmd, and libLLVM also wants libz3.
+          for round in 1 2 3 4 5 6; do
+            needed=$(for so in stage/*.so*; do objdump -p "$so"; done | awk '/NEEDED/{print $2}' | sort -u)
+            missing=""
+            for n in $needed; do
+              if [ -e "stage/$n" ]; then continue; fi
+              if [ -e "rootfs/usr/lib/$n" ]; then continue; fi
+              missing="$missing $n"
+            done
+            if [ -z "$missing" ]; then break; fi
+            echo "round $round: the runtime has none of:$missing"
+            for n in $missing; do
+              if ! fetch_soname "$n"; then
+                complain "$n is needed by this driver and is not in the runtime" \
+                  "needed:$needed" \
+                  "the runtime has: $(cd rootfs/usr/lib && ls)"
+                echo "::error::$n cannot be supplied (see the report)"
+                exit 1
+              fi
+            done
           done
+          {
+            echo
+            echo "| library | bytes | comes from |"
+            echo "|---|---|---|"
+          } >> report.md
+          while IFS=$'\t' read -r so pkgname ver url sha; do
+            echo "| \`$so\` | $(stat -c %s "stage/$so") | \`$pkgname $ver\` (debian trixie arm64) |" >> report.md
+          done < packages.tsv
+          {
+            echo
+            echo "The runtime carries the rest of what this set needs: $(for n in $needed; do
+              if [ -e "rootfs/usr/lib/$n" ]; then printf '%s ' "$n"; fi; done)"
+          } >> report.md
           ls -l stage
+          cat packages.tsv
           # What the whole set asks of the C library, which is the number the gate is about.
           needs=$(objdump -T stage/*.so* | grep -oE 'GLIBC_2\.[0-9]+' | sort -uV | tail -1 || true)
           if [ -z "$needs" ]; then
             echo "::error::no GLIBC_x.y version found in the libraries; the gate would be meaningless"
             exit 1
           fi
-          version=$(dpkg-deb -f pkg/mesa.deb Version)
+          version=$(dpkg-deb -f pkg/mesa-vulkan-drivers.deb Version)
           echo "driver: mesa $version, needs $needs"
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "needs=$needs" >> "$GITHUB_OUTPUT"
@@ -363,12 +398,8 @@ jobs:
             --arg minGlibc "${DRIVER_NEEDS#GLIBC_}" \
             --arg runtime "$RUNTIME_VERSION" \
             --arg runtimeGlibc "$RUNTIME_GLIBC" \
-            --arg mesaUrl "$MESA_DEB_URL" --arg mesaSha "$MESA_DEB_SHA256" \
-            --arg llvmUrl "$LLVM_DEB_URL" --arg llvmSha "$LLVM_DEB_SHA256" \
-            --arg libeditUrl "$LIBEDIT_DEB_URL" --arg libeditSha "$LIBEDIT_DEB_SHA256" \
-            --arg libtinfoUrl "$LIBTINFO_DEB_URL" --arg libtinfoSha "$LIBTINFO_DEB_SHA256" \
-            --arg libbsdUrl "$LIBBSD_DEB_URL" --arg libbsdSha "$LIBBSD_DEB_SHA256" \
             --argjson runtimeLibraries "$libs" \
+            --argjson source "$(jq -Rn '[inputs | split("\t") | {key: .[0], value: {package: .[1], version: .[2], arch: "arm64", suite: "debian trixie", url: .[3], sha256: .[4]}}] | from_entries' < packages.tsv)" \
             --arg builtAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg run "$RUN_URL" '
             {
               schemaVersion: 1,
@@ -383,35 +414,35 @@ jobs:
               packagedAt: $builtAt,
               builtBy: $run,
               measured: {runtime: $runtime, runtimeGlibc: $runtimeGlibc},
-              source: {
-                "libvulkan_lvp.so": {package: "mesa-vulkan-drivers", version: $version, arch: "arm64", suite: "debian trixie", url: $mesaUrl, sha256: $mesaSha},
-                "libLLVM.so.19.1": {package: "libllvm19", version: "1:19.1.7-3+b1", arch: "arm64", suite: "debian trixie", url: $llvmUrl, sha256: $llvmSha},
-                "libedit.so.2": {package: "libedit2", version: "3.1-20250104-1", arch: "arm64", suite: "debian trixie", url: $libeditUrl, sha256: $libeditSha},
-                "libtinfo.so.6": {package: "libtinfo6", version: "6.5+20250216-2", arch: "arm64", suite: "debian trixie", url: $libtinfoUrl, sha256: $libtinfoSha},
-                "libbsd.so.0": {package: "libbsd0", version: "0.12.2-2", arch: "arm64", suite: "debian trixie", url: $libbsdUrl, sha256: $libbsdSha}
-              }
+              source: $source
             }' > stage/meta.json
           cat stage/meta.json
-          # Provenance, for anyone handed the zip: the driver is Mesa's (MIT/Apache-2.0,
-          # src/mesa/drivers/llvmpipe) and LLVM's licence travels with libLLVM.
-          cat > stage/NOTICE.txt <<EOF
-          DroidDeck software Vulkan driver package
-          ========================================
-          libvulkan_lvp.so   Mesa $DRIVER_VERSION (lavapipe), Debian trixie arm64.
-                             Mesa is licensed under the MIT / Apache-2.0 licences; see
-                             https://docs.mesa3d.org/license.html
-          libLLVM.so.19.1    Debian libllvm19 1:19.1.7-3+b1, the LLVM Mesa 25.0 is built against.
-                             LLVM is licensed under the Apache License 2.0 with LLVM exceptions.
-          libedit.so.2       Debian libedit2 3.1-20250104-1, which libLLVM loads.
-          libtinfo.so.6      Debian libtinfo6 6.5+20250216-2, which libedit loads.
-          libbsd.so.0        Debian libbsd0 0.12.2-2, which libedit loads.
-          The last three are here because the runtime this imports into is an Arch rootfs, and
-          measurement showed it has none of them.
-          Every library carries DT_RUNPATH \$ORIGIN, so each finds its neighbours beside itself in
-          the directory the app's importer puts them all in. Nothing is added to the runtime and
-          nothing in it is modified.
-          Built by $RUN_URL
-          EOF
+          # Provenance, generated from what was actually fetched: the driver is Mesa's
+          # (MIT/Apache-2.0, src/mesa/drivers/llvmpipe) and each library carries its own licence.
+          {
+            echo "DroidDeck software Vulkan driver package"
+            echo "========================================"
+            echo
+            while IFS=$'\t' read -r so pkgname ver url sha; do
+              printf '%-18s %s %s, Debian trixie arm64\n' "$so" "$pkgname" "$ver"
+              printf '%-18s %s\n' "" "$url"
+            done < packages.tsv
+            echo
+            echo "libvulkan_lvp.so is Mesa's lavapipe: Mesa is licensed under the MIT / Apache-2.0"
+            echo "licences (https://docs.mesa3d.org/license.html). libLLVM.so.19.1 is LLVM, under"
+            echo "the Apache License 2.0 with LLVM exceptions; the rest are the libraries those two"
+            echo "load, each under its own licence, shipped because the runtime this imports into"
+            echo "carries none of them."
+            echo
+            echo "Every library carries DT_RUNPATH \$ORIGIN, so each finds its neighbours beside"
+            echo "itself in the directory the app's importer puts them all in. Nothing is added to"
+            echo "the runtime and nothing in it is modified."
+            echo
+            echo "Built by $RUN_URL"
+            echo "Measured against runtime \`$RUNTIME_VERSION\` (glibc $RUNTIME_GLIBC) before it was"
+            echo "packaged; this driver asks for \`$DRIVER_NEEDS\`."
+          } > stage/NOTICE.txt
+          cat stage/NOTICE.txt
           rm -f "$RELEASE_ASSET"
           ( cd stage && zip -X -9 -j "../$RELEASE_ASSET" *.so* meta.json NOTICE.txt )
           unzip -l "$RELEASE_ASSET"
