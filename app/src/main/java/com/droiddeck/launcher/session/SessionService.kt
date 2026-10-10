@@ -757,8 +757,18 @@ class SessionService : Service() {
         val linuxDriverId = SessionPrefs.linuxDriver(this)
         // Software mode overrides it; see LinuxVulkanDriver.driverForSession. An empty result is not
         // "fall back", it is "no driver", and the guest script is written to honour that.
-        LinuxVulkanDriver.resolveIcdPath(this, LinuxVulkanDriver.driverForSession(this, linuxDriverId))
+        val sessionDriverId = LinuxVulkanDriver.driverForSession(this, linuxDriverId)
+        LinuxVulkanDriver.resolveIcdPath(this, sessionDriverId)
             ?.let { guest.add(LinuxVulkanDriver.ENV + "=" + it) }
+        // What that driver said it needs, in the one mode where a wrong answer wastes an evening. The
+        // guest has the manifest but not the meta.json beside it (only the manifest's path is bound),
+        // so the number travels here; droiddeck-session compares it against `getconf
+        // GNU_LIBC_VERSION` before anything is pointed at the ICD.
+        if (guardProfile.avoidsGpu && sessionDriverId.isNotEmpty()) {
+            LinuxVulkanDriverManager(this).getMinGlibc(sessionDriverId)
+                .takeIf { it.isNotEmpty() }
+                ?.let { guest.add("BL_DRIVER_MIN_GLIBC=" + it) }
+        }
         // Turnip's own debug switches, for the runtime's driver and everything on it. The file in
         // Downloads holds the value verbatim ("sysmem", "sysmem,deck_emu"); with nothing there, an
         // imported driver from the A710/A720/A722 legs gets "sysmem" on its own, which is what both

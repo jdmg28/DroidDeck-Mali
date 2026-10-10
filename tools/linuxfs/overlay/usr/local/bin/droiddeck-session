@@ -13,6 +13,24 @@ shift || true
 # One line per milestone, greppable as "== STEP", so a first run reads as a narrative rather than
 # something to be reconstructed from Steam's own chatter. The app shows these while it waits.
 step() { echo "== STEP $(date -u +%H:%M:%S) $*"; }
+
+# "Is version A at least B", for the two-part versions both sides here actually use (glibc 2.39, a
+# driver's declared minimum 2.38). A missing or non-numeric minor counts as 0, which is the only
+# reading that keeps "2.4" from being treated as older than "2.39" by accident... and "2.40" is newer
+# than "2.9" here, which string comparison would have got wrong.
+dd_at_least() {
+  _a1=${1%%.*}; _a2=${1#*.}
+  _b1=${2%%.*}; _b2=${2#*.}
+  [ "$_a2" = "$1" ] && _a2=0
+  [ "$_b2" = "$2" ] && _b2=0
+  case $_a2 in ''|*[!0-9]*) _a2=0;; esac
+  case $_b2 in ''|*[!0-9]*) _b2=0;; esac
+  case $_a1 in ''|*[!0-9]*) return 1;; esac
+  case $_b1 in ''|*[!0-9]*) return 1;; esac
+  [ "$_a1" -gt "$_b1" ] && return 0
+  [ "$_a1" -lt "$_b1" ] && return 1
+  [ "$_a2" -ge "$_b2" ]
+}
 if [ -n "${BL_LOG:-}" ] && [ -z "${BL_INSIDE:-}" ]; then
   mkdir -p "$(dirname "$BL_LOG")" 2>/dev/null
   # The client alone writes megabytes an hour; one earlier log is kept, not every session's.
@@ -92,10 +110,34 @@ if [ "${BL_SOFTWARE_VULKAN:-}" = 1 ]; then
          ".zip). The session is refused rather than started on the GPU."
     exit 78
   fi
+  # The one thing a driver zip can get wrong that nothing here would notice: it is built against a
+  # newer glibc than this rootfs has. The loader's answer is not an error anyone reads - the ICD is
+  # skipped, the device list comes up empty, and the session dies on a Vulkan init failure thirty
+  # seconds later. So the version the package was measured against travels with it (the importer keeps
+  # it from meta.json, CI records it by reading the libraries) and is compared here, against the
+  # glibc this guest really has. An unknown glibc is not a known-old one: that case is reported and
+  # allowed, because refusing on a missing getconf would punish rootfs images that are fine.
+  bl_need=$(printf '%s' "${BL_DRIVER_MIN_GLIBC:-}" | sed -n 's/^\([0-9][0-9.]*\).*/\1/p')
+  bl_have=$(getconf GNU_LIBC_VERSION 2>/dev/null | sed -n 's/^[^0-9]*\([0-9][0-9.]*\).*/\1/p')
+  case $bl_need in *.*) ;; ?*) bl_need="$bl_need.";; '' ) ;; esac
+  case $bl_have in *.*) ;; ?*) bl_have="$bl_have.";; esac
+  bl_note="no minimum glibc declared by the package, so the runtime was not checked"
+  if [ -n "$bl_need" ]; then
+    if [ -z "$bl_have" ]; then
+      bl_note="wants glibc $bl_need and this rootfs reported none (musl, or no getconf) - continuing"
+    elif ! dd_at_least "$bl_have" "$bl_need"; then
+      echo "DD_SOFTWARE_GLIBC_OLD: this rootfs has glibc $bl_have and the software driver was built for" \
+           "$bl_need or newer. Refused instead of starting a session whose Vulkan device list would come" \
+           "up empty; the fix is a newer rootfs image, not a different setting in this app."
+      exit 78
+    else
+      bl_note="glibc $bl_have is at least the $bl_need the driver was built for"
+    fi
+  fi
   export VK_DRIVER_FILES="$BL_VK_DRIVER"
   export VK_ICD_FILENAMES="$BL_VK_DRIVER"
-  echo "== vulkan driver: software only, $bl_soft_lib"
-  unset bl_soft_lib
+  echo "== vulkan driver: software only, $bl_soft_lib ($bl_note)"
+  unset bl_soft_lib bl_need bl_have bl_note
 fi
 if [ "${BL_GPU_FAMILY:-}" = mali ] && [ "${BL_SOFTWARE_VULKAN:-}" != 1 ] && [ -z "${BL_VK_DRIVER:-}" ]; then
   echo "DD_MALI_DRIVER_REQUIRED: import/select the Linux PanVK package; Turnip cannot run on Mali"
