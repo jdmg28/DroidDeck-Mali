@@ -1184,6 +1184,10 @@
     <string name="drivers_pair_size">%1$.0f MB para ambos</string>
 
     <!-- %1$s says why (the GPU's support status) -->
+    <string name="drivers_vendor_software">software, sin GPU</string>
+    <string name="drivers_mali_auto_wants_software">Mali: Auto no instala Turnip ni el driver Mali. Importa el zip del driver de software (lavapipe) para que Auto tenga algo seguro que elegir; hasta entonces no se elige ningun driver de Linux, y el runtime no va a dibujar en el hardware de Mali salvo que importes su paquete vos mismo.</string>
+    <string name="drivers_mali_auto_set">Mali: Auto eligio el driver de software %1$s - el unico que Auto elige en esta GPU.</string>
+    <string name="drivers_mali_auto_already">Mali: Auto deja elegido el driver de software %1$s.</string>
     <string name="drivers_none_to_set">No hay controladores que definir: %1$s</string>
     <string name="drivers_checking_latest">Buscando los controladores más recientes…</string>
     <string name="drivers_up_to_date_check_failed">Al día (no se pudo comprobar: %1$s)</string>

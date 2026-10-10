@@ -82,6 +82,11 @@ internal class DriverMenus(private val activity: Activity, private val ui: Handl
                 id, lm.getDriverName(id),
                 listOfNotNull(
                     lm.getDriverVersion(id).takeIf { it.isNotEmpty() },
+                    // Worth its own label: this is what tells a driver that cannot fault the GPU from
+                    // one that can, and the file names cannot - the importer renames every driver to
+                    // the same soname on disk, so "libvulkan_freedreno.so" is what a lavapipe file is
+                    // called here too.
+                    if (lm.isSoftwareDriver(id)) activity.getString(R.string.drivers_vendor_software) else null,
                     lm.getMinGlibc(id).takeIf { it.isNotEmpty() }?.let { "glibc $it+" },
                 ).joinToString(" · "),
                 true, origin(id),
@@ -109,6 +114,37 @@ internal class DriverMenus(private val activity: Activity, private val ui: Handl
         activeBundle = DriverBundle.active(activity)?.label
         refreshReleaseRows()
         refreshPairs()
+    }
+
+    /**
+     * Auto on a Mali GPU, where there is no release pair to install: the driver Auto selects is the
+     * software one already imported, and nothing else.
+     *
+     * A safety rule, so it is worth writing down why it is shaped like that: on this device the
+     * *absence* of a choice is not neutral. The runtime's built-in ICD is PanVK, so "no driver
+     * selected" already means "the experimental hardware driver", and an Auto that chose nothing would
+     * be an Auto that chose the GPU. With no software driver imported Auto says so and leaves the
+     * setting alone rather than installing something it cannot vouch for - there is nothing to install
+     * from the Turnip releases, all of which are Adreno.
+     *
+     * @return true when Auto acted; false when the normal "nothing to set" line should follow, which
+     *         is also every non-Mali device, where this never runs.
+     */
+    private fun autoSoftwareOnMali(): Boolean {
+        if (!com.droiddeck.launcher.core.DeviceSupport.mali()) return false
+        val ids = LinuxVulkanDriverManager(activity).softwareDriverIds()
+        if (ids.isEmpty()) {
+            autoStatus = activity.getString(R.string.drivers_mali_auto_wants_software)
+            return false
+        }
+        autoStatus = if (SessionPrefs.linuxDriver(activity) == ids[0]) {
+            activity.getString(R.string.drivers_mali_auto_already, ids[0])
+        } else {
+            SessionPrefs.setLinuxDriver(activity, ids[0])
+            activity.getString(R.string.drivers_mali_auto_set, ids[0])
+        }
+        refreshDrivers()
+        return true
     }
 
     /** One line for the settings row that opens this: "Auto · WinNative · Balanced". */
@@ -159,6 +195,7 @@ internal class DriverMenus(private val activity: Activity, private val ui: Handl
         if (!force && autoCheckedThisProcess) return
         autoCheckedThisProcess = true
         if (DriverPairs.recommendedKey(gpu, emptyList()) == null) {
+            if (autoSoftwareOnMali()) return
             autoStatus = activity.getString(R.string.drivers_none_to_set, gpu.supportText(activity).lowercase())
             return
         }
