@@ -79,6 +79,9 @@ if [ "$software" = yes ]; then
   else
     echo "== gpu safety: SOFTWARE - /dev/mali0 is not a character device in the guest"
   fi
+  # What the node is in here, and how many the app meant to cover: with one hid and a character
+  # device still in front of us, the bind is what failed, not the count.
+  echo "== gpu safety: /dev/mali0 here is $(stat -c '%F, %s bytes' /dev/mali0 2>&1); the app hid ${BL_GPU_HIDDEN:-?} GPU node(s)"
 fi
 if [ "$software" != yes ] && [ "${BL_GPU_FAMILY:-}" = mali ] && [ -z "${BL_VK_DRIVER:-}" ]; then
   echo "DD_MALI_DRIVER_REQUIRED: import/select the Linux PanVK package; Turnip cannot run on Mali"
@@ -286,7 +289,24 @@ if [ -z "${BL_INSIDE:-}" ]; then
     echo "== gamescope: mangoapp on ($(command -v mangoapp), config $MANGOHUD_CONFIGFILE)"
   fi
   export BL_INSIDE=1
-  exec gamescope "${args[@]}" -- "$0" "$mode" "$@"
+  if [ "$software" = yes ]; then
+    # gamescope composites on the GPU and cannot do without one: it imports the client's buffers
+    # as dma-bufs and synchronises with sync files (VK_KHR_external_semaphore_fd, VK_EXT_image_
+    # drm_format_modifier), none of which lavapipe has - it names the missing extension and
+    # exits, as a session log on a Mali phone showed. Software mode therefore runs the session's
+    # program straight into the app's compositor, with Xwayland where gamescope would have been.
+    echo "== software: gamescope needs a GPU and is skipped; Xwayland takes its place"
+    if ! command -v Xwayland >/dev/null 2>&1; then
+      echo "DD_SOFTWARE_NO_XWAYLAND: this runtime has no Xwayland, so nothing can be displayed"
+      exit 66
+    fi
+    Xwayland :1 -screen "${width}x${height}" -nolisten tcp >>"${BL_DEBUG_DIR:-/tmp}/xwayland.log" 2>&1 &
+    for _ in $(seq 1 100); do [ -S /tmp/.X11-unix/X1 ] && break; sleep 0.1; done
+    export DISPLAY=:1
+    echo "== software: Xwayland on $DISPLAY at ${width}x${height}, a client of ${WAYLAND_DISPLAY:-no compositor}"
+  else
+    exec gamescope "${args[@]}" -- "$0" "$mode" "$@"
+  fi
 fi
 
 # gamescope manages X windows: toolkits go through Xwayland, not gamescope's own Wayland socket.
@@ -863,7 +883,12 @@ BUSCONF
         done
       ) &
     fi
-    echo "== steam args: ${_bl_ui[*]} ${_bl_cdp[*]} ${_bl_lang[*]} -clientbeta $steam_channel -no-cef-sandbox -cef-force-gpu -cef-ozone-platform=x11 -cef-use-gl=angle -cef-use-angle=vulkan $*"
+    # Software mode leaves the client's browser free to fall back to its own software rasteriser:
+    # -cef-force-gpu would keep it waiting for a GPU (ANGLE over lavapipe) that may not come up,
+    # and a browser that cannot fall back draws nothing at all.
+    _bl_cef=(-no-cef-sandbox -cef-ozone-platform=x11 -cef-use-gl=angle -cef-use-angle=vulkan)
+    [ "$software" = yes ] || _bl_cef+=(-cef-force-gpu)
+    echo "== steam args: ${_bl_ui[*]} ${_bl_cdp[*]} ${_bl_lang[*]} -clientbeta $steam_channel ${_bl_cef[*]} $*"
     # An update that cannot install asks for a restart (rc=42) every time; the count is capped so a
     # session can never again loop in silence, which reads as a menu opening and closing by itself.
     steam_updates=0
@@ -918,8 +943,7 @@ BUSCONF
       fi
       step "starting the Steam client${BL_STEAM_UI:+ ($BL_STEAM_UI UI)}"
       "$steam_root/steamrtarm64/steam" "${_bl_ui[@]}" "${_bl_cdp[@]}" "${_bl_lang[@]}" -clientbeta "$steam_channel" \
-        -no-cef-sandbox -cef-force-gpu -cef-ozone-platform=x11 \
-        -cef-use-gl=angle -cef-use-angle=vulkan "$@"
+        "${_bl_cef[@]}" "$@"
       rc=$?
       echo "== steam exited rc=$rc"
       if [ -n "${BL_ADDED_GAMES:-}" ] && [ -f "$BL_ADDED_GAMES" ]; then
