@@ -52,6 +52,9 @@ make_getconf() {
 }
 make_getconf g239 2.39
 make_getconf g228 2.28
+# The floor the shipped package actually declares, and a two-digit minor: see the cases at the boundary.
+make_getconf g238 2.38
+make_getconf g2100 2.100
 make_getconf gnone none
 
 # A driver directory in the shape the importer leaves it: icd.json naming its library beside itself.
@@ -109,6 +112,17 @@ SOFT=0 run "software mode off means this branch does not run at all" g239 0 "!so
 NEED= run "a package that declares no minimum glibc says so and continues" g239 0 \
     "no minimum glibc declared"
 ICD=$DRV/icd.json NEED=2.39 run "equal versions are enough (>=, not >)" g239 0 "at least the 2.39"
+ICD=$DRV/icd.json NEED=2.38 run "  ...at the exact floor the shipped package declares" g238 0 \
+    "glibc 2.38 is at least the 2.38"
+# These two are the reason the comparison is written as numbers per component. Compared as text, "2.100"
+# sorts before "2.38" and "2.38" after "2.4", so a rootfs that is years newer than the package would be
+# refused and a slightly-worded floor would be accepted: both silent, both in the direction that makes the
+# app look broken. glibc has never had a two-digit minor yet, which is exactly why nothing else here
+# exercises it.
+ICD=$DRV/icd.json NEED=2.38 run "a two-digit minor is a number, not a string: 2.100 clears 2.38" g2100 0 \
+    "glibc 2.100 is at least the 2.38"
+ICD=$DRV/icd.json NEED=2.4 run "  ...and 2.38 clears a floor written as 2.4" g238 0 \
+    "glibc 2.38 is at least the 2.4"
 ICD=$BROKEN/icd.json NEED=2.38 run "an unreadable library is refused, not fallen back from" g239 78 \
     "DD_SOFTWARE_DRIVER_MISSING"
 ICD=$BROKEN/icd.json NEED=2.38 run "  ...even when the rootfs glibc is fine, and says what to import" g239 78 \

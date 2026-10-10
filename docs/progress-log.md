@@ -25,8 +25,10 @@ reads those constants out of the Java source instead of restating them, so the t
 
 Four things this stretch produced that are worth keeping:
 
-- **`tools/lavapipe/test_lavapipe_tools.sh` (32 cases)** and **`tools/test/run_software_session_tests.sh`
-  (13 cases)**. The second cuts the software branch out of `droiddeck-session` by markers - and fails
+- **`tools/lavapipe/test_lavapipe_tools.sh`** and **`tools/test/run_software_session_tests.sh`** - case
+  counts are deliberately not quoted here, because a number in prose rots the first time a case is added
+  and nobody reads this file to find out. The two suites print their own verdict phrases and the build
+  asserts those. The second cuts the software branch out of `droiddeck-session` by markers - and fails
   loudly if the markers move - and runs it in a shell against fixtures with a fake `getconf` on `PATH`.
   Both now run in CI before the build, and CI also runs `:app:testDebugUnitTest` for the importer's policy
   tests, which had been compiled by nobody until today.
