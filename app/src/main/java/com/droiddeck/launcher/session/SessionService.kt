@@ -615,7 +615,12 @@ class SessionService : Service() {
         // drops the Mali driver's own requirements and its probe for it.
         val software = com.droiddeck.launcher.gpu.GpuSafety.software(this)
         guest.add("BL_GPU_SAFETY=" + if (software) "software" else "device")
-        if (software) Log.i(TAG, "gpu safety: software - no GPU node in the guest, drawing on the CPU")
+        if (software) {
+            // How many device nodes the app covered up, for the session log to print beside what
+            // the guest itself finds there: the two only agree when the hide really took.
+            guest.add("BL_GPU_HIDDEN=" + LinuxRuntime.gpuNodesHidden(this))
+            Log.i(TAG, "gpu safety: software - no GPU node in the guest, drawing on the CPU")
+        }
         if (!mali) LinuxRuntime.vulkanIcd(this)?.let { guest.add("VK_ICD_FILENAMES=" + it.path) }
         if (mali) {
             guest.add("BL_GPU_FAMILY=mali")
