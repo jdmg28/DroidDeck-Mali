@@ -174,9 +174,12 @@ class GpuWatchdog(
         val thermal = thermalCelsius()
         lastThermalC = thermal
 
-        // A periodic reading, so a crash has a run-up recorded and not just a last word.
+        // A periodic reading, so a crash has a run-up recorded and not just a last word. Once
+        // anything is out of the ordinary it becomes every sample: the seconds before a panic are
+        // the only seconds that matter afterwards, and a four-second gap is most of them.
         val now = SystemClock.elapsedRealtime()
-        if (lastSampleAt == 0L || now - lastSampleAt >= TRACE_MS) {
+        val urgent = warned || wedged > 0 || (frame >= 0 && frame > budgetMs / 2)
+        if (lastSampleAt == 0L || urgent || now - lastSampleAt >= TRACE_MS) {
             lastSampleAt = now
             GpuGuardLog.log(TAG, "sample: frames " +
                 (if (frame < 0) "unavailable" else "${frame}ms") +
@@ -311,8 +314,12 @@ class GpuWatchdog(
          *  enough to run for hours (one /proc read per process per sample). */
         const val SAMPLE_MS = 500L
 
-        /** A periodic line in the log, so a crash has a run-up and not just a last word. */
-        const val TRACE_MS = 4000L
+        /**
+         * A periodic line in the log, so a crash has a run-up and not just a last word. One
+         * second rather than four: the samples are forced to the storage individually now, so
+         * finer costs nothing, and a log that stops is only as good as its last line.
+         */
+        const val TRACE_MS = 1000L
 
         /** Processes in uninterruptible sleep that count as "the GPU has stopped". */
         const val WEDGED_COUNT = 3

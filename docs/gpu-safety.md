@@ -124,6 +124,15 @@ Both signals are skipped while the screen is off: a sleeping phone presents noth
 - `device.txt` — a **GPU safety guard** section: crash count, lock state, the last probe.
 - Setup → **Safety** → *Copy* — all of it on the clipboard, ready to paste into a bug report.
 
+Every line is forced to the storage with an `fsync` as it is written, and the samples are logged
+once a second (every 500 ms once anything is out of the ordinary) rather than every four. That is
+not tidiness, it is the difference between a record and no record: a plain `File.appendText` puts
+the bytes in the kernel's page cache, and a kernel panic takes the page cache with it. The first
+crash this was tested against showed exactly that — samples every four seconds up to 22:33:06,
+then nothing, and the reboot recorded at 22:34:23 with a log ending a minute and a half earlier.
+It looked like the watchdog had stopped sampling. It had not: it had been sampling until the
+device died, and the panic had eaten the evidence.
+
 ## Settings
 
 Setup gains a fifth tab, **Safety**, on a Mali device (or once the guard has been turned on

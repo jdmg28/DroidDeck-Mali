@@ -3,6 +3,7 @@ package com.droiddeck.launcher.gpu.guard
 
 import android.util.Log
 import java.io.File
+import java.io.FileOutputStream
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -64,12 +65,34 @@ object GpuGuardLog {
         for (file in targets) {
             try {
                 file.parentFile?.mkdirs()
-                file.appendText(line)
+                append(file, line)
             } catch (e: Exception) {
                 // A log that cannot be written must never take the session with it.
             }
         }
         trim()
+    }
+
+    /**
+     * Appends one line and forces it to the storage.
+     *
+     * `File.appendText` is not enough, and the difference is the entire point of this file. A
+     * plain write reaches the kernel's page cache and returns; the bytes reach the storage when
+     * the writeback timer gets to them, which on Android is up to thirty seconds later. A kernel
+     * panic takes the page cache with it, so every line written in the seconds before one is
+     * simply gone - and the log then looks as though the watchdog stopped sampling, when in truth
+     * it was sampling until the device died. That is what the first crash on the Mali-G615 looked
+     * like: samples every four seconds up to 22:33:06, then nothing, and a reboot recorded at
+     * 22:34:23 with a log that ended a minute and a half before it.
+     *
+     * An fsync per line costs microseconds on a file this quiet, and it puts the last line before
+     * a panic where it can actually be read afterwards.
+     */
+    private fun append(file: File, line: String) {
+        FileOutputStream(file, true).use { stream ->
+            stream.write(line.toByteArray(Charsets.UTF_8))
+            stream.fd.sync()
+        }
     }
 
     /** The persistent copy's tail, newest last, for the settings page and the device report. */
