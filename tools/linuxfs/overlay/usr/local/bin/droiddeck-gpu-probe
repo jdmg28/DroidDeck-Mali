@@ -315,6 +315,13 @@ class VkPhysicalDeviceProperties(ctypes.Structure):
     # end of this object. Oversized on purpose: a Vulkan version that grows the struct must not
     # turn this probe into memory corruption.
     _fields_ = [
+        # sType and pNext come first in the real struct, and leaving them out is not a small
+        # mistake: it shifts everything by 16 bytes, so the name read back is the driver version
+        # and the first half of the vendor id. The device then never identifies itself as a
+        # Mali-G615, and the check that is supposed to prove the right driver answered silently
+        # reads nonsense.
+        ("sType", ctypes.c_uint32),
+        ("pNext", ctypes.c_void_p),
         ("apiVersion", ctypes.c_uint32),
         ("driverVersion", ctypes.c_uint32),
         ("vendorID", ctypes.c_uint32),
@@ -409,16 +416,46 @@ def main():
     if not gipa(None, b"vkCreateInstance"):
         raise Fail("the loader exposes no vkCreateInstance")
 
-    def instance_fn(name, argtypes=None, restype=ctypes.c_int32):
+    def global_fn(name, argtypes, restype=ctypes.c_int32):
         address = gipa(None, name.encode())
+        if not address:
+            raise Fail("the loader has no %s" % name)
+        return ctypes.cast(address, ctypes.CFUNCTYPE(restype, *argtypes))
+
+    vk_create_instance = global_fn(
+        "vkCreateInstance",
+        [ctypes.c_void_p, ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint64)],
+    )
+    application = VkApplicationInfo(
+        sType=ST_APPLICATION_INFO,
+        pNext=None,
+        pApplicationName=b"droiddeck-gpu-probe",
+        applicationVersion=1,
+        pEngineName=b"droiddeck",
+        engineVersion=1,
+        apiVersion=(1 << 22) | (1 << 12),  # Vulkan 1.1
+    )
+    instance_info = VkInstanceCreateInfo(sType=ST_INSTANCE_CREATE_INFO, pApplicationInfo=ctypes.cast(ctypes.byref(application), ctypes.c_void_p))
+    instance = ctypes.c_uint64(0)
+    check(vk_create_instance(ctypes.byref(instance_info), None, ctypes.byref(instance)), "vkCreateInstance")
+    stage("instance created")
+    instance_value = instance.value
+    if instance_value == 0:
+        raise Fail("vkCreateInstance reported success but handed back a null instance")
+
+    # Everything below is instance-level or device-level. A loader only has to answer those once
+    # an instance exists; asked with NULL it hands back NULL, which is exactly what it did when
+    # this probe asked that way and then reported "the loader has no vkDestroyInstance". It asks
+    # with the instance now, and with NULL as a second attempt, because loaders differ in how
+    # strictly they enforce the distinction.
+    handle = ctypes.c_void_p(instance_value)
+
+    def instance_fn(name, argtypes=None, restype=ctypes.c_int32):
+        address = gipa(handle, name.encode()) or gipa(None, name.encode())
         if not address:
             raise Fail("the loader has no %s" % name)
         return ctypes.cast(address, ctypes.CFUNCTYPE(restype, *(() if argtypes is None else argtypes)))
 
-    vk_create_instance = instance_fn(
-        "vkCreateInstance",
-        [ctypes.c_void_p, ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint64)],
-    )
     vk_destroy_instance = instance_fn(
         "vkDestroyInstance", [ctypes.c_uint64, ctypes.c_void_p], ctypes.c_void_p
     )
@@ -455,23 +492,6 @@ def main():
         [ctypes.c_uint64, ctypes.c_char_p],
         ctypes.c_void_p,
     )
-
-    application = VkApplicationInfo(
-        sType=ST_APPLICATION_INFO,
-        pNext=None,
-        pApplicationName=b"droiddeck-gpu-probe",
-        applicationVersion=1,
-        pEngineName=b"droiddeck",
-        engineVersion=1,
-        apiVersion=(1 << 22) | (1 << 12),  # Vulkan 1.1
-    )
-    instance_info = VkInstanceCreateInfo(sType=ST_INSTANCE_CREATE_INFO, pApplicationInfo=ctypes.cast(ctypes.byref(application), ctypes.c_void_p))
-    instance = ctypes.c_uint64(0)
-    check(vk_create_instance(ctypes.byref(instance_info), None, ctypes.byref(instance)), "vkCreateInstance")
-    stage("instance created")
-    instance_value = instance.value
-    if instance_value == 0:
-        raise Fail("vkCreateInstance reported success but handed back a null instance")
 
     try:
         count = ctypes.c_uint32(0)
