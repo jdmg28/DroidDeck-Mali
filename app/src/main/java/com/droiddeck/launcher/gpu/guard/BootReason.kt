@@ -47,6 +47,16 @@ object BootReason {
         override fun toString(): String = if (raw.isEmpty()) kind.name else "$raw [$kind]"
     }
 
+    /** Shutdown reasons read by name, so the SDK level decides what exists and not the compiler. */
+    private val SHUTDOWN_REASONS = listOf(
+        "SHUTDOWN_REASON_SHUTDOWN" to "shutdown",
+        "SHUTDOWN_REASON_REBOOT" to "reboot",
+        "SHUTDOWN_REASON_USER_REQUESTED" to "reboot,userrequested",
+        "SHUTDOWN_REASON_BATTERY_THERMAL_STATE" to "shutdown,thermal",
+        "SHUTDOWN_REASON_LOW_BATTERY" to "shutdown,battery",
+        "SHUTDOWN_REASON_THERMAL_SHUTDOWN" to "shutdown,thermal",
+    )
+
     /**
      * The properties that hold it, in the order they are trusted. `sys.boot.reason` is Android 9+
      * and is the one the platform itself uses for `DropBoxManager`'s reboot tags; the others are
@@ -113,7 +123,11 @@ object BootReason {
         for (command in listOf("/system/bin/getprop", "getprop")) {
             try {
                 val process = ProcessBuilder(command).redirectErrorStream(true).start()
-                if (!process.waitFor(3, java.util.concurrent.TimeUnit.SECONDS)) {
+                // One second, not three: this runs inside Application.onCreate, on the main
+                // thread, at every cold start on a device whose properties cannot be read any
+                // other way. `getprop` answers in tens of milliseconds; the bound is for a phone
+                // that is too busy to answer at all, and a second of that is already a lot.
+                if (!process.waitFor(1, java.util.concurrent.TimeUnit.SECONDS)) {
                     process.destroyForcibly()
                     continue
                 }
@@ -167,6 +181,33 @@ object BootReason {
             Log.i(TAG, "last shutdown reason: not available ($e)")
             null
         }
+    }
+
+    /**
+     * A reboot reason to a [Kind]. Deliberately broad: vendors spell the same event several ways
+     * (`reboot,kernel_panic`, `kernel_panic,watchdog`, `HWWDT`, `thermal_shutdown`), and missing a
+     * real panic is the expensive mistake here while treating an ordinary reboot as fatal only
+     * costs the user one confirmation.
+     */
+    fun classify(raw: String): Kind {
+        val text = raw.lowercase()
+        // Panic first: "kernel_panic,watchdog" is a panic that a watchdog then finished, and the
+        // panic is the part that says the GPU driver was involved.
+        if (text.contains("panic") || text.contains("oops") || text.contains("bug(")) return Kind.KERNEL_PANIC
+        if (text.contains("watchdog") || text.contains("wdog") || text.contains("hwwt") ||
+            text.contains("hw watchdog") || text.contains("hwdt")
+        ) return Kind.WATCHDOG
+        if (text.contains("thermal") || text.contains("overheat") || text.contains("overtemp") ||
+            text.contains("shutdown,therm")
+        ) return Kind.THERMAL
+        if (text.contains("reboot") || text.contains("power_key") || text.contains("powerkey") ||
+            text.contains("poweron") || text.contains("cold") || text.contains("rtc") ||
+            text.contains("alarm") || text.contains("adb") || text.contains("shell") ||
+            text.contains("bootloader") || text.contains("recovery") || text.contains("factory") ||
+            text.contains("charger") || text.contains("usb") || text.contains("userrequested") ||
+            text.contains("key_power") || text.contains("kpdpwr") || text.contains("normal")
+        ) return Kind.NORMAL
+        return Kind.UNKNOWN
     }
 
     /** android.os.SystemProperties.get, which apps may read but not call directly. */
