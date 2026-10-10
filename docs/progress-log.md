@@ -7,6 +7,33 @@ the timeline, then lessons and backlog. Companion to the README (what the app *d
 
 ---
 
+## 2026-10-10 (night) - software mode: the guest gets no GPU, and the driver that draws instead
+
+The question "is the stack above the driver sound?" cannot be asked on this phone with the driver in it:
+every session that drew on Mali ended in a bus fault and a reboot, and a reboot is not an instrument. So
+the fourth profile exists to take the driver out of the question - Mesa's lavapipe, CPU rasterisation,
+slow on purpose - and the work in these commits is the safety of that claim, not its performance.
+
+The requirement list was short and specific, and the answers are in `docs/gpu-safety.md`: no render node
+given or fabricated (shadowed instead, with the empty-file-vs-`/dev/null` trap written down), Auto on Mali
+never choosing Turnip or Mali because "nothing selected" here already means PanVK, and Adreno untouched
+because everything is gated on the profile rather than the family. Two of those were already true and are
+recorded as checked, not changed.
+
+What the phone has to do that CI cannot: judge the rootfs. The runtime's glibc is a property of the user's
+image, so CI measures what the driver demands, writes it into the package as `minGlibc`, and the guest
+script refuses to start on a driver its loader could not open. LD_LIBRARY_PATH was audited on the way:
+every write of it in `app/src` is the host-side proot library path, and nothing on the guest side is set for
+drivers - which is why the answer is a RUNPATH inside the object, not an environment variable, and also why
+a rootfs carrying its own `libLLVM` of a different version would win: `LD_LIBRARY_PATH` outranks RUNPATH,
+and nothing here sets it.
+
+Four of these commits were built by nothing at all: no JDK in the sandbox, so no gradle, so the CI run is
+the first compiler this work has seen. The shell and Python parts are the exception - 29 cases for the
+packaging gates and 11 for the session script's refusal branch, all executed here, and they caught two
+things: a minGlibc announcement that had drifted into one branch of an if/else, and a test whose own probe
+line passed on both the correct and the broken behaviour.
+
 ## 2026-10-10 (later) - the abort did not save the phone, and that is the result
 
 Session `2026-10-10-07-steam`, on the build that carries the trace. The probe passed, the session
