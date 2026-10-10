@@ -21,6 +21,17 @@ name: Software Vulkan driver package (lavapipe)
 # recorded in meta.json as minGlibc, and droiddeck-session compares it against the glibc the guest
 # actually has before it lets anything draw. Both numbers appear in this run's summary.
 on:
+  # The paths filter is what makes this reachable at all. workflow_dispatch only works for a workflow
+  # the repository already knows about, and a file that exists solely on a feature branch has never run,
+  # so it is not in the list - `gh workflow run` answers 404, and the Actions tab does not offer it
+  # either (both verified on this branch, not inferred). A push event reads the file from the pushed
+  # commit, which is how gpu-guard-ci.yml works here. Once this has run, dispatch and rerun are yours;
+  # the filter keeps it from firing on ordinary commits.
+  push:
+    branches: ['arena/**']
+    paths:
+      - 'tools/lavapipe/**'
+      - '.github/workflows/lavapipe-package.yml'
   workflow_dispatch:
     inputs:
       debian_suite:
