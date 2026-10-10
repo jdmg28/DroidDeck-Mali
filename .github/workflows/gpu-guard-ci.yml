@@ -64,7 +64,20 @@ jobs:
             # And the adapter's own suite: a fake backend that can SIGKILL itself mid-present is the
             # only way to prove the trace survives a dying process with the dying call last.
             bash drivers/mali-g615/test/run_adapter_tests.sh
+            # Software mode's two shell suites, both of which run for real here because neither needs
+            # a guest: the session script's refusal branch is cut out of droiddeck-session and executed
+            # against fixtures (a driver that falls back to the runtime's own ICD is the failure that
+            # would otherwise only appear on the phone), and the lavapipe packaging gates are tested on
+            # synthetic inputs so a broken gate cannot silently start approving everything.
+            bash tools/test/run_software_session_tests.sh
+            bash tools/lavapipe/test_lavapipe_tools.sh
             bash tools/build_local.sh
+            # The importer's rules (which files it will take, what a companion may be, which vendor a
+            # name implies) are plain JVM tests, and they were decoration until this line: nothing else
+            # in any workflow has ever compiled or run app/src/test. A driver zip accepted by a policy
+            # nobody executed is exactly the kind of "green" that means nothing.
+            ./gradlew --console=plain :app:testDebugUnitTest --tests '*DriverArchivePolicyTest*'
+            echo "importer policy tests passed"
           } 2>&1 | tee /tmp/droiddeck-build.log
       # A green build is not evidence that tests ran; it is evidence that gradle succeeded. The
       # suites above print their own verdicts, so their verdicts are looked for here, in the log the
@@ -72,7 +85,9 @@ jobs:
       - name: Assert the test suites ran
         run: |
           set -e
-          for marker in 'all probe cases passed' 'declarations checked' 'all adapter cases passed'; do
+          for marker in 'all probe cases passed' 'declarations checked' 'all adapter cases passed' \
+                       'all software-mode session cases passed' 'lavapipe tool tests passed' \
+                       'importer policy tests passed'; do
             if grep -q "$marker" /tmp/droiddeck-build.log; then
               echo "ran: $marker"
             else

@@ -1,0 +1,237 @@
+name: Software Vulkan driver package (lavapipe)
+
+# Builds the driver zip that lets DroidDeck run the Steam stack with the GPU out of the picture: Mesa's
+# lavapipe ICD (llvmpipe behind Vulkan) taken from Debian's own arm64 build, with the libLLVM it links
+# against beside it, patched so it finds that library next to itself, packaged in the shape
+# LinuxVulkanDriverManager imports.
+#
+# Why a workflow does this: a phone that reboots when its GPU faults is not an instrument for answering
+# "does the stack above the driver work?", and the machine that writes this code has no network to
+# Debian and no cross toolchain, so the zip has to be assembled somewhere that has both. Why it is a
+# gate and not only a build: the one thing that quietly ruins this package is a library the guest
+# loader cannot load, and the symptom of that is a session that dies thirty seconds in, with the reason
+# buried in a log nobody reads after a reboot.
+#
+# What this job decides and what it does not. It measures what the libraries demand (the highest
+# GLIBC_* either one references, their NEEDED lists, their sizes against the importer's limits) and it
+# refuses a package whose shape the importer would reject. It does not rule on the guest rootfs, because
+# that rootfs is the user's own distro image and not an artifact of this repo - uruntime, the one
+# runtime pinned here, is a bundle of preloads under usr/local/lib, not the guest's /usr/lib. So the
+# verdict "will this load on the phone in front of me" is made on the phone: the measured requirement is
+# recorded in meta.json as minGlibc, and droiddeck-session compares it against the glibc the guest
+# actually has before it lets anything draw. Both numbers appear in this run's summary.
+on:
+  workflow_dispatch:
+    inputs:
+      debian_suite:
+        description: "Debian suite to take the packages from"
+        required: false
+        type: string
+        default: "trixie"
+      expect_mesa:
+        description: "Mesa version the build must be (blank accepts whatever the suite has)"
+        required: false
+        type: string
+        default: "25.0.7"
+      expect_llvm:
+        description: "LLVM soname the driver links against"
+        required: false
+        type: string
+        default: "libLLVM.so.19.1"
+      rootfs_libc:
+        description: "Path of a libc.so.6 pulled into the runner, to compare against. Blank = measure only"
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    env:
+      GH_TOKEN: ${{ github.token }}
+      BASE: https://deb.debian.org/debian
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the tools
+        run: |
+          set -e
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq patchelf unzip zip binutils
+
+      # A gate that is broken does not announce itself: it either ships an unchecked driver or blocks a
+      # good one forever. So the gates prove themselves on synthetic fixtures before they are allowed to
+      # decide anything about a real package, and a failure here stops the run.
+      - name: Self-test the packaging gates
+        run: bash tools/lavapipe/test_lavapipe_tools.sh
+
+      - name: Resolve the packages in the suite
+        id: pick
+        run: |
+          set -e
+          SUITE='${{ inputs.debian_suite }}'
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/Packages.gz" \
+            "$BASE/dists/$SUITE/main/binary-arm64/Packages.gz"
+          gunzip -c "$RUNNER_TEMP/Packages.gz" > "$RUNNER_TEMP/Packages"
+          # The index decides which Mesa this is; expect_mesa is what makes a suite that moved a loud
+          # failure rather than a different driver with the same name on it.
+          python3 tools/lavapipe/pick_deb.py --packages "$RUNNER_TEMP/Packages" \
+            --package mesa-vulkan-drivers --expect-version '${{ inputs.expect_mesa }}' \
+            > "$RUNNER_TEMP/mesa"
+          python3 tools/lavapipe/pick_deb.py --packages "$RUNNER_TEMP/Packages" \
+            --package libllvm19 --expect-version '' > "$RUNNER_TEMP/llvm"
+          for src in mesa llvm; do
+            while read -r line; do
+              key=${line%%=*}; value=${line#*=}
+              echo "${src}_${key,,}=$value" >> "$GITHUB_OUTPUT"
+            done < "$RUNNER_TEMP/$src"
+          done
+          echo "== mesa: $(sed -n 's/^VERSION=//p' "$RUNNER_TEMP/mesa"), $(sed -n 's/^SIZE=//p' "$RUNNER_TEMP/mesa") bytes"
+          echo "== llvm: $(sed -n 's/^VERSION=//p' "$RUNNER_TEMP/llvm")"
+          for src in mesa llvm; do
+            grep -q '^FILENAME=' "$RUNNER_TEMP/$src" \
+              || { echo "pick_deb gave $src no FILENAME, so there is nothing to download"; exit 1; }
+            grep -q '^SHA256=' "$RUNNER_TEMP/$src" \
+              || { echo "pick_deb gave $src no SHA256, so the download would go unchecked"; exit 1; }
+          done
+
+      - name: Download and verify them
+        run: |
+          set -e
+          mkdir -p debs
+          for pair in "mesa:${{ steps.pick.outputs.mesa_filename }}:${{ steps.pick.outputs.mesa_sha256 }}" \
+                      "llvm:${{ steps.pick.outputs.llvm_filename }}:${{ steps.pick.outputs.llvm_sha256 }}"; do
+            name=${pair%%:*}; rest=${pair#*:}; path=${rest%%:*}; sum=${rest##*:}
+            ( cd debs && curl -fsSL --retry 3 -O "$BASE/$path" )
+            base=$(basename "$path")
+            ( cd debs && echo "$sum  $base" | sha256sum -c - ) \
+              || { echo "$base is not the file the index described; not unpacking a mismatch"; exit 1; }
+            dpkg-deb -x "debs/$base" "$name"
+            echo "== $base -> $name/"
+          done
+          find mesa llvm -name 'libvulkan_lvp.so' -o -name '${{ inputs.expect_llvm }}*' \
+            | sed 's/^/  found /'
+
+      - name: Assemble the driver
+        run: |
+          set -e
+          mkdir -p stage
+          LVP=$(find mesa -name 'libvulkan_lvp.so' | head -1)
+          LLVM=$(find llvm -name '${{ inputs.expect_llvm }}*' -type f | head -1)
+          if [ -z "$LVP" ]; then
+            echo "no libvulkan_lvp.so in ${{ inputs.debian_suite }}'s mesa-vulkan-drivers. Its libraries are:"
+            find mesa -name '*.so*' | sed 's/^/  /'; exit 1
+          fi
+          if [ -z "$LLVM" ]; then
+            echo "no ${{ inputs.expect_llvm }} in the llvm package. It has:"
+            find llvm -name 'libLLVM*' | sed 's/^/  /'; exit 1
+          fi
+          LLVM=$(basename "$LLVM")
+          LLVM_PATH=$(find llvm -name "$LLVM" | head -1)
+          install -m644 "$LLVM_PATH" "stage/$LLVM" || { echo "could not copy $LLVM_PATH into stage/"; exit 1; }
+          install -m644 "$LVP" stage/libvulkan_lvp.so
+          echo "$LLVM" > stage/.llvm_name
+          # The one edit made to either file, and the reason the companion travels with it: the importer
+          # renames the driver, moves it to files/linux_vulkan_drivers/<id>/, and takes only what
+          # meta.json declares - so "look beside yourself" has to be inside the object. Nothing in the
+          # guest sets LD_LIBRARY_PATH for drivers, and even if something did, LD_LIBRARY_PATH would
+          # outrank this and a different libLLVM in the rootfs would win; that is why the run summary
+          # lists what is missing from the rootfs rather than trusting the search order.
+          patchelf --set-rpath '$ORIGIN' stage/libvulkan_lvp.so
+          readelf -d stage/libvulkan_lvp.so | grep -E 'R(UN)?PATH' | sed 's/^/  /'
+          if ! readelf -d stage/libvulkan_lvp.so | grep -E 'R(UN)?PATH' | grep -q '\$ORIGIN'; then
+            echo "patchelf left no \$ORIGIN in the dynamic section: the guest would look for $LLVM in" \
+                 "the runtime's paths and find nothing, or the wrong version of it"; exit 1
+          fi
+          readelf -d stage/libvulkan_lvp.so | grep NEEDED | sed 's/^/  needs /'
+
+      - name: Measure the requirement, and compare if a libc was handed over
+        run: |
+          set -e
+          LLVM=$(cat stage/.llvm_name)
+          args="--lib stage/libvulkan_lvp.so --lib stage/$LLVM --provides $LLVM"
+          if [ -n '${{ inputs.rootfs_libc }}' ]; then
+            if [ -f '${{ inputs.rootfs_libc }}' ]; then
+              args="$args --rootfs-libdir $(dirname '${{ inputs.rootfs_libc }}') --rootfs-libc '${{ inputs.rootfs_libc }}'"
+              echo "== comparing against the libc pulled into this run"
+            else
+              echo "rootfs_libc says '${{ inputs.rootfs_libc }}' and that file is not in the runner."
+              echo "Either put it there or clear the input: a check that quietly stopped happening is"
+              echo "worse than no check, which is why this is a failure and not a skip."; exit 1
+            fi
+          else
+            echo "no rootfs libc given: this run measures the requirement and does not judge it."
+            echo "The judgement is made on the device, where the guest's glibc is known."
+          fi
+          set +e
+          python3 tools/lavapipe/check_glibc.py $args 2>&1 | tee "$RUNNER_TEMP/check.out"
+          status=${PIPESTATUS[0]}
+          set -e
+          [ "$status" = 0 ] || { echo "the compatibility gate refused this package (exit $status)"; exit 1; }
+          python3 tools/lavapipe/min_glibc.py --report "$RUNNER_TEMP/check.out" --out stage/.min_glibc
+
+      - name: Package it for the importer
+        run: |
+          set -e
+          LLVM=$(cat stage/.llvm_name); rm -f stage/.llvm_name
+          python3 tools/lavapipe/make_meta.py --stage stage \
+            --main-library libvulkan_lvp.so --companion "$LLVM" \
+            --suite '${{ inputs.debian_suite }}' \
+            --mesa-version '${{ steps.pick.outputs.mesa_version }}' \
+            --llvm-soname "$LLVM" --min-glibc "$(cat stage/.min_glibc)"
+          cp tools/lavapipe/NOTICE.mesa.txt stage/NOTICE.txt
+          rm -f stage/.min_glibc
+          ZIP=DroidDeck-Software-Vulkan-lavapipe.zip
+          rm -f "$ZIP"
+          ( cd stage && zip -q -r "../$ZIP" . )
+          python3 tools/lavapipe/check_sizes.py --archive "$ZIP" --stage stage \
+            --policy app/src/main/java/com/droiddeck/launcher/gpu/DriverArchivePolicy.java --zip "$ZIP"
+          python3 tools/lavapipe/check_archive.py "$ZIP"
+          sha256sum "$ZIP" | tee sha256.txt
+          unzip -l "$ZIP"
+
+      - name: Publish
+        run: |
+          set -e
+          ZIP=DroidDeck-Software-Vulkan-lavapipe.zip
+          gh release delete software-driver-latest --yes --cleanup-tag 2>/dev/null || true
+          gh release create software-driver-latest "$ZIP" sha256.txt \
+            --prerelease \
+            --title "DroidDeck software Vulkan driver (Mesa lavapipe ${{ steps.pick.outputs.mesa_version }})" \
+            --notes "Mesa's lavapipe ICD and the libLLVM it links against (\`${{ steps.pick.outputs.llvm_version }}\`),
+          taken from Debian \`${{ inputs.debian_suite }}\` for arm64: mesa-vulkan-drivers
+          ${{ steps.pick.outputs.mesa_version }}, with \`DT_RUNPATH=\$ORIGIN\` written into the driver so it
+          finds its LLVM beside itself after DroidDeck's importer renames and relocates it.
+
+          Run \`${{ github.run_id }}\` from \`${{ github.repository }}@${{ github.sha }}\`. The summary of that
+          run carries the numbers this package stands on: the highest \`GLIBC_*\` either library references
+          (recorded in the zip as \`minGlibc\`, which the session script checks against the guest's own glibc
+          before anything draws), every \`NEEDED\` entry, and every size against the limits the importer
+          enforces.
+
+          Import it under Components -> Controladores de GPU -> Importar .zip, then set the GPU safety
+          profile to Software (lavapipe). The profile is what keeps the GPU out of the guest; this zip is
+          only what draws when it does.
+
+          It is not a way to play - llvmpipe renders a frame in seconds, not milliseconds - and it is not
+          for the Android side of DroidDeck. It is a way to find out whether Steam, FEX, Proton and the
+          games are sound with the vendor driver nowhere in the picture."
+          {
+            echo "### Artifact"
+            echo ""
+            echo "Get it from the release tag \`software-driver-latest\` (file \`$ZIP\`), not from this"
+            echo "workflow's artifact bundle: the importer wants the file as it is, and the artifact"
+            echo "download would wrap it."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: software-vulkan-lavapipe
+          path: |
+            DroidDeck-Software-Vulkan-lavapipe.zip
+            sha256.txt
+          retention-days: 30

@@ -1,0 +1,11 @@
+Mesa vulkan driver package - lavapipe (llvmpipe behind Vulkan)
+
+libvulkan_lvp.so and the libLLVM it is built against in this archive are taken unmodified from
+Debian's own arm64 builds of the mesa-vulkan-drivers and libllvm19 source packages (see the version
+in meta.json and the run summary of the workflow that produced this zip). Only the ELF dynamic section
+of libvulkan_lvp.so is touched: DT_RUNPATH is set to $ORIGIN so that the loader finds the libLLVM
+beside it after DroidDeck's importer renames the driver and places it in its own directory.
+
+Mesa is distributed under the MIT licence; LLVM under the Apache-2.0 with LLVM-exception. Both
+licences, and the corresponding Debian source, are at https://mesa3d.org and
+https://packages.debian.org/ ; nothing in this archive is DroidDeck's own work.
