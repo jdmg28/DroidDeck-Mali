@@ -349,7 +349,13 @@ jobs:
 
       # The same, one step further: load the ICD through the runtime's Vulkan loader and ask it
       # what it is. This is the check that says the package works, not merely that it links.
+      #
+      # It is also where the manifest's api_version is measured rather than assumed: a loader will
+      # not offer a driver whose manifest declares less than the instance asks for, so a lavapipe
+      # advertised as 1.1 is invisible to anything asking for 1.3, and the package would import
+      # and then do nothing.
       - name: It enumerates a device in the runtime
+        id: probe
         run: |
           set -euo pipefail
           cat > "$RUNNER_TEMP/probe.sh" <<'EOS'
@@ -366,35 +372,49 @@ jobs:
           fi
           ls -l "$lib"/libvulkan.so.1*
           mkdir -p probe
-          # A manifest of our own for the probe: the app writes the same three lines, with the
-          # absolute path the guest will see where this one has the path the loader is given here.
-          jq -n --arg path "$PWD/stage/libvulkan_lvp.so" \
-            '{file_format_version:"1.0.0", ICD:{library_path:$path, api_version:"1.1.274"}}' > probe/icd.json
-          cat probe/icd.json
           if ! out=$(aarch64-linux-gnu-gcc -O1 -o probe/probe tools/software-driver/probe.c -ldl 2>&1); then
             complain "the probe did not compile" "$out"
             exit 1
           fi
           ls -l probe/probe
-          set +e
-          out=$(VK_DRIVER_FILES="$PWD/probe/icd.json" VK_ICD_FILENAMES="$PWD/probe/icd.json" \
-            VK_LOADER_DRIVERS_SELECT='*lvp*' \
-            timeout 600 qemu-aarch64-static -L rootfs -E LD_LIBRARY_PATH="$lib" \
-              probe/probe "$lib/libvulkan.so.1" "$PWD/probe/icd.json" 2>&1)
-          result=$?
-          set -e
-          echo "$out"
-          {
-            echo
-            echo "<details><summary>the ICD loaded through the runtime's own loader (exit $result)</summary>"
-            echo
-            echo '```'
+          # The manifest the driver is tried under, newest api first. Named as Mesa names it, so
+          # VK_LOADER_DRIVERS_SELECT below matches it - the loader filters on the manifest's name.
+          manifest=probe/lvp_icd.aarch64.json
+          for manifest_api in 1.4.0 1.3.0 1.2.0 1.1.0; do
+            jq -n --arg path "$PWD/stage/libvulkan_lvp.so" --arg api "$manifest_api" \
+              '{file_format_version:"1.0.0", ICD:{library_path:$path, api_version:$api}}' > "$manifest"
+            set +e
+            out=$(VK_DRIVER_FILES="$PWD/$manifest" VK_ICD_FILENAMES="$PWD/$manifest" \
+              VK_LOADER_DRIVERS_SELECT='*lvp*' \
+              timeout 600 qemu-aarch64-static -L rootfs -E LD_LIBRARY_PATH="$lib" \
+                probe/probe "$lib/libvulkan.so.1" "$PWD/$manifest" "$manifest_api" 2>&1)
+            result=$?
+            set -e
+            echo "--- manifest api $manifest_api: exit $result"
             echo "$out"
-            echo '```'
-            echo
-            echo "</details>"
-          } >> report.md
-          [ "$result" = 0 ] || { echo "::error::the probe did not complete (exit $result; see the report)"; exit 1; }
+            {
+              echo
+              echo "<details><summary>manifest api $manifest_api: the ICD loaded through the"
+              echo "runtime's own loader (exit $result)</summary>"
+              echo
+              echo '```'
+              echo "$out"
+              echo '```'
+              echo
+              echo "</details>"
+            } >> report.md
+            if [ "$result" = 0 ]; then
+              instance_api=$(sed -n 's/^probe: ok instance=\([0-9][0-9.]*\)$/\1/p' <<<"$out" | head -1)
+              echo "manifest_api=$manifest_api" >> "$GITHUB_OUTPUT"
+              echo "instance_api=${instance_api:-$manifest_api}" >> "$GITHUB_OUTPUT"
+              break
+            fi
+          done
+          if ! grep -q '^manifest_api=' "$GITHUB_OUTPUT" 2>/dev/null; then
+            echo "::error::no api version in the manifest let this driver be loaded (see the report)"
+            exit 1
+          fi
+          cat "$GITHUB_OUTPUT"
           EOS
           bash tools/ci/with-report.sh "It enumerates a device in the runtime" "$RUNNER_TEMP/probe.sh"
 
@@ -407,6 +427,8 @@ jobs:
           RUNTIME_GLIBC: ${{ steps.glibc.outputs.version }}
           RUNTIME_URL: ${{ steps.runtime.outputs.url }}
           RUNTIME_SHA256: ${{ steps.runtime.outputs.sha256 }}
+          MANIFEST_API: ${{ steps.probe.outputs.manifest_api }}
+          INSTANCE_API: ${{ steps.probe.outputs.instance_api }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
@@ -422,6 +444,7 @@ jobs:
             --arg minGlibc "${DRIVER_NEEDS#GLIBC_}" \
             --arg runtime "$RUNTIME_VERSION" \
             --arg runtimeGlibc "$RUNTIME_GLIBC" \
+            --arg manifestApi "$MANIFEST_API" --arg instanceApi "$INSTANCE_API" \
             --argjson runtimeLibraries "$libs" \
             --argjson source "$(jq -Rn '[inputs | split("\t") | {key: .[0], value: {package: .[1], version: .[2], arch: "arm64", suite: "debian trixie", url: .[3], sha256: .[4]}}] | from_entries' < packages.tsv)" \
             --arg builtAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg run "$RUN_URL" '
@@ -433,6 +456,10 @@ jobs:
               minGlibc: $minGlibc,
               gpuVendor: "software",
               sourceLibraryName: "libvulkan_lvp.so",
+              vulkanApiVersion: $manifestApi,
+              # What the probe measured: the manifest advertises $manifestApi and the driver took
+              # an instance at $instanceApi through the runtime's own loader.
+              measuredApiVersion: $instanceApi,
               runtimeLibraries: $runtimeLibraries,
               notes: "Mesa lavapipe: a Vulkan driver that rasterises on the CPU. Imported as the runtime driver, it lets a session start with the device GPU kept out of the guest entirely. Far too slow to play on.",
               packagedAt: $builtAt,

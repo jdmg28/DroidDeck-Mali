@@ -4,7 +4,7 @@
  * host (aarch64 cross-compiler in CI) and run through qemu-user, on the libraries of the rootfs it
  * will end up inside: the same question a session asks at start, answered where it can be seen.
  *
- *   probe <path to libvulkan.so.1> <path to the ICD manifest>
+ *   probe <path to libvulkan.so.1> <path to the ICD manifest> [api version the manifest declares]
  *
  * with VK_DRIVER_FILES (and VK_ICD_FILENAMES, for older loaders) naming the manifest. Exits 0 only
  * when an instance is created and at least one physical device is there to name.
@@ -15,8 +15,11 @@
 #include <stdlib.h>
 #include <string.h>
 
+#define VK_API_VERSION_1_0 0x00400000u
 #define VK_API_VERSION_1_1 0x00401000u
+#define VK_API_VERSION_1_2 0x00402000u
 #define VK_API_VERSION_1_3 0x00403000u
+#define VK_API_VERSION_1_4 0x00404000u
 
 struct app_info {
     uint32_t sType; const void *pNext;
@@ -66,7 +69,10 @@ static void *entry(gipa_fn gipa, void *instance, const char *name, int required)
 int main(int argc, char **argv) {
     const char *loader = argc > 1 ? argv[1] : "/usr/lib/libvulkan.so.1";
     const char *manifest = argc > 2 ? argv[2] : getenv("VK_DRIVER_FILES");
-    printf("probe: loader %s\nprobe: manifest %s\n", loader, manifest ? manifest : "(none)");
+    const char *manifest_api = argc > 3 ? argv[3] : "?";
+    printf("probe: loader %s\n", loader);
+    printf("probe: manifest %s\n", manifest ? manifest : "(none)");
+    printf("probe: manifest declares api %s\n", manifest_api);
 
     void *handle = dlopen(loader, RTLD_NOW | RTLD_LOCAL);
     if (!handle) { fprintf(stderr, "probe: cannot dlopen %s: %s\n", loader, dlerror()); return 2; }
@@ -74,18 +80,22 @@ int main(int argc, char **argv) {
     if (!gipa) { fprintf(stderr, "probe: %s has no vkGetInstanceProcAddr\n", loader); return 2; }
 
     create_instance_fn create = (create_instance_fn) entry(gipa, NULL, "vkCreateInstance", 1);
-    /* Twice: at 1.3, which is what gamescope asks for, then at 1.1, so a driver that refuses 1.3
-     * still says what it is instead of just failing. */
-    uint32_t wanted[] = { VK_API_VERSION_1_3, VK_API_VERSION_1_1 };
+    /* From the newest down: a loader will not even offer a driver whose manifest declares less
+     * than the instance asks for, so what the loader accepts and what the driver accepts are two
+     * different questions, and this answers both for whichever one is being tried now. */
+    uint32_t wanted[] = { VK_API_VERSION_1_4, VK_API_VERSION_1_3, VK_API_VERSION_1_2,
+                          VK_API_VERSION_1_1, VK_API_VERSION_1_0 };
     void *instance = NULL;
+    uint32_t instance_api = 0;
     for (unsigned i = 0; i < sizeof wanted / sizeof *wanted && !instance; i++) {
         struct app_info app = { 1, NULL, "droiddeck-probe", 1, "droiddeck-probe", 1, wanted[i] };
         struct instance_info info = { 1, NULL, 0, &app, 0, NULL, 0, NULL };
         int32_t result = create(&info, NULL, &instance);
         printf("probe: vkCreateInstance for Vulkan %s -> %d\n", version(wanted[i]), result);
-        if (result != 0) instance = NULL;
+        if (result != 0) instance = NULL; else instance_api = wanted[i];
     }
-    if (!instance) { fprintf(stderr, "probe: no instance: the driver did not accept 1.3 or 1.1\n"); return 4; }
+    if (!instance) { fprintf(stderr, "probe: no instance at any of 1.4 down to 1.0\n"); return 4; }
+    printf("probe: ok instance=%s\n", version(instance_api));
 
     count_devices_fn count = (count_devices_fn) entry(gipa, instance, "vkEnumeratePhysicalDevices", 1);
     list_devices_fn list = (list_devices_fn) entry(gipa, instance, "vkEnumeratePhysicalDevices", 1);
