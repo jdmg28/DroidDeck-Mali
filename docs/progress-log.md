@@ -7,6 +7,53 @@ the timeline, then lessons and backlog. Companion to the README (what the app *d
 
 ---
 
+## 2026-10-10 (late night) - the software driver is a zip now, and three bugs died getting there
+
+`lavapipe-package.yml` builds and publishes it: Mesa `25.0.7-2+deb13u1`'s `libvulkan_lvp.so` (10,451,865 B)
+with Debian's `libLLVM.so.19.1` (`llvm-toolchain-19 1:19.1.7-3+b1`, 123,242,120 B) beside it, one
+`patchelf --set-rpath '$ORIGIN'`, meta.json declaring the companion, 40,605,954 B of zip at the
+`software-driver-latest` release. The measured number the whole mode hangs on is **minGlibc 2.38**: what
+the guest's `getconf GNU_LIBC_VERSION` is compared against before anything is drawn, so a Debian 12 rootfs
+(2.36) is refused by name at the start of a session instead of half-loading a driver and dying on an empty
+device list. Ubuntu 24.04 (2.39) and Debian 13 (2.41) are fine.
+
+That ceiling did not exist in the app: `libLLVM` exceeded `MAX_LIBRARY_BYTES` (96 MiB) by 22 MB and the
+package fitted `MAX_ARCHIVE_BYTES` (128 MiB) by 522 KB. Both moved - 192 MiB and 256 MiB - with the
+measured bytes in the JavaDoc, and the importer now asks for room before it reads the zip
+(`requiredFreeSpace`: 4x the archive plus 32 MiB, capped by the ceiling it guards). The size gate in CI
+reads those constants out of the Java source instead of restating them, so the two cannot drift.
+
+Four things this stretch produced that are worth keeping:
+
+- **`tools/lavapipe/test_lavapipe_tools.sh` (32 cases)** and **`tools/test/run_software_session_tests.sh`
+  (13 cases)**. The second cuts the software branch out of `droiddeck-session` by markers - and fails
+  loudly if the markers move - and runs it in a shell against fixtures with a fake `getconf` on `PATH`.
+  Both now run in CI before the build, and CI also runs `:app:testDebugUnitTest` for the importer's policy
+  tests, which had been compiled by nobody until today.
+- **A step that names its own failure.** The runner's log is on a host this machine cannot reach, so the
+  packaging step repeats its captured output as an `::error::` annotation. That channel - plus the guard
+  workflow's published check run - is the only way anything here has been debugged, and it found both the
+  empty-`inputs` bug and the size refusal with numbers in hand.
+- **`tools/test/check_java_syntax.js`**, a real Java parser over the changed files. Its predecessor counted
+  quotes per line, and measuring it against the tree and against the bug showed it caught ten lines that
+  compile and missed the one that did not. Deleted rather than kept as decoration.
+- **A measured answer on `LD_LIBRARY_PATH`.** Nothing on the guest side sets it for drivers (every write in
+  `app/src` is the host-side proot path; `droiddeck-fex` rewrites it for game processes only), so
+  `$ORIGIN` is what locates the LLVM - and since glibc searches `LD_LIBRARY_PATH` before `DT_RUNPATH`,
+  software mode now prepends the driver's directory so the shipped pair is the one that loads.
+
+Two compile errors went out before CI caught them, both mine, both invisible without a compiler: a `when`
+over `SafeProfile` that had to grow a branch, and a companions loop that redeclared a name the enclosing
+method already had. A third failure mode is worth recording because it is the quietest: a patch script died
+on its own quote escaping *after* the commit message describing its effect had been composed, so the
+message claimed a `-PskipRust=true` that was not in the file, and the next CI run failed on exactly the
+thing the commit said was fixed. Twice in one session, same shape. The habit that catches it is a grep for
+the new text inside the same command that writes it, and no commit if the count comes back empty - every
+edit in this entry went through that afterwards, and it is why the fix above is stated with its
+verification instead of its intention. `git status` after a `git add -A` also revealed the zip generator had written 29
+generated `.patch` files into the repo, because `git -C $REPO format-patch -o series` resolves that path
+against the repo. Fixed, untracked, and the generator refuses to run that way again.
+
 ## 2026-10-10 (night) - software mode: the guest gets no GPU, and the driver that draws instead
 
 The question "is the stack above the driver sound?" cannot be asked on this phone with the driver in it:

@@ -76,7 +76,13 @@ jobs:
             # name implies) are plain JVM tests, and they were decoration until this line: nothing else
             # in any workflow has ever compiled or run app/src/test. A driver zip accepted by a policy
             # nobody executed is exactly the kind of "green" that means nothing.
-            ./gradlew --console=plain :app:testDebugUnitTest --tests '*DriverArchivePolicyTest*'
+            # The same two properties tools/build_local.sh passes, for the same reason: buildRustStores is
+            # in the task graph whatever else is asked for, its only gate is the gradle property
+            # -PskipRust (the job's DROIDDECK_SKIP_RUST env var is read by the script, not by gradle), and
+            # android.ndkDirectory is resolved at configuration time whether or not the task runs. Without
+            # them the unit tests died in five seconds on a Rust task that had nothing to do with them.
+            ./gradlew --console=plain :app:testDebugUnitTest --tests '*DriverArchivePolicyTest*' \
+              -PskipRust=true "-PndkVersion=${DROIDDECK_NDK_VERSION}"
             echo "importer policy tests passed"
           } 2>&1 | tee /tmp/droiddeck-build.log
       # A green build is not evidence that tests ran; it is evidence that gradle succeeded. The
