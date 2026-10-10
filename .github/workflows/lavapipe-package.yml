@@ -213,6 +213,7 @@ jobs:
           python3 tools/lavapipe/min_glibc.py --report "$RUNNER_TEMP/check.out" --out stage/.min_glibc
 
       - name: Package it for the importer
+        id: pack
         run: |
           # This step's output is captured and, on failure, repeated as an annotation, because the
           # runner's log lives on a host this machine cannot reach - and a refusal that can only be read
@@ -247,6 +248,20 @@ jobs:
           status=$?
           set -e
           cat "$RUNNER_TEMP/package.log"
+          if [ "$status" = 0 ]; then
+            # The numbers the release notes will quote. Anything a caller cannot read back is not
+            # evidence, and the run summary lives on a host the machine maintaining this cannot reach.
+            python3 - "$ZIP" >> "$GITHUB_OUTPUT" <<'PYP'
+          # Read out of the archive that was just built, not out of a log: the release should quote the
+          # numbers the file carries, which is also the only version of them anybody can verify later.
+          import json, sys, zipfile
+          with zipfile.ZipFile(sys.argv[1]) as zf:
+              meta = json.loads(zf.read("meta.json"))
+              libs = [i for i in zf.infolist() if ".so" in i.filename]
+          print("min_glibc=" + (str(meta.get("minGlibc")) or "?"))
+          print("sizes=" + ", ".join("%s %s bytes" % (i.filename, format(i.file_size, ",")) for i in libs))
+          PYP
+          fi
           if [ "$status" != 0 ]; then
             echo "::error::packaging failed (exit $status): $(tr '\n' '|' < "$RUNNER_TEMP/package.log" | tail -c 900)"
             exit 1
@@ -265,11 +280,10 @@ jobs:
           ${{ steps.pick.outputs.mesa_version }}, with \`DT_RUNPATH=\$ORIGIN\` written into the driver so it
           finds its LLVM beside itself after DroidDeck's importer renames and relocates it.
 
-          Run \`${{ github.run_id }}\` from \`${{ github.repository }}@${{ github.sha }}\`. The summary of that
-          run carries the numbers this package stands on: the highest \`GLIBC_*\` either library references
-          (recorded in the zip as \`minGlibc\`, which the session script checks against the guest's own glibc
-          before anything draws), every \`NEEDED\` entry, and every size against the limits the importer
-          enforces.
+          This build's own numbers, so they can be read off the release without opening the run:
+          \`minGlibc ${{ steps.pack.outputs.min_glibc }}\`, per-library sizes \`${{ steps.pack.outputs.sizes }}\`
+          bytes, provenance \`${{ github.run_id }}\` from \`${{ github.sha }}\`. The run's summary adds every
+          \`NEEDED\` entry and every size against the limits the importer enforces.
 
           Import it under Components -> Controladores de GPU -> Importar .zip, then set the GPU safety
           profile to Software (lavapipe). The profile is what keeps the GPU out of the guest; this zip is
