@@ -31,11 +31,18 @@ public final class DriverArchivePolicy {
 
     /**
      * A library the driver loads rather than the driver itself, kept beside it in its own
-     * directory: lavapipe's LLVM. Named, not globbed, so a zip cannot smuggle in an arbitrary
-     * .so and have it sit in front of the runtime's.
+     * directory: lavapipe's LLVM, and what libLLVM itself loads (Debian builds it with libedit,
+     * which wants libbsd and libtinfo, none of which the Arch runtime carries).
+     *
+     * Each is named rather than globbed, so a zip cannot smuggle in an arbitrary .so and have it
+     * sit in front of the runtime's.
      */
     public static boolean isRuntimeLibrary(String name) {
-        return name != null && name.matches("libLLVM(-19|\\.so\\.19)(\\.[0-9]+)*");
+        return name != null
+                && (name.matches("libLLVM(-19|\\.so\\.19)(\\.[0-9]+)*")
+                        || name.matches("libedit\\.so\\.[0-9]+")
+                        || name.matches("libtinfo\\.so\\.[0-9]+")
+                        || name.matches("libbsd\\.so\\.[0-9]+"));
     }
     public static boolean isBackendLibrary(String name) {
         return BACKEND_NAME.equals(name);

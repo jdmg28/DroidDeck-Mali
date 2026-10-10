@@ -29,6 +29,14 @@ env:
   MESA_DEB_SHA256: b73e1b64f26d55c981339533f3eb64397fda4a8e86dd5593ed15e1c48711141d
   LLVM_DEB_URL: https://deb.debian.org/debian/pool/main/l/llvm-toolchain-19/libllvm19_19.1.7-3+b1_arm64.deb
   LLVM_DEB_SHA256: 8a48e1a49f7fcc3be74e697767d72902f4b03041401d1529bcfad1849df39148
+  # Debian's libLLVM links libedit, which links libbsd and libtinfo. The runtime is an Arch
+  # rootfs and measurement showed it carries none of the three, so they travel with the driver.
+  LIBEDIT_DEB_URL: https://deb.debian.org/debian/pool/main/libe/libedit/libedit2_3.1-20250104-1_arm64.deb
+  LIBEDIT_DEB_SHA256: 496c31df89fac9cb7e98102fcc21daf887376dcd9914f6322c86dd5bd4360ff1
+  LIBTINFO_DEB_URL: https://deb.debian.org/debian/pool/main/n/ncurses/libtinfo6_6.5+20250216-2_arm64.deb
+  LIBTINFO_DEB_SHA256: 2a747f7fff3c2347c357387a7133df997410f07ba1b1df1a1461a97bd7fbc2fc
+  LIBBSD_DEB_URL: https://deb.debian.org/debian/pool/main/libb/libbsd/libbsd0_0.12.2-2_arm64.deb
+  LIBBSD_DEB_SHA256: 6827c1b3ad8dcbf3478803f9150359433e3376a3bde01c4503888a22eb3924e3
   # Where the app installs the runtime from, and the file inside it whose glibc decides whether
   # anything built for 2.38 can load at all.
   RUNTIME_CATALOG: https://raw.githubusercontent.com/The412Banner/winlator-contents/main/linuxfs.json
@@ -108,7 +116,7 @@ jobs:
           [ -f "$libc" ] || { echo "::error::the runtime carries no usr/lib/libc.so.6"; exit 1; }
           banner=$(strings -n 8 "$libc" | grep -m1 "GNU C Library" || true)
           [ -n "$banner" ] || { echo "::error::no 'GNU C Library' line in the runtime's libc.so.6"; exit 1; }
-          version=$(sed -n 's/.*stable release version \([0-9][0-9.]*\).*/\1/p' <<<"$banner")
+          version=$(sed -n 's/.*stable release version \([0-9][0-9.]*\)[^0-9.]*$/\1/p' <<<"$banner" | sed 's/\.$//')
           [ -n "$version" ] || { echo "::error::cannot read a version out of '$banner'"; exit 1; }
           # The highest GLIBC_2.x this libc itself defines: the ceiling every driver in the
           # runtime must stay under.
@@ -123,27 +131,31 @@ jobs:
             echo "| glibc | **$version** ($defines) |"
           } >> report.md
 
-      - name: Get the driver and the LLVM it loads
+      - name: Get the driver and the libraries it loads
         id: mesa
         run: |
           set -euo pipefail
-          mkdir -p pkg
-          curl -fsSL --retry 3 -o pkg/mesa.deb "$MESA_DEB_URL"
-          echo "$MESA_DEB_SHA256  pkg/mesa.deb" | sha256sum -c -
-          curl -fsSL --retry 3 -o pkg/llvm.deb "$LLVM_DEB_URL"
-          echo "$LLVM_DEB_SHA256  pkg/llvm.deb" | sha256sum -c -
-          dpkg-deb -x pkg/mesa.deb pkg/mesa
-          dpkg-deb -x pkg/llvm.deb pkg/llvm
-          driver=$(find pkg/mesa -name 'libvulkan_lvp.so' -type f | head -1)
-          llvm=$(find pkg/llvm -name 'libLLVM.so.19.1' -type f | head -1)
-          [ -n "$driver" ] || { echo "::error::mesa-vulkan-drivers carries no libvulkan_lvp.so"; exit 1; }
-          [ -n "$llvm" ] || { echo "::error::libllvm19 carries no libLLVM.so.19.1"; exit 1; }
-          mkdir -p stage
-          cp "$driver" stage/libvulkan_lvp.so
-          cp "$llvm" stage/libLLVM.so.19.1
-          # What the driver asks of the C library, which is the number the gate above is about.
-          needs=$(objdump -T stage/libvulkan_lvp.so stage/libLLVM.so.19.1 |
-              grep -oE 'GLIBC_2\.[0-9]+' | sort -uV | tail -1)
+          mkdir -p pkg stage
+          fetch() { # name url sha256
+            curl -fsSL --retry 3 -o "pkg/$1.deb" "$2"
+            echo "$3  pkg/$1.deb" | sha256sum -c -
+            dpkg-deb -x "pkg/$1.deb" "pkg/$1"
+          }
+          fetch mesa "$MESA_DEB_URL" "$MESA_DEB_SHA256"
+          fetch llvm "$LLVM_DEB_URL" "$LLVM_DEB_SHA256"
+          fetch libedit "$LIBEDIT_DEB_URL" "$LIBEDIT_DEB_SHA256"
+          fetch libtinfo "$LIBTINFO_DEB_URL" "$LIBTINFO_DEB_SHA256"
+          fetch libbsd "$LIBBSD_DEB_URL" "$LIBBSD_DEB_SHA256"
+          # The driver, then every library it loads that the runtime does not have: found by
+          # measurement, not by assuming - libLLVM needed libedit, which needed the other two.
+          for so in libvulkan_lvp.so libLLVM.so.19.1 libedit.so.2 libtinfo.so.6 libbsd.so.0; do
+            found=$(find pkg -name "$so" -type f | head -1)
+            [ -n "$found" ] || { echo "::error::$so is in none of the packages fetched"; exit 1; }
+            cp "$found" "stage/$so"
+          done
+          ls -l stage
+          # What the whole set asks of the C library, which is the number the gate is about.
+          needs=$(objdump -T stage/*.so* | grep -oE 'GLIBC_2\.[0-9]+' | sort -uV | tail -1)
           version=$(dpkg-deb -f pkg/mesa.deb Version)
           echo "driver: mesa $version, needs $needs"
           echo "version=$version" >> "$GITHUB_OUTPUT"
@@ -188,16 +200,22 @@ jobs:
           fi
           echo "ok: glibc $have >= $need" >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Make the driver find its LLVM beside itself
+      - name: Make every library find its neighbours beside itself
         run: |
           set -euo pipefail
           # The importer flattens a zip into one directory and renames the driver, so an absolute
           # RPATH is worthless; $ORIGIN is that directory wherever it ends up, which is where the
-          # importer puts libLLVM.so.19.1 as well. Nothing in the session needs LD_LIBRARY_PATH.
-          patchelf --set-rpath '$ORIGIN' stage/libvulkan_lvp.so
-          readelf -d stage/libvulkan_lvp.so | grep -E '\(RUNPATH\)|\(RPATH\)'
-          readelf -d stage/libvulkan_lvp.so | grep -qF '$ORIGIN' ||
-            { echo "::error::the driver has no \$ORIGIN runpath"; exit 1; }
+          # importer puts every library of the set as well. Nothing in the session needs
+          # LD_LIBRARY_PATH.
+          #
+          # On every one of them, not just the driver: DT_RUNPATH of a library is not inherited by
+          # the libraries IT loads, so libLLVM needs its own $ORIGIN to find its libedit.
+          for so in stage/*.so*; do patchelf --set-rpath '$ORIGIN' "$so"; done
+          for so in stage/*.so*; do
+            readelf -d "$so" | grep -E '\(RUNPATH\)|\(RPATH\)'
+            readelf -d "$so" | grep -qF '$ORIGIN' ||
+              { echo "::error::$so has no \$ORIGIN runpath"; exit 1; }
+          done
           for so in stage/*.so*; do
             printf '%s: %s\n' "$so" "$(readelf -h "$so" | sed -n 's/.*Machine: *//p' | head -1)"
             readelf -h "$so" | grep -q 'AArch64' || { echo "::error::$so is not AArch64"; exit 1; }
@@ -287,7 +305,10 @@ jobs:
         run: |
           set -euo pipefail
           driver=stage/libvulkan_lvp.so
-          llvm=stage/libLLVM.so.19.1
+          # Every library in the package except the driver itself: what the importer has to copy
+          # beside it, and what its policy has to recognise.
+          libs=$(cd stage && ls *.so* | grep -v '^libvulkan_lvp.so$' | jq -R . | jq -sc .)
+          echo "runtime libraries: $libs"
           # What the importer reads: name, driverVersion, minGlibc, gpuVendor, vulkanApiVersion.
           # gpuVendor "software" is what GpuSafety looks for to know this driver draws on the CPU.
           jq -n \
@@ -297,6 +318,10 @@ jobs:
             --arg runtimeGlibc "$RUNTIME_GLIBC" \
             --arg mesaUrl "$MESA_DEB_URL" --arg mesaSha "$MESA_DEB_SHA256" \
             --arg llvmUrl "$LLVM_DEB_URL" --arg llvmSha "$LLVM_DEB_SHA256" \
+            --arg libeditUrl "$LIBEDIT_DEB_URL" --arg libeditSha "$LIBEDIT_DEB_SHA256" \
+            --arg libtinfoUrl "$LIBTINFO_DEB_URL" --arg libtinfoSha "$LIBTINFO_DEB_SHA256" \
+            --arg libbsdUrl "$LIBBSD_DEB_URL" --arg libbsdSha "$LIBBSD_DEB_SHA256" \
+            --argjson runtimeLibraries "$libs" \
             --arg builtAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg run "$RUN_URL" '
             {
               schemaVersion: 1,
@@ -306,14 +331,17 @@ jobs:
               minGlibc: $minGlibc,
               gpuVendor: "software",
               sourceLibraryName: "libvulkan_lvp.so",
-              runtimeLibraries: ["libLLVM.so.19.1"],
+              runtimeLibraries: $runtimeLibraries,
               notes: "Mesa lavapipe: a Vulkan driver that rasterises on the CPU. Imported as the runtime driver, it lets a session start with the device GPU kept out of the guest entirely. Far too slow to play on.",
               packagedAt: $builtAt,
               builtBy: $run,
               measured: {runtime: $runtime, runtimeGlibc: $runtimeGlibc},
               source: {
                 "libvulkan_lvp.so": {package: "mesa-vulkan-drivers", version: $version, arch: "arm64", suite: "debian trixie", url: $mesaUrl, sha256: $mesaSha},
-                "libLLVM.so.19.1": {package: "libllvm19", version: "1:19.1.7-3+b1", arch: "arm64", suite: "debian trixie", url: $llvmUrl, sha256: $llvmSha}
+                "libLLVM.so.19.1": {package: "libllvm19", version: "1:19.1.7-3+b1", arch: "arm64", suite: "debian trixie", url: $llvmUrl, sha256: $llvmSha},
+                "libedit.so.2": {package: "libedit2", version: "3.1-20250104-1", arch: "arm64", suite: "debian trixie", url: $libeditUrl, sha256: $libeditSha},
+                "libtinfo.so.6": {package: "libtinfo6", version: "6.5+20250216-2", arch: "arm64", suite: "debian trixie", url: $libtinfoUrl, sha256: $libtinfoSha},
+                "libbsd.so.0": {package: "libbsd0", version: "0.12.2-2", arch: "arm64", suite: "debian trixie", url: $libbsdUrl, sha256: $libbsdSha}
               }
             }' > stage/meta.json
           cat stage/meta.json
@@ -327,19 +355,24 @@ jobs:
                              https://docs.mesa3d.org/license.html
           libLLVM.so.19.1    Debian libllvm19 1:19.1.7-3+b1, the LLVM Mesa 25.0 is built against.
                              LLVM is licensed under the Apache License 2.0 with LLVM exceptions.
-          libvulkan_lvp.so carries DT_RUNPATH \$ORIGIN, so it finds its LLVM beside itself in the
-          directory the app's importer puts both files in. Nothing is added to the runtime and
+          libedit.so.2       Debian libedit2 3.1-20250104-1, which libLLVM loads.
+          libtinfo.so.6      Debian libtinfo6 6.5+20250216-2, which libedit loads.
+          libbsd.so.0        Debian libbsd0 0.12.2-2, which libedit loads.
+          The last three are here because the runtime this imports into is an Arch rootfs, and
+          measurement showed it has none of them.
+          Every library carries DT_RUNPATH \$ORIGIN, so each finds its neighbours beside itself in
+          the directory the app's importer puts them all in. Nothing is added to the runtime and
           nothing in it is modified.
           Built by $RUN_URL
           EOF
           rm -f "$RELEASE_ASSET"
-          ( cd stage && zip -X -9 -j "../$RELEASE_ASSET" libvulkan_lvp.so libLLVM.so.19.1 meta.json NOTICE.txt )
+          ( cd stage && zip -X -9 -j "../$RELEASE_ASSET" *.so* meta.json NOTICE.txt )
           unzip -l "$RELEASE_ASSET"
-          ls -l "$driver" "$llvm"
+          for so in stage/*.so*; do ls -l "$so"; done
           {
             echo "driver_bytes=$(stat -c %s "$driver")"
-            echo "llvm_bytes=$(stat -c %s "$llvm")"
             echo "zip_bytes=$(stat -c %s "$RELEASE_ASSET")"
+            echo "contents=$(cd stage && ls *.so* | jq -R . | jq -sc .)"
           } >> "$GITHUB_OUTPUT"
 
       - name: Summary
@@ -350,7 +383,7 @@ jobs:
           DRIVER_VERSION: ${{ steps.mesa.outputs.version }}
           DRIVER_NEEDS: ${{ steps.mesa.outputs.needs }}
           DRIVER_BYTES: ${{ steps.zip.outputs.driver_bytes }}
-          LLVM_BYTES: ${{ steps.zip.outputs.llvm_bytes }}
+          CONTENTS: ${{ steps.zip.outputs.contents }}
           ZIP_BYTES: ${{ steps.zip.outputs.zip_bytes }}
         run: |
           set -euo pipefail
@@ -364,13 +397,13 @@ jobs:
             echo "| runtime it must load in | \`$RUNTIME_VERSION\`, glibc **$RUNTIME_GLIBC** |"
             echo "| the runtime's libc says | \`$RUNTIME_BANNER\` |"
             echo "| \`libvulkan_lvp.so\` | $DRIVER_BYTES bytes |"
-            echo "| \`libLLVM.so.19.1\` | $LLVM_BYTES bytes |"
+            echo "| with it | $(jq -r 'join(", ")' <<<"$CONTENTS") |"
             echo "| zip | $ZIP_BYTES bytes |"
             echo
             echo "The runtime's glibc was measured before anything was packaged, and the job stops"
-            echo "without a zip if it is older than what the driver asks for. Every \`NEEDED\` of both"
-            echo "libraries was then resolved by the runtime's own loader, under qemu, against the"
-            echo "runtime's own \`/usr/lib\`; the step after that loads the ICD and enumerates a device."
+            echo "without a zip if it is older than what the driver asks for. Every \`NEEDED\` of every"
+            echo "library was then resolved by the runtime's own loader, under qemu, against the"
+            echo "runtime's own \`/usr/lib\`; the step after that loads the ICD and enumerates a device.
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Publish the zip

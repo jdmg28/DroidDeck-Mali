@@ -28,6 +28,14 @@ public class DriverArchivePolicyTest {
         assertFalse(DriverArchivePolicy.isRuntimeLibrary("libc.so.6"));
         assertFalse(DriverArchivePolicy.isRuntimeLibrary(null));
         assertFalse(DriverArchivePolicy.isRuntimeLibrary("../../libLLVM.so.19.1"));
+        // What Debian's libLLVM loads on top of it, measured against the runtime: libedit, and
+        // through it libtinfo and libbsd.
+        assertTrue(DriverArchivePolicy.isRuntimeLibrary("libedit.so.2"));
+        assertTrue(DriverArchivePolicy.isRuntimeLibrary("libtinfo.so.6"));
+        assertTrue(DriverArchivePolicy.isRuntimeLibrary("libbsd.so.0"));
+        assertFalse(DriverArchivePolicy.isRuntimeLibrary("libedit.so"));
+        assertFalse(DriverArchivePolicy.isRuntimeLibrary("libvulkan.so.1"));
+        assertFalse(DriverArchivePolicy.isRuntimeLibrary("libLLVM.so.19.1.so"));
         // A GPU driver is not a software one, and neither claims the other's dependencies.
         assertFalse(DriverArchivePolicy.isMaliRuntimeLibrary("libvulkan_lvp.so"));
         assertFalse(DriverArchivePolicy.requiresBackend("libvulkan_lvp.so"));
