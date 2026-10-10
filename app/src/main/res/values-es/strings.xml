@@ -2152,4 +2152,7 @@
     <string name="gpu_guard_session_stopped">La sesión se detuvo para proteger el dispositivo.</string>
     <string name="gpu_safety_probe_skipped">salteada: no se probó la GPU</string>
     <string name="gpu_safety_boot_blind">No se pudo leer el motivo del arranque (%1$s), así que la guardia no puede ver un fallo desde el teléfono mismo. Lo detecta con su propio registro: una sesión que quedó abierta cuando el uptime volvió hacia atrás.</string>
+    <string name="gpu_safety_probe_required">Tratar una prueba que no se pudo correr como un fallo</string>
+    <string name="gpu_safety_probe_required_hint">Si no se puede probar la GPU, no arrancar Steam. Apagado, una prueba salteada arranca igual - que es cómo una sesión llega al kernel sin que nada se haya probado.</string>
+    <string name="gpu_guard_probe_skipped_blocked">No se pudo correr la prueba de GPU, así que Steam no arrancó. Apagalo en Configuración, Seguridad, o creá el archivo droiddeck-no-gpu-probe en la carpeta de la app.</string>
 </resources>

@@ -50,6 +50,21 @@ object GpuSafetyPrefs {
         prefs(context).edit().putBoolean("lockAfterFatalBoot", on).apply()
 
     /** A bounded GPU smoke test inside the runtime before gamescope and Steam are started. */
+    /**
+     * Whether a probe that could not be run blocks the launch, as one that failed does.
+     *
+     * On by default on the device this build exists for. A skip means the GPU was never asked, so
+     * starting Steam is starting it blind - which is exactly how this phone came to reboot with a
+     * guard installed and "passed" in its report. Blocking costs a session you then have to allow
+     * on purpose (the `droiddeck-no-gpu-probe` file, or this switch); not blocking costs the
+     * thing the guard is for.
+     */
+    fun probeRequired(context: Context): Boolean =
+        prefs(context).getBoolean("probeRequired", DeviceSupport.mali())
+
+    fun setProbeRequired(context: Context, on: Boolean) =
+        prefs(context).edit().putBoolean("probeRequired", on).apply()
+
     fun preflightProbe(context: Context): Boolean =
         prefs(context).getBoolean("preflightProbe", true)
 

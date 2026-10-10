@@ -58,6 +58,7 @@ internal fun GpuSafetyPanel(host: MenuHost, modifier: Modifier = Modifier) {
     val profileId = remember(tick) { p.chosenProfile(context) }
     val lock = remember(tick) { p.lockAfterFatalBoot(context) }
     val probe = remember(tick) { p.preflightProbe(context) }
+    val probeRequired = remember(tick) { p.probeRequired(context) }
     val watchdog = remember(tick) { p.liveWatchdog(context) }
     val stall = remember(tick) { p.stallBudgetMs(context) }
     val thermal = remember(tick) { p.thermalCeilingC(context) }
@@ -129,6 +130,11 @@ internal fun GpuSafetyPanel(host: MenuHost, modifier: Modifier = Modifier) {
             ToggleRow(host, "gpu-probe", stringResource(R.string.gpu_safety_probe),
                 stringResource(R.string.gpu_safety_probe_hint), probe, enabled = enabled) { on ->
                 p.setPreflightProbe(context, on); apply()
+            }
+            ToggleRow(host, "gpu-probe-required", stringResource(R.string.gpu_safety_probe_required),
+                stringResource(R.string.gpu_safety_probe_required_hint), probeRequired,
+                enabled = enabled && probe) { on ->
+                p.setProbeRequired(context, on); apply()
             }
         }
 

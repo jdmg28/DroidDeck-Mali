@@ -359,12 +359,19 @@ class SessionService : Service() {
         if (gen == sessionGen && SessionState.running && guardPrefs.guardEnabled(this) && guardPrefs.preflightProbe(this)) {
             val probe = com.droiddeck.launcher.gpu.guard.Probe.run(this, guard.profile)
             com.droiddeck.launcher.gpu.guard.Probe.write(sessionDir, probe)
-            if (!probe.ok) {
+            // A skip is not a pass. The GPU was not asked, so nothing has been shown to work, and
+            // launching anyway is how a session reaches the kernel before the guard does.
+            val required = probe.skipped && guardPrefs.probeRequired(this)
+            if (!probe.ok || required) {
                 Log.e(TAG, "gpu guard: the pre-flight probe did not pass: ${probe.summary}")
-                com.droiddeck.launcher.gpu.guard.GpuGuardLog.log("guard", "refusing to start: ${probe.verdict}")
+                com.droiddeck.launcher.gpu.guard.GpuGuardLog.log("guard",
+                    "refusing to start: ${probe.verdict}" + if (required)
+                        " (a probe that could not be run counts as one that failed)" else "")
                 SessionEvents.fail("GPU_PROBE_FAILED", probe.summary, null)
                 mainHandler.post {
-                    android.widget.Toast.makeText(this, getString(R.string.gpu_guard_probe_failed), android.widget.Toast.LENGTH_LONG).show()
+                    android.widget.Toast.makeText(this, getString(
+                        if (required) R.string.gpu_guard_probe_skipped_blocked else R.string.gpu_guard_probe_failed),
+                        android.widget.Toast.LENGTH_LONG).show()
                 }
                 guard.noteGuardStop(this, probe.summary)
                 stopSession(-1)
