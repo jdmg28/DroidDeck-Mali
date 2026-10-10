@@ -277,6 +277,10 @@ internal fun profileLabel(context: Context): String = context.getString(
         SafeProfile.OFF -> R.string.gpu_safety_profile_off
         SafeProfile.SAFE -> R.string.gpu_safety_profile_safe
         SafeProfile.STRICT -> R.string.gpu_safety_profile_strict
+        // The fourth row has to be nameable here too, and it is the one whose name is most likely to be
+        // misread: the card says what a launch will run under, and "software" is a different axis from
+        // the other three - not more limits on the same driver, no driver in the guest at all.
+        SafeProfile.SOFTWARE -> R.string.gpu_safety_profile_software
     },
 )
 
