@@ -75,7 +75,21 @@ jobs:
           fi
           name=$(printf '%s\n' "$names" | head -1)
           gh release download "$TAG" -R "$GITHUB_REPOSITORY" -p "$name" -D "$work"
-          read -r package code cert <<<"$(bash tools/release/apk-identity.sh "$work/$name")"
+          # Not swallowed: if the apk's identity cannot be read, the build below must not be told
+          # it has nothing to match, and the report says what went wrong instead of an empty cell.
+          if ! identity=$(bash tools/release/apk-identity.sh "$work/$name" 2>&1); then
+            echo "::error::cannot read the identity of $name: $identity"
+            {
+              echo "## Baseline: what is published as $TAG"
+              echo
+              echo "\`$name\` could not be read:"
+              echo '```'
+              echo "$identity"
+              echo '```'
+            } > report.md
+            exit 1
+          fi
+          read -r package code cert <<<"$identity"
           echo "Published $TAG ($name): $package, versionCode $code, signer $cert"
           {
             echo "found=true"
@@ -111,13 +125,13 @@ jobs:
             fi
             echo
             echo "Read by [this run]($RUN_URL)."
-          } > "$RUNNER_TEMP/report.md"
-          cat "$RUNNER_TEMP/report.md" >> "$GITHUB_STEP_SUMMARY"
+          } > report.md
+          cat report.md >> "$GITHUB_STEP_SUMMARY"
           if ! gh release view ci-report-latest -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release create ci-report-latest -R "$GITHUB_REPOSITORY" --prerelease \
-              --title "CI report (last build)" --notes-file "$RUNNER_TEMP/report.md"
+              --title "CI report (last build)" --notes-file report.md
           else
-            gh release edit ci-report-latest -R "$GITHUB_REPOSITORY" --notes-file "$RUNNER_TEMP/report.md"
+            gh release edit ci-report-latest -R "$GITHUB_REPOSITORY" --notes-file report.md
           fi
 
   build:
@@ -165,7 +179,18 @@ jobs:
           set -euo pipefail
           apk=app/build/outputs/apk/debug/app-debug.apk
           test -f "$apk"
-          read -r package code cert <<<"$(bash tools/release/apk-identity.sh "$apk")"
+          if ! identity=$(bash tools/release/apk-identity.sh "$apk" 2>&1); then
+            echo "::error::cannot read the identity of the apk this build made: $identity"
+            {
+              echo "## This build"
+              echo
+              echo '```'
+              echo "$identity"
+              echo '```'
+            } > report.md
+            exit 1
+          fi
+          read -r package code cert <<<"$identity"
           echo "This build: $package, versionCode $code, signer $cert"
           {
             echo "package=$package"
@@ -293,3 +318,41 @@ jobs:
           name: DroidDeck-Mali-G615-APK
           path: app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
+
+      - name: Report
+        if: always()
+        env:
+          THIS_PACKAGE: ${{ steps.identity.outputs.package }}
+          THIS_CODE: ${{ steps.identity.outputs.version_code }}
+          THIS_CERT: ${{ steps.identity.outputs.cert_sha256 }}
+          FOUND: ${{ needs.baseline.outputs.found }}
+          OLD_NAME: ${{ needs.baseline.outputs.name }}
+          OLD_PACKAGE: ${{ needs.baseline.outputs.package }}
+          OLD_CODE: ${{ needs.baseline.outputs.version_code }}
+          OLD_CERT: ${{ needs.baseline.outputs.cert_sha256 }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          [ -f report.md ] || echo "## This build" > report.md
+          {
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| this build's applicationId | \`$THIS_PACKAGE\` |"
+            echo "| this build's versionCode | **$THIS_CODE** |"
+            echo "| this build's signer | \`$THIS_CERT\` |"
+            echo "| published asset | \`$OLD_NAME\` |"
+            echo "| published applicationId | \`$OLD_PACKAGE\` |"
+            echo "| published versionCode | **$OLD_CODE** |"
+            echo "| published signer | \`$OLD_CERT\` |"
+            echo
+            echo "Read by [this run]($RUN_URL) from \`${{ github.sha }}\`. The AOSP testkey's"
+            echo "certificate is \`a40da80a59d170caa950cf15c18c454d47a39b26989d8b640ecd745ba71bf5dc\`."
+          } >> report.md
+          cat report.md >> "$GITHUB_STEP_SUMMARY"
+          if ! gh release view ci-report-latest -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create ci-report-latest -R "$GITHUB_REPOSITORY" --prerelease \
+              --title "CI report (last build)" --notes-file report.md
+          else
+            gh release edit ci-report-latest -R "$GITHUB_REPOSITORY" --notes-file report.md
+          fi
