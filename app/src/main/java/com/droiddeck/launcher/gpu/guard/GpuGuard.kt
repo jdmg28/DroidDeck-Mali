@@ -498,6 +498,9 @@ object GpuGuard {
                     "cannot fire; only the wedged-process and thermal checks are live"
             else "")
 
+        lines.add("  driver trace: ${if (p.driverTrace(app)) "on - droiddeck-driver-trace.log in the " +
+            "session folder (one line per submit and present, written as it happens, so the call a " +
+            "device dies inside is the last line of the file)" else "off"}")
         val probeOn = p.preflightProbe(app)
         lines.add("  pre-flight probe: $probeOn")
         val probeAt = p.lastProbeAt(app)

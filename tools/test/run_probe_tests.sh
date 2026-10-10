@@ -69,6 +69,32 @@ check() {
     fi
 }
 
+# The probe declares its Vulkan structs by hand, because the guest has no headers and no compiler.
+# That is how a wrong layout survives review: VkPhysicalDeviceProperties has no sType/pNext, unlike
+# nearly every other Vulkan struct, and one revision of this probe "corrected" that omission, which
+# shifted every field 16 bytes and made the device name read the driver version. The fake loader
+# below could not catch it, because it was written from the same assumption - and a mock that repeats
+# a mistake proves nothing. So where real headers are within reach, the ABI gets the last word.
+VK_INC="${VULKAN_INCLUDE_DIR:-}"
+if [ -z "$VK_INC" ]; then
+    for guess in /usr/include /usr/local/include; do
+        [ -f "$guess/vulkan/vulkan_core.h" ] && VK_INC="$guess" && break
+    done
+fi
+
+if [ -n "$VK_INC" ] && [ -f "$HERE/check_probe_layout.py" ]; then
+    if cc -O0 -I"$VK_INC" -o "$WORK/vulkan_offsets" "$HERE/vulkan_offsets.c" 2>"$WORK/offsets-build.log"; then
+        python3 "$HERE/check_probe_layout.py" "$WORK/vulkan_offsets" "$WORK/probe.py" || FAILED=1
+    else
+        echo "  FAIL the ABI checker did not build; the probe's struct layout went unverified"
+        sed 's/^/       /' "$WORK/offsets-build.log" | head -10
+        FAILED=1
+    fi
+elif [ -z "$VK_INC" ]; then
+    echo "  (no Vulkan headers found: the struct layout check is skipped. CI runs it with"
+    echo "   VULKAN_INCLUDE_DIR pointing at KhronosGroup/Vulkan-Headers - see gpu-guard-ci.yml)"
+fi
+
 echo "droiddeck-gpu-probe against the fake loader:"
 check "a working GPU passes and names itself"  ""                    "DD_GPU_PROBE_OK: "              0
 check "the device is reported as the Mali-G615" ""                   "Mali-G615 MC6"                  0

@@ -315,13 +315,13 @@ class VkPhysicalDeviceProperties(ctypes.Structure):
     # end of this object. Oversized on purpose: a Vulkan version that grows the struct must not
     # turn this probe into memory corruption.
     _fields_ = [
-        # sType and pNext come first in the real struct, and leaving them out is not a small
-        # mistake: it shifts everything by 16 bytes, so the name read back is the driver version
-        # and the first half of the vendor id. The device then never identifies itself as a
-        # Mali-G615, and the check that is supposed to prove the right driver answered silently
-        # reads nonsense.
-        ("sType", ctypes.c_uint32),
-        ("pNext", ctypes.c_void_p),
+        # There is no sType and no pNext here, and that is not an oversight: Vulkan puts those on
+        # VkPhysicalDeviceProperties2, not on this struct, and almost every other Vulkan structure
+        # begins with them, so "add the two missing fields" reads like a fix. It is not one. An
+        # earlier revision of this probe did exactly that, and every field started reading 16 bytes
+        # high - which is the same bug it was written to correct, pointed the other way. The layout
+        # is checked against the real header by tools/test/run_probe_tests.sh; change it only if
+        # that check agrees.
         ("apiVersion", ctypes.c_uint32),
         ("driverVersion", ctypes.c_uint32),
         ("vendorID", ctypes.c_uint32),

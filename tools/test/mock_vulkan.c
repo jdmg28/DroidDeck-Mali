@@ -27,9 +27,10 @@ typedef uint64_t VkDeviceMemory;
 typedef uint64_t VkFence;
 typedef uint64_t VkCommandPool;
 
+/* No sType/pNext: VkPhysicalDeviceProperties is one of the few Vulkan structs without them, and a
+   mock that repeats a wrong assumption validates nothing. The offsets are asserted against the real
+   header in tools/test/run_probe_tests.sh. */
 typedef struct {
-    uint32_t sType;
-    void *pNext;
     uint32_t apiVersion, driverVersion, vendorID, deviceID, deviceType;
     char deviceName[256];
     uint8_t tail[2048];

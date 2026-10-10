@@ -705,6 +705,11 @@ class SessionService : Service() {
         if (!mali) LinuxRuntime.vulkanIcd(this)?.let { guest.add("VK_ICD_FILENAMES=" + it.path) }
         if (mali) {
             guest.add("BL_GPU_FAMILY=mali")
+            // The driver package's own instrument. "1" means "into the session folder", which the
+            // adapter resolves from BL_DEBUG_DIR set above; it never writes anywhere the app has
+            // not already agreed to share, and a session that dies mid-call leaves the call behind.
+            if (com.droiddeck.launcher.gpu.guard.GpuSafetyPrefs.driverTrace(this))
+                guest.add("DD_ADAPTER_TRACE=1")
             // Hardware rendering, initially presented by CPU/SHM WSI for compatibility.
             guest.add("PANVK_KBASE_DRI3=0")
             guest.add("LIBGL_KOPPER_DISABLE=false")

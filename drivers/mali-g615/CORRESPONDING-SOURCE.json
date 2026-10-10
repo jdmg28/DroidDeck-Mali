@@ -1,0 +1,6 @@
+{
+  "panvkGitCommit": "b44d916807dae25aa3c6a50b188dd18489d0c258",
+  "panvkSourceArchive": "https://github.com/zenithblue-oss/panvk-kbase-android/archive/b44d916807dae25aa3c6a50b188dd18489d0c258.tar.gz",
+  "mesaGitCommit": "5a07217f034b3e50d8c7c7794f97a2df1742613b",
+  "note": "The adapter does not change this upstream binary. Exact backend build/patch provenance is retained in the original SOURCE.json and MANIFEST.json."
+}

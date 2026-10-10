@@ -2144,6 +2144,8 @@
     <string name="gpu_safety_probe">Test the GPU first</string>
     <string name="gpu_safety_probe_hint">Runs one small job inside the runtime before Steam starts. If the GPU will not finish it, the session does not start.</string>
     <string name="gpu_safety_during">While a session runs</string>
+    <string name="gpu_safety_driver_trace">Trace the driver\'s GPU calls</string>
+    <string name="gpu_safety_driver_trace_hint">One line in the session folder for every submit and present, written as it happens. It is how a hang that takes the phone down can be told apart from a call that never returns - the one question frame timings cannot answer. It costs a storage sync per call, so leave it on while you are looking for something.</string>
     <string name="gpu_safety_watchdog">Watch for a stalled GPU</string>
     <string name="gpu_safety_watchdog_hint">Ends the session when it stops presenting frames, when its processes are wedged on the GPU, or when the device gets too hot.</string>
     <string name="gpu_safety_stall">No frame for</string>

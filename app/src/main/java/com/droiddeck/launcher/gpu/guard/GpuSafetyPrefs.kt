@@ -71,6 +71,21 @@ object GpuSafetyPrefs {
     fun setPreflightProbe(context: Context, on: Boolean) =
         prefs(context).edit().putBoolean("preflightProbe", on).apply()
 
+    /**
+     * Ask the driver package to write one line per GPU call into the session folder.
+     *
+     * Off by default and off for every device but this one: it costs a write() and an fsync per
+     * submit and present, which is not nothing in a session that is already struggling, and it
+     * only pays for itself while someone is trying to find out where a hang begins. It is the one
+     * thing here that can tell a driver that blocks inside vkQueueSubmit apart from a GPU that
+     * accepts the work and never finishes it - and those two want opposite fixes.
+     */
+    fun driverTrace(context: Context): Boolean =
+        prefs(context).getBoolean("driverTrace", false)
+
+    fun setDriverTrace(context: Context, on: Boolean) =
+        prefs(context).edit().putBoolean("driverTrace", on).apply()
+
     /** The live watchdog while a session runs: frames, wedged processes, temperature. */
     fun liveWatchdog(context: Context): Boolean =
         prefs(context).getBoolean("liveWatchdog", true)

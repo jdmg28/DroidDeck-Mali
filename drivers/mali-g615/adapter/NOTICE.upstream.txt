@@ -1,0 +1,26 @@
+DroidDeck Mali-G615 experimental driver import package 0.1.0
+
+This package requires the matching DroidDeck source patch. The official APK is
+not sufficient. Import under the Linux Runtime driver, NEVER the Android
+Display driver. Keep Display on Auto (system Mali Vulkan).
+
+No root, kernel replacement or vendor driver replacement is performed.
+PanVK performs the actual GPU rendering. The adapter only adds a render-node
+compatibility facade for gamescope on a Mali-G615; all other GPU capabilities
+are delegated. Steam/Big Picture on your stock phone has NOT been validated.
+
+Sources and authors:
+- DroidDeck, GPL-3.0: https://github.com/Droid-Deck/DroidDeck
+- PanVK-kbase: https://github.com/zenithblue-oss/panvk-kbase-android
+  Release panvk-kbase-v0.1.0-rc2; original binary is included unchanged.
+  Mesa base 5a07217f034b3e50d8c7c7794f97a2df1742613b.
+  Exact corresponding patch/build source is linked in SOURCE.json and in the kit.
+- Mesa: https://gitlab.freedesktop.org/mesa/mesa
+  See licenses/Mesa-license.rst and the upstream release SOURCE.json.
+- DroidDeck Mali prior integration/reference:
+  https://github.com/emir34-34/DroidDeck/tree/mediatek-mali-support
+  Prior fork reports Steam on a Mali-G720, not validation of this G615 kit.
+- This adapter's source and MIT license are included.
+
+Do not disable SELinux or change /vendor libraries to try to make this work.
+If the GPU hangs or the phone overheats, stop the experiment.
