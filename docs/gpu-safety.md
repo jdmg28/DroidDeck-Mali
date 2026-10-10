@@ -294,6 +294,10 @@ What it changes, and what it was verified against:
   import, use the runtime's own driver) is deliberately not present here, because falling back is how a
   session that promised no GPU ends up opening one. Both Mali gates in that script carry
   `&& [ "${BL_SOFTWARE_VULKAN:-}" != 1 ]`, so the hardware path cannot be re-armed by accident.
+  The importer is the *only* channel: `BL_VK_DRIVER` is set by the app from its own
+  `files/linux_vulkan_drivers/<id>/`, and nothing scans a fixed path in the guest for a `.so`. Writing
+  "put it in `~/drivers`" is not a shorthand, it is a wrong instruction - a file there is never read, and
+  the session then reports a missing driver to someone who is certain they installed one.
 - **Auto cannot pick a hardware driver on Mali.** On this device "no driver selected" is not neutral: the
   runtime's built-in ICD is PanVK, so an Auto that chose nothing would be an Auto that chose the GPU.
   `DriverMenus.autoSoftwareOnMali` selects the imported software driver - and with none imported, it says
