@@ -45,7 +45,8 @@ public final class DriverArchivePolicy {
                         || name.matches("libtinfo\\.so\\.[0-9]+")
                         || name.matches("libbsd\\.so\\.[0-9]+")
                         || name.matches("libmd\\.so\\.[0-9]+")
-                        || name.matches("libz3\\.so\\.[0-9]+"));
+                        || name.matches("libz3\\.so\\.[0-9]+")
+                        || name.matches("libxml2\\.so\\.[0-9]+"));
     }
     public static boolean isBackendLibrary(String name) {
         return BACKEND_NAME.equals(name);

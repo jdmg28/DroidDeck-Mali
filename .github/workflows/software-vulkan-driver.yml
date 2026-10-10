@@ -41,6 +41,8 @@ env:
   LIBMD_DEB_SHA256: 772e86842fd3fa1816a0cfee4833a73996aaa550461491543b886b9c8f999052
   LIBZ3_DEB_URL: https://deb.debian.org/debian/pool/main/z/z3/libz3-4_4.13.3-1_arm64.deb
   LIBZ3_DEB_SHA256: 29a7b924a5a38c9ac4e2a64aa11586a9c54f26b579b18e4f75adf8f7c1106e45
+  LIBXML2_DEB_URL: https://deb.debian.org/debian/pool/main/libx/libxml2/libxml2_2.12.7+dfsg+really2.9.14-2.1+deb13u3_arm64.deb
+  LIBXML2_DEB_SHA256: a66b9c960acef8ed9653223cbd00b155a92ebb758ea13a788c41609246c23bc7
   # Where the app installs the runtime from, and the file inside it whose glibc decides whether
   # anything built for 2.38 can load at all.
   RUNTIME_CATALOG: https://raw.githubusercontent.com/The412Banner/winlator-contents/main/linuxfs.json
@@ -154,6 +156,7 @@ jobs:
               libbsd.so.0) echo "$LIBBSD_DEB_URL $LIBBSD_DEB_SHA256 libbsd0" ;;
               libmd.so.0) echo "$LIBMD_DEB_URL $LIBMD_DEB_SHA256 libmd0" ;;
               libz3.so.4) echo "$LIBZ3_DEB_URL $LIBZ3_DEB_SHA256 libz3-4" ;;
+              libxml2.so.2) echo "$LIBXML2_DEB_URL $LIBXML2_DEB_SHA256 libxml2" ;;
               *) return 1 ;;
             esac
           }
