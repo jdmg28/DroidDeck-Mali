@@ -33,8 +33,12 @@ jobs:
       DROIDDECK_NDK_VERSION: 27.3.13750724
       # Steam client is the target. Skip optional GOG/Epic/Amazon Rust engines for this branch.
       DROIDDECK_SKIP_RUST: 1
-      RELEASE_TAG: gpu-guard-latest
+      # Where this build is published...
+      RELEASE_TAG: software-mode-latest
       RELEASE_ASSET: DroidDeck-Mali-G615-debug.apk
+      # ...and the release the APK on the phone came from, which is what each build is checked
+      # against: an update has to match its package and its signer, and raise its version code.
+      BASELINE_TAG: gpu-guard-latest
     steps:
       - uses: actions/checkout@v4
         with:
@@ -46,6 +50,8 @@ jobs:
           java-version: '17'
 
       - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
 
       - name: Install build prerequisites
         run: |
@@ -73,10 +79,10 @@ jobs:
             echo "cert_sha256=$cert"
           } >> "$GITHUB_OUTPUT"
 
-      - name: What is published as ${{ env.RELEASE_TAG }} today
+      - name: What is published as ${{ env.BASELINE_TAG }} today
         id: published
         env:
-          TAG: ${{ env.RELEASE_TAG }}
+          TAG: ${{ env.BASELINE_TAG }}
         run: |
           set -euo pipefail
           work=$RUNNER_TEMP/published
@@ -158,9 +164,9 @@ jobs:
             echo "|---|---|---|---|"
             echo "| this build | \`$THIS_PACKAGE\` | $THIS_CODE | \`$THIS_CERT\` |"
             if [ "$FOUND" = true ]; then
-              echo "| published \`$RELEASE_TAG\` ($OLD_NAME) | \`$OLD_PACKAGE\` | $OLD_CODE | \`$OLD_CERT\` |"
+              echo "| published \`$BASELINE_TAG\` ($OLD_NAME) | \`$OLD_PACKAGE\` | $OLD_CODE | \`$OLD_CERT\` |"
             else
-              echo "| published \`$RELEASE_TAG\` | - | - | - (nothing published yet) |"
+              echo "| published \`$BASELINE_TAG\` | - | - | - (nothing published yet) |"
             fi
             echo
             echo "Built by [this run]($RUN_URL) from \`${{ github.sha }}\`."
