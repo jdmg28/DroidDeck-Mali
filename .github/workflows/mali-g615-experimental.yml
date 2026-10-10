@@ -20,8 +20,103 @@ concurrency:
   group: mali-g615-apk-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  # Where this branch's APK is published...
+  RELEASE_TAG: software-mode-latest
+  RELEASE_ASSET: DroidDeck-Mali-G615-debug.apk
+  # ...and the release the APK on the phone came from, which is what every build is checked
+  # against: an update has to match its package and its signer, and raise its version code.
+  BASELINE_TAG: gpu-guard-latest
+
 jobs:
+  # What is on the phone today, read before anything is built: the numbers the build below has to
+  # match. It also leaves them in the notes of the ci-report-latest release, so a failure here can
+  # be read without opening the run's log.
+  baseline:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    outputs:
+      found: ${{ steps.published.outputs.found }}
+      name: ${{ steps.published.outputs.name }}
+      package: ${{ steps.published.outputs.package }}
+      version_code: ${{ steps.published.outputs.version_code }}
+      cert_sha256: ${{ steps.published.outputs.cert_sha256 }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Android build tools
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends gh jq
+          sdkmanager 'platform-tools' 'build-tools;34.0.0'
+
+      - name: Read the published APK
+        id: published
+        env:
+          TAG: ${{ env.BASELINE_TAG }}
+        run: |
+          set -euo pipefail
+          work=$RUNNER_TEMP/baseline
+          mkdir -p "$work"
+          names=$(gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json assets \
+                    --jq '.assets[].name | select(test("\\.apk$"))')
+          if [ -z "$names" ]; then
+            echo "No apk on $TAG."
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          name=$(printf '%s\n' "$names" | head -1)
+          gh release download "$TAG" -R "$GITHUB_REPOSITORY" -p "$name" -D "$work"
+          read -r package code cert <<<"$(bash tools/release/apk-identity.sh "$work/$name")"
+          echo "Published $TAG ($name): $package, versionCode $code, signer $cert"
+          {
+            echo "found=true"
+            echo "name=$name"
+            echo "package=$package"
+            echo "version_code=$code"
+            echo "cert_sha256=$cert"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Report
+        if: always()
+        env:
+          FOUND: ${{ steps.published.outputs.found }}
+          OLD_NAME: ${{ steps.published.outputs.name }}
+          OLD_PACKAGE: ${{ steps.published.outputs.package }}
+          OLD_CODE: ${{ steps.published.outputs.version_code }}
+          OLD_CERT: ${{ steps.published.outputs.cert_sha256 }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          {
+            echo "## Baseline: what is published as $BASELINE_TAG"
+            echo
+            if [ "$FOUND" = true ]; then
+              echo "| | |"
+              echo "|---|---|"
+              echo "| asset | \`$OLD_NAME\` |"
+              echo "| applicationId | \`$OLD_PACKAGE\` |"
+              echo "| versionCode | **$OLD_CODE** |"
+              echo "| signing certificate SHA-256 | \`$OLD_CERT\` |"
+            else
+              echo "No apk published as \`$BASELINE_TAG\`."
+            fi
+            echo
+            echo "Read by [this run]($RUN_URL)."
+          } > "$RUNNER_TEMP/report.md"
+          cat "$RUNNER_TEMP/report.md" >> "$GITHUB_STEP_SUMMARY"
+          if ! gh release view ci-report-latest -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create ci-report-latest -R "$GITHUB_REPOSITORY" --prerelease \
+              --title "CI report (last build)" --notes-file "$RUNNER_TEMP/report.md"
+          else
+            gh release edit ci-report-latest -R "$GITHUB_REPOSITORY" --notes-file "$RUNNER_TEMP/report.md"
+          fi
+
   build:
+    needs: baseline
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     env:
@@ -33,12 +128,6 @@ jobs:
       DROIDDECK_NDK_VERSION: 27.3.13750724
       # Steam client is the target. Skip optional GOG/Epic/Amazon Rust engines for this branch.
       DROIDDECK_SKIP_RUST: 1
-      # Where this build is published...
-      RELEASE_TAG: software-mode-latest
-      RELEASE_ASSET: DroidDeck-Mali-G615-debug.apk
-      # ...and the release the APK on the phone came from, which is what each build is checked
-      # against: an update has to match its package and its signer, and raise its version code.
-      BASELINE_TAG: gpu-guard-latest
     steps:
       - uses: actions/checkout@v4
         with:
@@ -79,46 +168,16 @@ jobs:
             echo "cert_sha256=$cert"
           } >> "$GITHUB_OUTPUT"
 
-      - name: What is published as ${{ env.BASELINE_TAG }} today
-        id: published
-        env:
-          TAG: ${{ env.BASELINE_TAG }}
-        run: |
-          set -euo pipefail
-          work=$RUNNER_TEMP/published
-          mkdir -p "$work"
-          # The asset's name has changed between builds of this branch, so take whatever apk the
-          # release carries rather than guess at it.
-          names=$(gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json assets \
-                    --jq '.assets[].name | select(test("\\.apk$"))')
-          if [ -z "$names" ]; then
-            echo "No apk on $TAG: this build is the first, and the comparison below has nothing to check it against."
-            echo "found=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          name=$(printf '%s\n' "$names" | head -1)
-          echo "Published as $TAG: $name"
-          gh release download "$TAG" -R "$GITHUB_REPOSITORY" -p "$name" -D "$work"
-          read -r package code cert <<<"$(bash tools/release/apk-identity.sh "$work/$name")"
-          echo "Published: $package, versionCode $code, signer $cert"
-          {
-            echo "found=true"
-            echo "name=$name"
-            echo "package=$package"
-            echo "version_code=$code"
-            echo "cert_sha256=$cert"
-          } >> "$GITHUB_OUTPUT"
-
       - name: It installs over the published build
         env:
           THIS_PACKAGE: ${{ steps.identity.outputs.package }}
           THIS_CODE: ${{ steps.identity.outputs.version_code }}
           THIS_CERT: ${{ steps.identity.outputs.cert_sha256 }}
-          FOUND: ${{ steps.published.outputs.found }}
-          OLD_NAME: ${{ steps.published.outputs.name }}
-          OLD_PACKAGE: ${{ steps.published.outputs.package }}
-          OLD_CODE: ${{ steps.published.outputs.version_code }}
-          OLD_CERT: ${{ steps.published.outputs.cert_sha256 }}
+          FOUND: ${{ needs.baseline.outputs.found }}
+          OLD_NAME: ${{ needs.baseline.outputs.name }}
+          OLD_PACKAGE: ${{ needs.baseline.outputs.package }}
+          OLD_CODE: ${{ needs.baseline.outputs.version_code }}
+          OLD_CERT: ${{ needs.baseline.outputs.cert_sha256 }}
         run: |
           set -euo pipefail
           fail=0
@@ -149,11 +208,11 @@ jobs:
           THIS_PACKAGE: ${{ steps.identity.outputs.package }}
           THIS_CODE: ${{ steps.identity.outputs.version_code }}
           THIS_CERT: ${{ steps.identity.outputs.cert_sha256 }}
-          FOUND: ${{ steps.published.outputs.found }}
-          OLD_NAME: ${{ steps.published.outputs.name }}
-          OLD_PACKAGE: ${{ steps.published.outputs.package }}
-          OLD_CODE: ${{ steps.published.outputs.version_code }}
-          OLD_CERT: ${{ steps.published.outputs.cert_sha256 }}
+          FOUND: ${{ needs.baseline.outputs.found }}
+          OLD_NAME: ${{ needs.baseline.outputs.name }}
+          OLD_PACKAGE: ${{ needs.baseline.outputs.package }}
+          OLD_CODE: ${{ needs.baseline.outputs.version_code }}
+          OLD_CERT: ${{ needs.baseline.outputs.cert_sha256 }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail

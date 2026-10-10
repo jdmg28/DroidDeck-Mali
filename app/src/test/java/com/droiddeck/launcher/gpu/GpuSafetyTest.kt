@@ -3,6 +3,7 @@ package com.droiddeck.launcher.gpu
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
+import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -18,6 +19,13 @@ import org.robolectric.annotation.Config
 @Config(sdk = [33])
 class GpuSafetyTest {
     private val app get() = RuntimeEnvironment.getApplication()
+
+    /** Nothing chosen, and no runtime driver: every test starts from a fresh install. */
+    @Before fun fresh() {
+        app.getSharedPreferences("session", 0).edit()
+            .remove("gpuSafety").remove("linuxDriver").remove("linuxDriver.steam").remove("linuxDriver.desktop")
+            .apply()
+    }
 
     @Test fun anInstallThatHasNeverChosenIsAuto() {
         assertEquals(GpuSafety.AUTO, GpuSafety.profile(app))
