@@ -241,19 +241,11 @@ jobs:
           python3 tools/lavapipe/check_sizes.py --archive "$ZIP" --stage stage \
             --policy app/src/main/java/com/droiddeck/launcher/gpu/DriverArchivePolicy.java --zip "$ZIP"
           python3 tools/lavapipe/check_archive.py "$ZIP"
-          sha256sum "$ZIP" > sha256.txt
-          cat sha256.txt
-          unzip -l "$ZIP"
-          ) > "$RUNNER_TEMP/package.log" 2>&1
-          status=$?
-          set -e
-          cat "$RUNNER_TEMP/package.log"
-          if [ "$status" = 0 ]; then
-            # The numbers the release notes will quote. Anything a caller cannot read back is not
-            # evidence, and the run summary lives on a host the machine maintaining this cannot reach.
-            python3 - "$ZIP" >> "$GITHUB_OUTPUT" <<'PYP'
-          # Read out of the archive that was just built, not out of a log: the release should quote the
-          # numbers the file carries, which is also the only version of them anybody can verify later.
+          # The numbers the release notes will quote, read back out of the archive that was just built -
+          # not from a log, and not from a variable that happens to be set only inside this subshell,
+          # which is how the first version of this failed a run. Failure to read them is not a reason to
+          # refuse a package that passed every real gate, so it says so and goes on.
+          if ! python3 - "$ZIP" >> "$GITHUB_OUTPUT" <<'PYP'
           import json, sys, zipfile
           with zipfile.ZipFile(sys.argv[1]) as zf:
               meta = json.loads(zf.read("meta.json"))
@@ -261,7 +253,17 @@ jobs:
           print("min_glibc=" + (str(meta.get("minGlibc")) or "?"))
           print("sizes=" + ", ".join("%s %s bytes" % (i.filename, format(i.file_size, ",")) for i in libs))
           PYP
+          then
+            echo "min_glibc=?" >> "$GITHUB_OUTPUT"
+            echo "sizes=(not read back from the archive)" >> "$GITHUB_OUTPUT"
           fi
+          sha256sum "$ZIP" > sha256.txt
+          cat sha256.txt
+          unzip -l "$ZIP"
+          ) > "$RUNNER_TEMP/package.log" 2>&1
+          status=$?
+          set -e
+          cat "$RUNNER_TEMP/package.log"
           if [ "$status" != 0 ]; then
             echo "::error::packaging failed (exit $status): $(tr '\n' '|' < "$RUNNER_TEMP/package.log" | tail -c 900)"
             exit 1
