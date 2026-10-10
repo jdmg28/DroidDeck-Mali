@@ -21,6 +21,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
+  GH_TOKEN: ${{ github.token }}
   # Where this branch's APK is published...
   RELEASE_TAG: software-mode-latest
   RELEASE_ASSET: DroidDeck-Mali-G615-debug.apk
@@ -46,12 +47,16 @@ jobs:
         with:
           persist-credentials: false
 
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+
       - name: Android build tools
         run: |
           set -euo pipefail
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends gh jq
-          sdkmanager 'platform-tools' 'build-tools;34.0.0'
+          sdkmanager 'build-tools;34.0.0'
 
       - name: Read the published APK
         id: published

@@ -22,6 +22,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
+  GH_TOKEN: ${{ github.token }}
   # Debian trixie, arm64. Both are pinned by checksum and both are what the mesa 25.0.7 in trixie
   # was built against, so the driver and its LLVM come from one release.
   MESA_DEB_URL: https://deb.debian.org/debian/pool/main/m/mesa/mesa-vulkan-drivers_25.0.7-2+deb13u1_arm64.deb
@@ -72,9 +73,20 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p rootfs/usr/lib
-          time tar --zstd -xf linuxfs.tar.zst -C rootfs --wildcards 'usr/lib/*' --no-same-owner --no-same-permissions
+          # --no-anchored: the archive names its members usr/lib/... or ./usr/lib/... depending on
+          # how it was made, and one pass over 2.5 GB is not something to do twice to find out.
+          time tar --zstd -xf linuxfs.tar.zst -C rootfs --wildcards --no-anchored 'usr/lib/*' \
+            --no-same-owner --no-same-permissions
           du -sh rootfs
-          ls -l rootfs/usr/lib/libc.so.6 rootfs/usr/lib/ld-linux-aarch64.so.1
+          find rootfs -name 'libc.so.6' -o -name 'ld-linux-aarch64.so.1' | head
+          # Nothing extracted is a failure, not a warning: everything below reads these files.
+          libc=$(find rootfs -name 'libc.so.6' | head -1)
+          if [ -z "$libc" ]; then
+            echo "::error::no libc.so.6 under usr/lib in the runtime archive; here is what it has:"
+            tar --zstd -tf linuxfs.tar.zst 2>/dev/null | head -20
+            exit 1
+          fi
+          echo "libc=$libc" >> "$GITHUB_ENV"
 
       - name: Measure the runtime's glibc
         id: glibc
