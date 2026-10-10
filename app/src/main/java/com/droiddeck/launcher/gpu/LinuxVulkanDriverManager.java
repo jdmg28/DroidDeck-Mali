@@ -335,9 +335,12 @@ public class LinuxVulkanDriverManager {
             meta.put("sourceLibraryName", soName);
             meta.put("gpuVendor", vendor);
             if (!companions.isEmpty()) {
-                org.json.JSONArray names = new org.json.JSONArray();
-                for (String name : companions) names.put(name);
-                meta.put("companions", names);
+                org.json.JSONArray list = new org.json.JSONArray();
+                // `companion`, not `name`: the display name is already `name` in this method, and Java
+                // refuses a second one rather than shadowing it - which is the only reason this was a
+                // compile error instead of a driver whose companions array silently overwrote nothing.
+                for (String companion : companions) list.put(companion);
+                meta.put("companions", list);
             }
             meta.put("vulkanApiVersion", apiVersion);
             meta.put("importedAt", System.currentTimeMillis());
