@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
   checks: write
 
 jobs:
@@ -78,3 +78,56 @@ jobs:
           name: DroidDeck-GPU-Guard-debug-APK
           path: app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
+
+      # An artifact download is always a .zip, and "there was a problem parsing the package" is
+      # what Android says when it is handed one. A release asset downloads as a raw .apk. The
+      # same step prints everything needed to tell a bad download from a bad package.
+      - name: Publish a raw APK and describe it
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          APK=$(ls app/build/outputs/apk/debug/*.apk | head -1)
+          echo "== file: $APK"
+          ls -l "$APK"
+          sha256sum "$APK"
+          unzip -t "$APK" >/dev/null && echo "== zip integrity: OK"
+          "$ANDROID_HOME/build-tools/34.0.0/aapt2" dump badging "$APK" | head -6 || true
+          python3 - "$APK" <<'PY'
+          import struct, sys, zipfile
+          apk = zipfile.ZipFile(sys.argv[1])
+          bad = []
+          for name in apk.namelist():
+              if not name.endswith(".so"):
+                  continue
+              data = apk.read(name)[:64]
+              if data[:4] != b"\x7fELF":
+                  continue
+              is64 = data[4] == 2
+              e_phoff = struct.unpack_from("<Q", data, 0x20)[0]
+              e_phentsize, e_phnum = struct.unpack_from("<HH", data, 0x36)
+              head = apk.read(name)[e_phoff:e_phoff + e_phentsize * e_phnum]
+              align = 0
+              for i in range(e_phnum):
+                  off = i * (56 if is64 else 32)
+                  p_type = struct.unpack_from("<I", head, off)[0]
+                  if p_type != 1:          # PT_LOAD
+                      continue
+                  p_align = struct.unpack_from("<Q", head, off + (48 if is64 else 28))[0]
+                  align = max(align, p_align)
+              if align and align < 16384:
+                  bad.append("%s (p_align %d)" % (name, align))
+          print("== 16 KB page alignment: " +
+                ("all libraries are 16 KB aligned" if not bad
+                 else "NOT aligned, a 16 KB-page device will refuse these: " + ", ".join(bad)))
+          PY
+          cp "$APK" DroidDeck-GPU-Guard-debug.apk
+          gh release delete gpu-guard-latest --yes --cleanup-tag 2>/dev/null || true
+          gh release create gpu-guard-latest DroidDeck-GPU-Guard-debug.apk \
+            --prerelease \
+            --title "DroidDeck GPU guard - experimental debug build" \
+            --notes "Debug build of jdmg28/DroidDeck-Mali-G615, branch ${{ github.ref_name }}, commit ${{ github.sha }}, workflow run ${{ github.run_id }}.
+
+          Application id com.droiddeck.launcher.mali.g615, so it installs beside the official app.
+          Experimental: it exists to keep the phone from rebooting while the Mali driver is being
+          debugged, not to make games run. See docs/gpu-safety.md in the tree."
