@@ -66,7 +66,21 @@ trap 'collect_steam_logs 2>/dev/null || true' TERM INT HUP
 # VK_DRIVER_FILES REPLACES the loader's search, so a manifest whose library is unreadable would
 # leave the session with no Vulkan at all - check both before setting it, and say so in the log
 # rather than fail silently half a minute later.
-if [ "${BL_GPU_FAMILY:-}" = mali ] && [ -z "${BL_VK_DRIVER:-}" ]; then
+# GPU safety (BL_GPU_SAFETY): "software" means the app has kept the device's own GPU out of the
+# guest - no /dev/mali0, no render node - and the session draws with an imported CPU driver
+# (lavapipe). Nothing here asks the GPU for anything in that mode: no probe, no PanVK requirement.
+software=no
+[ "${BL_GPU_SAFETY:-}" = software ] && software=yes
+if [ "$software" = yes ]; then
+  # A stat, not an open: what the guest sees where the device node would be. "no char device"
+  # is the whole point, and it is what the app's bind was put there for.
+  if [ -c /dev/mali0 ]; then
+    echo "== gpu safety: SOFTWARE, but /dev/mali0 IS still a character device in the guest"
+  else
+    echo "== gpu safety: SOFTWARE - /dev/mali0 is not a character device in the guest"
+  fi
+fi
+if [ "$software" != yes ] && [ "${BL_GPU_FAMILY:-}" = mali ] && [ -z "${BL_VK_DRIVER:-}" ]; then
   echo "DD_MALI_DRIVER_REQUIRED: import/select the Linux PanVK package; Turnip cannot run on Mali"
   exit 78
 fi
@@ -86,6 +100,10 @@ if [ -n "${BL_VK_DRIVER:-}" ]; then
     export VK_ICD_FILENAMES="$BL_VK_DRIVER"
     echo "== vulkan driver: imported $bl_icd_lib (via $BL_VK_DRIVER)"
   else
+    if [ "$software" = yes ]; then
+      echo "DD_SOFTWARE_BAD_ICD: manifest or library is unreadable: $BL_VK_DRIVER"
+      exit 78
+    fi
     if [ "${BL_GPU_FAMILY:-}" = mali ]; then
       echo "DD_MALI_BAD_ICD: manifest or backend wrapper is unreadable: $BL_VK_DRIVER"
       exit 78
@@ -94,7 +112,9 @@ if [ -n "${BL_VK_DRIVER:-}" ]; then
   fi
   unset bl_icd_lib
 fi
-if [ "${BL_GPU_FAMILY:-}" = mali ] && [ -z "${BL_INSIDE:-}" ]; then
+# The Mali probe loads the imported ICD and enumerates devices: GPU work, and the one thing
+# software mode exists to avoid. Skipped there; it also never runs inside gamescope's own pass.
+if [ "$software" != yes ] && [ "${BL_GPU_FAMILY:-}" = mali ] && [ -z "${BL_INSIDE:-}" ]; then
   /usr/local/bin/droiddeck-mali-check || exit 78
 fi
 # The app's gamescope build (tools/gamescope) asks for realtime-priority Vulkan queues on this

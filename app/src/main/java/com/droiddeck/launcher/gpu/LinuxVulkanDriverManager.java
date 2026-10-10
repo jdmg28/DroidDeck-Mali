@@ -72,8 +72,24 @@ public class LinuxVulkanDriverManager {
         File dir = getDriverDir(id);
         if (!new File(dir, LIB_NAME).isFile() || !new File(dir, ICD_NAME).isFile()) return false;
         JSONObject meta = readMeta(id);
-        return meta == null || !DriverArchivePolicy.requiresBackend(meta.optString("sourceLibraryName", ""))
-                || new File(dir, DriverArchivePolicy.BACKEND_NAME).isFile();
+        if (meta == null) return true;
+        if (DriverArchivePolicy.requiresBackend(meta.optString("sourceLibraryName", ""))
+                && !new File(dir, DriverArchivePolicy.BACKEND_NAME).isFile()) return false;
+        // A driver whose own dependency is missing is not offered: it would load and fail.
+        org.json.JSONArray libs = meta.optJSONArray("runtimeLibraries");
+        for (int i = 0; libs != null && i < libs.length(); i++) {
+            String name = libs.optString(i, "");
+            if (!DriverArchivePolicy.isRuntimeLibrary(name) || !new File(dir, name).isFile()) return false;
+        }
+        return true;
+    }
+
+    /** Whether the imported driver draws on the CPU (lavapipe) rather than on a GPU. */
+    public boolean isSoftwareDriver(String id) {
+        if (!isInstalled(id)) return false;
+        JSONObject meta = readMeta(id);
+        if (meta != null && "software".equals(meta.optString("gpuVendor", ""))) return true;
+        return DriverArchivePolicy.isSoftwareLibrary(meta != null ? meta.optString("sourceLibraryName", "") : "");
     }
 
     /** Absolute path of the driver's ICD manifest, or null when the id isn't installed. */
@@ -143,6 +159,7 @@ public class LinuxVulkanDriverManager {
             JSONObject zipMeta = null;
             long unpacked = 0;
             boolean backendSeen = false;
+            java.util.Set<String> runtimeSeen = new java.util.LinkedHashSet<>();
             try (InputStream is = context.getContentResolver().openInputStream(zipUri);
                  ZipInputStream zis = new ZipInputStream(is)) {
                 if (is == null) throw new IOException("cannot open " + zipUri);
@@ -162,6 +179,13 @@ public class LinuxVulkanDriverManager {
                         if (backendSeen) throw new IllegalArgumentException("duplicate PanVK backend in driver zip");
                         backendSeen = true;
                         unpacked += copyBounded(zis, new File(tmpDir, DriverArchivePolicy.BACKEND_NAME), DriverArchivePolicy.MAX_LIBRARY_BYTES);
+                    } else if (DriverArchivePolicy.isRuntimeLibrary(base)) {
+                        // Kept under its own name beside the driver: it is what the driver's
+                        // $ORIGIN runpath looks for, so it must not be renamed like the driver is.
+                        if (runtimeSeen.contains(base))
+                            throw new IllegalArgumentException("duplicate runtime library in driver zip: " + base);
+                        runtimeSeen.add(base);
+                        unpacked += copyBounded(zis, new File(tmpDir, base), DriverArchivePolicy.MAX_RUNTIME_LIBRARY_BYTES);
                     } else if (base.equals(META_NAME)) {
                         try {
                             zipMeta = new JSONObject(new String(readAllBounded(zis, DriverArchivePolicy.MAX_META_BYTES), StandardCharsets.UTF_8));
@@ -215,6 +239,18 @@ public class LinuxVulkanDriverManager {
                 throw new IllegalArgumentException("DroidDeck Mali adapter is missing libpanvk_backend.so");
             if (backend.isFile() && (!isAarch64Elf(backend) || !containsAscii(backend, "libc.so.6")))
                 throw new IllegalArgumentException("PanVK backend must be AArch64 Linux/glibc, not Android/Bionic");
+            // The software driver's LLVM: same checks, since it is loaded by the same process.
+            java.util.List<String> runtimeLibs = new java.util.ArrayList<>();
+            File[] staged = tmpDir.listFiles();
+            if (staged != null) {
+                java.util.Arrays.sort(staged);
+                for (File f : staged) {
+                    if (!DriverArchivePolicy.isRuntimeLibrary(f.getName())) continue;
+                    if (!isAarch64Elf(f) || !containsAscii(f, "libc.so.6"))
+                        throw new IllegalArgumentException(f.getName() + " must be AArch64 Linux/glibc, not Android/Bionic");
+                    runtimeLibs.add(f.getName());
+                }
+            }
             String kind = zipMeta != null ? zipMeta.optString("kind", "") : "";
             if (!kind.isEmpty() && !"linux-vulkan-icd".equals(kind)) {
                 Log.w(TAG, "meta.json says kind=" + kind + ", importing anyway (the binary is glibc)");
@@ -250,6 +286,12 @@ public class LinuxVulkanDriverManager {
             meta.put("minGlibc", minGlibc);
             meta.put("sourceLibraryName", soName);
             meta.put("vulkanApiVersion", apiVersion);
+            // What the driver draws on: "software" is lavapipe on the CPU, everything else is a
+            // GPU driver. GpuSafety looks for "software" here and never picks a GPU driver on its
+            // own; a package that does not say is a GPU driver, which is the conservative reading.
+            meta.put("gpuVendor", zipMeta != null && zipMeta.optString("gpuVendor", "").equals("software")
+                    ? "software" : (DriverArchivePolicy.isSoftwareLibrary(soName) ? "software" : "gpu"));
+            meta.put("runtimeLibraries", new org.json.JSONArray(runtimeLibs));
             meta.put("importedAt", System.currentTimeMillis());
             if (!FileUtils.writeString(new File(tmpDir, META_NAME), meta.toString(2))) throw new IOException("cannot write meta.json");
 

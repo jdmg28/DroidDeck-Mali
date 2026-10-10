@@ -155,11 +155,15 @@ object DeviceInfo {
 
     private fun drivers(context: Context, gpu: GpuInfo) = Section("Drivers DroidDeck uses", buildList<Pair<String, String>> {
         add("Driver mode", SessionPrefs.gpuDriverMode(context))
+        // Whether the session is given the device's GPU at all, and what it draws with because of
+        // it - the first thing to read in a report from a device the GPU has been kept out of.
+        add("GPU safety", GpuSafety.profile(context) +
+            (if (GpuSafety.software(context)) " (software: no GPU node in the guest)" else " (the GPU is handed to the session)"))
         val turnip = TurnipDriver(context)
         val choice = SessionPrefs.androidDriver(context).ifEmpty { turnip.autoId() }
         add("Display driver", "${turnip.displayName(choice)} ${turnip.driverVersion(choice)}".trim())
         val linux = LinuxVulkanDriverManager(context)
-        val id = SessionPrefs.linuxDriver(context)
+        val id = GpuSafety.linuxDriver(context)
         add("Game driver", if (id.isEmpty()) "the runtime's own Turnip" else "${linux.getDriverName(id)} ${linux.getDriverVersion(id)}".trim())
         if (gpu.oneUi8Gen2) add("Note", "One UI on an 8 Gen 2: needs the OneUI Turnip build")
     })

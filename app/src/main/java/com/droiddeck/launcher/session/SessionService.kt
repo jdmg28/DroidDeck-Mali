@@ -604,19 +604,27 @@ class SessionService : Service() {
         guest.add("GALLIUM_DRIVER=zink")
         guest.add("LIBGL_KOPPER_DRI2=true")
         val mali = com.droiddeck.launcher.core.DeviceSupport.mali()
+        // GpuSafety: in software mode the guest is given no GPU node at all (LinuxRuntime) and
+        // draws with an imported CPU driver. The switch is handed to the session script, which
+        // drops the Mali driver's own requirements and its probe for it.
+        val software = com.droiddeck.launcher.gpu.GpuSafety.software(this)
+        guest.add("BL_GPU_SAFETY=" + if (software) "software" else "device")
+        if (software) Log.i(TAG, "gpu safety: software - no GPU node in the guest, drawing on the CPU")
         if (!mali) LinuxRuntime.vulkanIcd(this)?.let { guest.add("VK_ICD_FILENAMES=" + it.path) }
         if (mali) {
             guest.add("BL_GPU_FAMILY=mali")
-            // Hardware rendering, initially presented by CPU/SHM WSI for compatibility.
-            guest.add("PANVK_KBASE_DRI3=0")
-            guest.add("LIBGL_KOPPER_DISABLE=false")
+            if (!software) {
+                // Hardware rendering, initially presented by CPU/SHM WSI for compatibility.
+                guest.add("PANVK_KBASE_DRI3=0")
+                guest.add("LIBGL_KOPPER_DISABLE=false")
+            }
         }
         // An imported glibc Turnip, when one is set (by the user, or by Auto): the session script
         // checks the manifest and its library from inside and points the loader at it with
         // VK_DRIVER_FILES, so the runtime's own driver above stays untouched and is what a bad
         // import falls back to. One driver for every session: the driver's shader cache is keyed on
         // its build, and with one per mode every emulator compiled its shaders twice.
-        val linuxDriverId = SessionPrefs.linuxDriver(this)
+        val linuxDriverId = com.droiddeck.launcher.gpu.GpuSafety.linuxDriver(this)
         LinuxVulkanDriver.resolveIcdPath(this, linuxDriverId)
             ?.let { guest.add(LinuxVulkanDriver.ENV + "=" + it) }
         // Turnip's own debug switches, for the runtime's driver and everything on it. The file in

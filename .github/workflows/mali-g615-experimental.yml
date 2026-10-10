@@ -1,47 +1,225 @@
-name: Mali-G615 experimental APK (unvalidated)
+name: Mali-G615 branch APK
+run-name: "Mali-G615 branch APK (${{ github.ref_name }} ${{ github.sha }}: software mode)"
 
+# This branch's own app: the same application id every build of it has
+# (com.droiddeck.launcher.mali.g615) and a version code that only ever goes up, so it installs as
+# an update of the one already on the phone and keeps the ~5 GB of runtime and Steam with it.
 on:
+  push:
+    branches: [ mali-g615-experimental, 'arena/**' ]
+    paths-ignore:
+      - '**/*.md'
+      - 'LICENSE'
+      - '.gitignore'
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
+
+concurrency:
+  group: mali-g615-apk-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    timeout-minutes: 120
     env:
       GH_TOKEN: ${{ github.token }}
-      DROIDDECK_GITHUB_REPOSITORY: Droid-Deck/DroidDeck
+      DROIDDECK_GITHUB_REPOSITORY: jdmg28/DroidDeck-Mali-G615
+      # The debug build: its application id carries the .mali.g615 suffix, which is the id of the
+      # app already installed from this repo's releases.
       DROIDDECK_BUILD_VARIANT: debug
       DROIDDECK_NDK_VERSION: 27.3.13750724
-      # Steam client is the target. Skip optional GOG/Epic/Amazon Rust engines for the first build.
+      # Steam client is the target. Skip optional GOG/Epic/Amazon Rust engines for this branch.
       DROIDDECK_SKIP_RUST: 1
+      RELEASE_TAG: gpu-guard-latest
+      RELEASE_ASSET: DroidDeck-Mali-G615-debug.apk
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
+
       - uses: android-actions/setup-android@v3
-        with:
-          packages: platform-tools  
+
       - name: Install build prerequisites
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends zstd pkg-config gh
           sdkmanager 'platform-tools' 'platforms;android-34' 'build-tools;34.0.0' 'cmake;3.22.1' 'ndk;27.3.13750724'
-      - name: Build the patched app and guest preloads
+
+      - name: Build the app and the guest preloads
         run: |
-          test -f app/src/main/java/com/droiddeck/launcher/gpu/DriverArchivePolicy.java
-          test -f tools/linuxfs/overlay/usr/local/bin/droiddeck-mali-check
+          test -f app/src/main/java/com/droiddeck/launcher/gpu/GpuSafety.kt
+          test -f tools/release/apk-identity.sh
           bash tools/build_local.sh
-      - name: Upload experimental isolated debug APK
+
+      - name: What this build is
+        id: identity
+        run: |
+          set -euo pipefail
+          apk=app/build/outputs/apk/debug/app-debug.apk
+          test -f "$apk"
+          read -r package code cert <<<"$(bash tools/release/apk-identity.sh "$apk")"
+          echo "This build: $package, versionCode $code, signer $cert"
+          {
+            echo "package=$package"
+            echo "version_code=$code"
+            echo "cert_sha256=$cert"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: What is published as ${{ env.RELEASE_TAG }} today
+        id: published
+        env:
+          TAG: ${{ env.RELEASE_TAG }}
+        run: |
+          set -euo pipefail
+          work=$RUNNER_TEMP/published
+          mkdir -p "$work"
+          # The asset's name has changed between builds of this branch, so take whatever apk the
+          # release carries rather than guess at it.
+          names=$(gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json assets \
+                    --jq '.assets[].name | select(test("\\.apk$"))')
+          if [ -z "$names" ]; then
+            echo "No apk on $TAG: this build is the first, and the comparison below has nothing to check it against."
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          name=$(printf '%s\n' "$names" | head -1)
+          echo "Published as $TAG: $name"
+          gh release download "$TAG" -R "$GITHUB_REPOSITORY" -p "$name" -D "$work"
+          read -r package code cert <<<"$(bash tools/release/apk-identity.sh "$work/$name")"
+          echo "Published: $package, versionCode $code, signer $cert"
+          {
+            echo "found=true"
+            echo "name=$name"
+            echo "package=$package"
+            echo "version_code=$code"
+            echo "cert_sha256=$cert"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: It installs over the published build
+        env:
+          THIS_PACKAGE: ${{ steps.identity.outputs.package }}
+          THIS_CODE: ${{ steps.identity.outputs.version_code }}
+          THIS_CERT: ${{ steps.identity.outputs.cert_sha256 }}
+          FOUND: ${{ steps.published.outputs.found }}
+          OLD_NAME: ${{ steps.published.outputs.name }}
+          OLD_PACKAGE: ${{ steps.published.outputs.package }}
+          OLD_CODE: ${{ steps.published.outputs.version_code }}
+          OLD_CERT: ${{ steps.published.outputs.cert_sha256 }}
+        run: |
+          set -euo pipefail
+          fail=0
+          # Android installs an update only for the same package, signed with the same key, with a
+          # higher version code. All three, or the phone asks for an uninstall and the runtime goes.
+          if [ "$FOUND" = true ] && [ "$THIS_PACKAGE" != "$OLD_PACKAGE" ]; then
+            echo "::error::application id changed: this build is $THIS_PACKAGE, $OLD_NAME is $OLD_PACKAGE"
+            fail=1
+          fi
+          if [ "$FOUND" = true ] && [ "$THIS_CERT" != "$OLD_CERT" ]; then
+            echo "::error::signing certificate changed: this build is $THIS_CERT, $OLD_NAME is $OLD_CERT - the phone would refuse it and keep nothing"
+            fail=1
+          fi
+          if [ "$FOUND" = true ] && [ "$THIS_CODE" -le "$OLD_CODE" ]; then
+            echo "::error::versionCode $THIS_CODE does not exceed the published $OLD_CODE"
+            fail=1
+          fi
+          # The AOSP testkey is publicly known, which is fine for a fork's test builds and is the
+          # key every build of this branch has used; what must never change is which key it is.
+          if [ "$THIS_CERT" != a40da80a59d170caa950cf15c18c454d47a39b26989d8b640ecd745ba71bf5dc ]; then
+            echo "::error::this build is not signed with the key this branch builds with (AOSP testkey)"
+            fail=1
+          fi
+          exit $fail
+
+      - name: Summary
+        env:
+          THIS_PACKAGE: ${{ steps.identity.outputs.package }}
+          THIS_CODE: ${{ steps.identity.outputs.version_code }}
+          THIS_CERT: ${{ steps.identity.outputs.cert_sha256 }}
+          FOUND: ${{ steps.published.outputs.found }}
+          OLD_NAME: ${{ steps.published.outputs.name }}
+          OLD_PACKAGE: ${{ steps.published.outputs.package }}
+          OLD_CODE: ${{ steps.published.outputs.version_code }}
+          OLD_CERT: ${{ steps.published.outputs.cert_sha256 }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          {
+            echo "## APK identity"
+            echo
+            echo "| | applicationId | versionCode | signing certificate (SHA-256) |"
+            echo "|---|---|---|---|"
+            echo "| this build | \`$THIS_PACKAGE\` | $THIS_CODE | \`$THIS_CERT\` |"
+            if [ "$FOUND" = true ]; then
+              echo "| published \`$RELEASE_TAG\` ($OLD_NAME) | \`$OLD_PACKAGE\` | $OLD_CODE | \`$OLD_CERT\` |"
+            else
+              echo "| published \`$RELEASE_TAG\` | - | - | - (nothing published yet) |"
+            fi
+            echo
+            echo "Built by [this run]($RUN_URL) from \`${{ github.sha }}\`."
+            echo
+            echo "Installs over the published build: same applicationId, same signing certificate,"
+            echo "higher versionCode - all three were checked, and the job fails if any of them is not true."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publish the APK
+        if: github.ref == 'refs/heads/mali-g615-experimental' || startsWith(github.ref, 'refs/heads/arena/')
+        env:
+          TAG: ${{ env.RELEASE_TAG }}
+          ASSET: ${{ env.RELEASE_ASSET }}
+          THIS_PACKAGE: ${{ steps.identity.outputs.package }}
+          THIS_CODE: ${{ steps.identity.outputs.version_code }}
+          THIS_CERT: ${{ steps.identity.outputs.cert_sha256 }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          apk=app/build/outputs/apk/debug/app-debug.apk
+          work=$RUNNER_TEMP/publish
+          mkdir -p "$work"
+          cp "$apk" "$work/$ASSET"
+          ( cd "$work" && sha256sum -- "$ASSET" > "$ASSET.sha256" )
+          if ! gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$TAG" -R "$GITHUB_REPOSITORY" --prerelease \
+              --title "DroidDeck Mali-G615 branch APK" --notes "Replaced by every build of this branch."
+          fi
+          # Only the files this build made: an apk published under an older name is not left beside
+          # it, so the release never offers two builds of the same app.
+          keep=$(cd "$work" && ls | jq -R . | jq -sc .)
+          gh release upload "$TAG" "$work"/* -R "$GITHUB_REPOSITORY" --clobber
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" |
+            jq -r --argjson keep "$keep" '.assets[] | select(.name as $n | $keep | index($n) | not) | .id' |
+            while IFS= read -r id; do
+              gh api --method DELETE "repos/$GITHUB_REPOSITORY/releases/assets/$id" >/dev/null
+            done
+          {
+            echo "## DroidDeck Mali-G615 - branch APK, $(date -u +%Y-%m-%d' '%H:%M) UTC"
+            echo
+            echo "Installs over the build already on the phone and keeps the runtime and Steam:"
+            echo "applicationId \`$THIS_PACKAGE\`, versionCode **$THIS_CODE**, signing certificate"
+            echo "SHA-256 \`$THIS_CERT\`."
+            echo
+            echo "- [$ASSET]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/download/$TAG/$ASSET)"
+            echo
+            echo "What is in it: the software (lavapipe) safety mode - on a Mali device the session is"
+            echo "given no GPU node at all and draws on the CPU. Import the software driver zip from the"
+            echo "[software-driver-latest](https://github.com/$GITHUB_REPOSITORY/releases/tag/software-driver-latest)"
+            echo "release under Components -> GPU drivers -> Advanced -> Runtime driver -> Import."
+            echo
+            echo "Built by [this run]($RUN_URL) from \`${{ github.sha }}\`."
+          } > "$RUNNER_TEMP/notes.md"
+          gh release edit "$TAG" -R "$GITHUB_REPOSITORY" --notes-file "$RUNNER_TEMP/notes.md"
+          echo "Release: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/tag/$TAG" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the APK
         uses: actions/upload-artifact@v4
         with:
-          name: DroidDeck-Mali-G615-experimental-APK
+          name: DroidDeck-Mali-G615-APK
           path: app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
-
-# This workflow has not been executed by the kit author. It builds code, not proof of phone support.
-# Debug application ID: com.droiddeck.launcher.mali.g615, so it can coexist with the official app.

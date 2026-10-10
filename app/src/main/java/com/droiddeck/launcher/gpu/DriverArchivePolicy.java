@@ -4,13 +4,38 @@ package com.droiddeck.launcher.gpu;
 /** Pure filename/API policy for the experimental Linux driver import. No Android dependency. */
 public final class DriverArchivePolicy {
     public static final String BACKEND_NAME = "libpanvk_backend.so";
-    public static final long MAX_ARCHIVE_BYTES = 128L << 20;
+    /**
+     * Mesa's software Vulkan driver, "lavapipe": a CPU rasteriser (llvmpipe behind a Vulkan
+     * front end) that needs no GPU at all, which is what makes it usable as a safety mode on a
+     * device whose own driver is not to be touched.
+     */
+    public static final String SOFTWARE_LIBRARY = "libvulkan_lvp.so";
+    /** The LLVM lavapipe is built against (Debian's libllvm19 ships it under this name). */
+    public static final String LLVM_LIBRARY = "libLLVM.so.19.1";
+    /** Both halves of one lavapipe package are about 134 MB unpacked; the old ceiling held neither. */
+    public static final long MAX_ARCHIVE_BYTES = 384L << 20;
     public static final long MAX_LIBRARY_BYTES = 96L << 20;
+    /** libLLVM is 123 MB on its own, and it is a dependency rather than the driver. */
+    public static final long MAX_RUNTIME_LIBRARY_BYTES = 256L << 20;
     public static final int MAX_META_BYTES = 64 << 10;
     private DriverArchivePolicy() {}
 
     public static boolean isMainLibrary(String name) {
         return name != null && name.matches("libvulkan_[A-Za-z0-9][A-Za-z0-9_.-]*\\.so");
+    }
+
+    /** Whether the zip's one Vulkan driver is the software one. */
+    public static boolean isSoftwareLibrary(String name) {
+        return SOFTWARE_LIBRARY.equals(name);
+    }
+
+    /**
+     * A library the driver loads rather than the driver itself, kept beside it in its own
+     * directory: lavapipe's LLVM. Named, not globbed, so a zip cannot smuggle in an arbitrary
+     * .so and have it sit in front of the runtime's.
+     */
+    public static boolean isRuntimeLibrary(String name) {
+        return name != null && name.matches("libLLVM(-19|\\.so\\.19)(\\.[0-9]+)*");
     }
     public static boolean isBackendLibrary(String name) {
         return BACKEND_NAME.equals(name);

@@ -17,6 +17,22 @@ public class DriverArchivePolicyTest {
         assertTrue(DriverArchivePolicy.requiresBackend("libvulkan_droiddeck_mali.so"));
         assertFalse(DriverArchivePolicy.requiresBackend("libvulkan_freedreno.so"));
     }
+    @Test public void recognisesTheSoftwareDriverAndTheLlvmItLoads() {
+        assertTrue(DriverArchivePolicy.isSoftwareLibrary("libvulkan_lvp.so"));
+        assertFalse(DriverArchivePolicy.isSoftwareLibrary("libvulkan_freedreno.so"));
+        assertFalse(DriverArchivePolicy.isSoftwareLibrary("libvulkan_lvp.so.bak"));
+        // Only the names Debian's libllvm19 ships, so a zip cannot smuggle in an arbitrary .so.
+        assertTrue(DriverArchivePolicy.isRuntimeLibrary("libLLVM.so.19.1"));
+        assertTrue(DriverArchivePolicy.isRuntimeLibrary("libLLVM-19.so.1"));
+        assertFalse(DriverArchivePolicy.isRuntimeLibrary("libLLVM.so.18.1"));
+        assertFalse(DriverArchivePolicy.isRuntimeLibrary("libc.so.6"));
+        assertFalse(DriverArchivePolicy.isRuntimeLibrary(null));
+        assertFalse(DriverArchivePolicy.isRuntimeLibrary("../../libLLVM.so.19.1"));
+        // A GPU driver is not a software one, and neither claims the other's dependencies.
+        assertFalse(DriverArchivePolicy.isMaliRuntimeLibrary("libvulkan_lvp.so"));
+        assertFalse(DriverArchivePolicy.requiresBackend("libvulkan_lvp.so"));
+    }
+
     @Test public void keepsLegacyIcdVersionUnlessValidPackageVersionIsGiven() {
         assertEquals("1.4.363", DriverArchivePolicy.apiVersion("1.4.363"));
         assertEquals("1.1.274", DriverArchivePolicy.apiVersion(null));
