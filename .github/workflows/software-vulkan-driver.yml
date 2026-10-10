@@ -537,7 +537,7 @@ jobs:
             echo "The runtime's glibc was measured before anything was packaged, and the job stops"
             echo "without a zip if it is older than what the driver asks for. Every \`NEEDED\` of every"
             echo "library was then resolved by the runtime's own loader, under qemu, against the"
-            echo "runtime's own \`/usr/lib\`; the step after that loads the ICD and enumerates a device.
+            echo "runtime's own \`/usr/lib\`; the step after that loads the ICD and enumerates a device."
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Publish the zip
