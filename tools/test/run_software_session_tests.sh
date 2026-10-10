@@ -37,7 +37,7 @@ body = text[start:end].rstrip() + '\n'
 # The probe reports whether the loader was pointed anywhere, as a single token: echoing the value
 # itself would print "none" for the cases where the block correctly did nothing, and a test that
 # passes on both is not a test.
-body += 'echo "PROBE exported=${VK_DRIVER_FILES+yes}${VK_ICD_FILENAMES+yes}"\nexit 0\n'
+body += 'echo "PROBE exported=${VK_DRIVER_FILES+yes}${VK_ICD_FILENAMES+yes} libpath=${LD_LIBRARY_PATH:-unset}"\nexit 0\n'
 open(out, "w", encoding="utf-8").write(
     "set -u\n# extracted from droiddeck-session for testing; see the header of this test\n" + body)
 PY
@@ -95,12 +95,16 @@ run() {
 # ---- the cases ------------------------------------------------------------------------------------
 NEED=2.38 run "a rootfs new enough for the driver starts, naming both versions" g239 0 \
     "== vulkan driver: software only" "glibc 2.39 is at least the 2.38 the driver was built for" \
-    "PROBE exported=yesyes"
+    "PROBE exported=yesyes libpath=$DRV"
 # The loader is pointed at exactly the manifest we handed in - that equality is what keeps the
 # runtime's own PanVK manifest out of the enumeration, so it is asserted, not assumed.
 NEED=2.50 run "a rootfs too old is refused before anything is exported" g228 78 \
     "DD_SOFTWARE_GLIBC_OLD" "glibc 2.28" "built for 2.50"
-NEED=2.50 run "  ...and the refusal happens before the loader is pointed anywhere" g228 78 "!exported=yes"
+# The probe line the extracted block prints at its end is absent here for a reason: the refusal returns
+# before any of the three exports. Asserting the driver directory appears nowhere in the output is the
+# same claim from the other side - a run that got that far would name it in the "== vulkan driver" line.
+NEED=2.50 run "  ...and the refusal happens before the loader is pointed anywhere" g228 78 \
+    "!exported=yes" "!$DRV"
 SOFT=0 run "software mode off means this branch does not run at all" g239 0 "!software only" "!exported=yes"
 NEED= run "a package that declares no minimum glibc says so and continues" g239 0 \
     "no minimum glibc declared"
@@ -115,6 +119,18 @@ ICD=$DRV/icd.json NEED=2.38 run "a rootfs that reports no glibc is a note, not a
     "reported none" "software only" "!DD_SOFTWARE_GLIBC_OLD"
 ICD=$DRV/icd.json NEED=2.38 run "and a musl-style runtime still gets the driver exported" gnone 0 \
     "PROBE exported=yesyes"
+
+# LD_LIBRARY_PATH is prepended, never replaced, and never left with a trailing ":" - glibc reads an empty
+# component as "this directory", which is a search path entry nobody intended to add.
+run_path() {
+  local label="$1" give="$2" want="$3" out
+  out=$(PATH="$W/g239/bin:$PATH" BL_SOFTWARE_VULKAN=1 BL_VK_DRIVER="$DRV/icd.json" \
+        BL_DRIVER_MIN_GLIBC=2.38 LD_LIBRARY_PATH="$give" bash "$W/block.sh" 2>&1)
+  printf '%s\n' "$out" | grep -qF -- "libpath=$want" && ok "$label" \
+    || { fail "$label"; printf '%s\n' "$out" | sed 's/^/       /'; }
+}
+run_path "the companion directory goes first in LD_LIBRARY_PATH" "/already/here" "$DRV:/already/here"
+run_path "and an unset path does not grow a trailing separator" "" "$DRV"
 
 [ "$FAILED" = 0 ] && echo "all software-mode session cases passed" || echo "SOFTWARE-MODE SESSION TESTS FAILED"
 exit "$FAILED"

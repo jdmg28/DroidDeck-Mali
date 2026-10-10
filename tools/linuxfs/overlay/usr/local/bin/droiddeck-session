@@ -134,10 +134,23 @@ if [ "${BL_SOFTWARE_VULKAN:-}" = 1 ]; then
       bl_note="glibc $bl_have is at least the $bl_need the driver was built for"
     fi
   fi
+  # The companion question, answered where it belongs. libvulkan_lvp.so carries DT_RUNPATH=$ORIGIN from
+  # the packaging step, and glibc searches LD_LIBRARY_PATH *before* RUNPATH - so an environment variable
+  # beats the deliberate choice, and a rootfs with its own mesa-vulkan-drivers has its own
+  # libLLVM.so.19.1 in the cache. The cache is searched after RUNPATH, so the shipped copy wins there;
+  # anything already in LD_LIBRARY_PATH would not. Putting the driver's own directory first makes the
+  # pairing exact and does not remove what the caller had, and it is done only here, in software mode,
+  # because the normal path has a driver that came from the same rootfs it runs in.
+  bl_dir=$(dirname "$bl_soft_lib")
+  if [ -n "${LD_LIBRARY_PATH:-}" ]; then
+    export LD_LIBRARY_PATH="$bl_dir:$LD_LIBRARY_PATH"
+  else
+    export LD_LIBRARY_PATH="$bl_dir"
+  fi
   export VK_DRIVER_FILES="$BL_VK_DRIVER"
   export VK_ICD_FILENAMES="$BL_VK_DRIVER"
   echo "== vulkan driver: software only, $bl_soft_lib ($bl_note)"
-  unset bl_soft_lib bl_need bl_have bl_note
+  unset bl_soft_lib bl_need bl_have bl_note bl_dir
 fi
 if [ "${BL_GPU_FAMILY:-}" = mali ] && [ "${BL_SOFTWARE_VULKAN:-}" != 1 ] && [ -z "${BL_VK_DRIVER:-}" ]; then
   echo "DD_MALI_DRIVER_REQUIRED: import/select the Linux PanVK package; Turnip cannot run on Mali"
