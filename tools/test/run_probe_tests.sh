@@ -28,6 +28,22 @@ if [ ! -s "$WORK/probe.py" ]; then
     echo "FAIL: could not extract the probe's python from $SCRIPT"
     exit 1
 fi
+if python3 -c 'import ast,sys; ast.parse(open(sys.argv[1]).read())' "$WORK/probe.py" 2>"$WORK/syntax.log"; then
+    echo "probe python: $(wc -l < "$WORK/probe.py") lines, parses"
+else
+    echo "FAIL: the extracted probe python does not parse"
+    cat "$WORK/syntax.log"
+    echo "--- first 5 and last 5 extracted lines ---"
+    head -5 "$WORK/probe.py"
+    echo "..."
+    tail -5 "$WORK/probe.py"
+    exit 1
+fi
+
+for tool in gcc python3; do
+    command -v "$tool" >/dev/null 2>&1 || { echo "FAIL: $tool is not on this machine"; exit 1; }
+done
+echo "machine: $(uname -sr)  gcc: $(gcc -dumpversion)  python: $(python3 -V 2>&1)"
 
 if ! gcc -shared -fPIC -o "$WORK/libvulkan.so.1" "$HERE/mock_vulkan.c" 2>"$WORK/gcc.log"; then
     echo "FAIL: the fake loader did not build"
