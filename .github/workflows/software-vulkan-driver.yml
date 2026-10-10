@@ -179,7 +179,9 @@ jobs:
             echo "|---|---|"
           } >> report.md
           for so in libvulkan_lvp.so libLLVM.so.19.1 libedit.so.2 libtinfo.so.6 libbsd.so.0; do
-            found=$(find pkg -name "$so" -type f | head -1)
+            # -L: Debian ships libedit.so.2 and libtinfo.so.6 as symlinks to the versioned file,
+            # and find does not call a symlink to a regular file a regular file.
+            found=$(find -L pkg -name "$so" -type f | head -1)
             if [ -z "$found" ]; then
               {
                 echo
@@ -191,7 +193,7 @@ jobs:
               echo "::error::$so is missing from the packages (see the report)"
               exit 1
             fi
-            cp "$found" "stage/$so"
+            cp -L "$found" "stage/$so"
             echo "| \`$so\` | $(stat -c %s "$found") |" >> report.md
           done
           ls -l stage

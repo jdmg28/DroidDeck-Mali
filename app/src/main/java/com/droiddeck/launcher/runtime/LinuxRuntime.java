@@ -299,9 +299,14 @@ public final class LinuxRuntime {
      * so a driver that reads it gets EOF instead of a character device that answers ioctls.
      */
     private static void hideGpuNodes(List<String> cmd, File root) {
-        File empty = new File(root, "etc/droiddeck/empty");
+        // Its own path, not the etc/droiddeck/empty the /sys/fs/selinux bind uses: that one is a
+        // directory (LegacyNames.migrateEtc) and this has to be a zero-length regular file.
+        File empty = new File(root, "etc/droiddeck/empty-gpu-node");
         try {
             if (empty.getParentFile() != null) empty.getParentFile().mkdirs();
+            if (empty.exists() && !empty.isFile() && !empty.delete()) {
+                throw new IOException("not a file: " + empty);
+            }
             if (!empty.isFile()) empty.createNewFile();
         } catch (IOException e) {
             android.util.Log.w("LinuxRuntime", "gpu: cannot stand in for the GPU nodes: " + e);
