@@ -42,6 +42,7 @@ git -C "$REPO" format-patch "$BASE..HEAD" -o "$WORK/series" > /dev/null
 [ -d "$REPO/series" ] && { echo "format-patch wrote into the repo again ($REPO/series); refusing to leave it"; exit 1; }
 
 # 3. the instructions, generated from the tree so the numbers and the list cannot be stale.
+OWNER=$(git -C "$REPO" config --get remote.origin.url | sed -E 's#.*github.com[:/]##; s#\.git$##')
 {
   echo "# Parche GPU Guard / modo software - $BRANCH @ $HEAD"
   echo
@@ -70,8 +71,32 @@ git -C "$REPO" format-patch "$BASE..HEAD" -o "$WORK/series" > /dev/null
   echo "como .zip y Android responde \"hubo un problema al analizar el paquete\"):"
   echo
   echo "~~~"
-  echo "https://github.com/$(git -C "$REPO" config --get remote.origin.url | sed -E 's#.*github.com[:/]##; s#\.git$##')/releases/download/gpu-guard-latest/DroidDeck-GPU-Guard-debug.apk"
+  echo "https://github.com/$OWNER/releases/download/gpu-guard-latest/DroidDeck-GPU-Guard-debug.apk"
   echo "~~~"
+  echo
+  echo "Si las notas del release citan el commit \`$HEAD\`, ese APK ya paso por el compilador y por las"
+  echo "cuatro suites de gpu-guard-ci.yml: es el mismo codigo que hay en este zip. Si citan otro, el"
+  echo "workflow esta en curso y conviene esperar a que termine antes de instalar."
+  echo
+  echo "## Driver Vulkan de software (sin esto, el modo software no arranca)"
+  echo
+  echo "El APK no lleva Mesa dentro. En modo software el huésped necesita un driver lavapipe *importado*:"
+  echo "la app lo descomprime en \`files/linux_vulkan_drivers/<id>/\` con su \`icd.json\`, el script de sesion"
+  echo "lee esa ruta (\`BL_VK_DRIVER\`), compara la glibc del rootfs con la que exige el paquete (hoy 2.38),"
+  echo "y solo entonces exporta el driver. **No hay ruta de fichero alternativa**: descomprimir el zip a mano"
+  echo "en \`~/drivers/\` no lo hace visible para la app, y sin importacion la sesion se niega diciendo que"
+  echo "falta el driver en vez de caer a la GPU."
+  echo
+  echo "~~~"
+  echo "cd ~/downloads"
+  echo "curl -LO https://github.com/$OWNER/releases/download/software-driver-latest/DroidDeck-Software-Vulkan-lavapipe.zip"
+  echo "curl -LO https://github.com/$OWNER/releases/download/software-driver-latest/sha256.txt"
+  echo "sha256sum -c sha256.txt"
+  echo "getconf GNU_LIBC_VERSION    # >= 2.38; con 2.36 (Debian 12) la sesion responde DD_SOFTWARE_GLIBC_OLD"
+  echo "~~~"
+  echo
+  echo "Y en la app: Ajustes -> Components -> drivers -> importar el zip. Despues, el perfil debe decir"
+  echo "*Automatico (Vulkan software)*; *Vulkan Mali (experimental)* sigue en rojo y bloqueado sin importacion."
   echo
   echo "## Que trae este parche"
   echo
@@ -79,8 +104,9 @@ git -C "$REPO" format-patch "$BASE..HEAD" -o "$WORK/series" > /dev/null
   echo
   echo "## Que NO esta verificado"
   echo
-  echo "Nada de esto se compilo en la maquina que escribio el codigo (no hay JDK ahi): el workflow es el"
-  echo "primer compilador que ve estos commits. Lo que si se ejecuto aqui, y se puede reproducir:"
+  echo "El trabajo de esta maquina (sin JDK, sin SDK, sin movil) fue escribir y ejecutar los verificadores"
+  echo "de shell y las puertas del empaquetado; el APK se compila en el runner. Que este commit este verde en"
+  echo "\`GPU guard branch APK\` es comprobable arriba, en las notas del release:"
   echo
   echo "~~~"
   echo "bash tools/test/run_probe_tests.sh              # el probe, contra un loader falso"
