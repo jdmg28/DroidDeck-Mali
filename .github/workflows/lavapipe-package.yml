@@ -74,6 +74,24 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq patchelf unzip zip binutils
 
+      # inputs.* is populated only for workflow_dispatch, and this job is normally reached by a push to
+      # a branch the default does not know. Left as it was, every ${{ inputs... }} below would expand to
+      # nothing and the first curl would fetch dists//main/... - a run that dies on an empty string is
+      # the worst kind of failure to read, so each input is resolved to a value here, once, printed with
+      # where it came from, and the later steps use the environment instead of the expression.
+      - name: Decide what to build
+        run: |
+          set -e
+          pick() { value=$1; [ -n "$value" ] && printf '%s' "$value" || printf '%s' "$2"; }
+          SUITE=$(pick '${{ inputs.debian_suite }}' trixie)
+          EXPECT_MESA=$(pick '${{ inputs.expect_mesa }}' 25.0.7)
+          LLVM_SONAME=$(pick '${{ inputs.expect_llvm }}' libLLVM.so.19.1)
+          { echo "SUITE=$SUITE"; echo "EXPECT_MESA=$EXPECT_MESA"; echo "LLVM_SONAME=$LLVM_SONAME"; } >> "$GITHUB_ENV"
+          echo "== suite          $SUITE"
+          echo "== mesa pinned to $EXPECT_MESA"
+          echo "== llvm soname    $LLVM_SONAME"
+          echo "== from dispatch inputs: ${{ github.event_name == 'workflow_dispatch' && 'yes' || 'no - defaults above' }}"
+
       # A gate that is broken does not announce itself: it either ships an unchecked driver or blocks a
       # good one forever. So the gates prove themselves on synthetic fixtures before they are allowed to
       # decide anything about a real package, and a failure here stops the run.
@@ -84,17 +102,27 @@ jobs:
         id: pick
         run: |
           set -e
-          SUITE='${{ inputs.debian_suite }}'
-          curl -fsSL --retry 3 -o "$RUNNER_TEMP/Packages.gz" \
-            "$BASE/dists/$SUITE/main/binary-arm64/Packages.gz"
+          url="$BASE/dists/$SUITE/main/binary-arm64/Packages.gz"
+          if ! curl -fsSL --retry 3 -o "$RUNNER_TEMP/Packages.gz" "$url"; then
+            code=$(curl -sS -o /dev/null -w '%{http_code}' "$url" || echo '?')
+            echo "::error::no package index for suite '$SUITE' ($code): $url"
+            exit 1
+          fi
           gunzip -c "$RUNNER_TEMP/Packages.gz" > "$RUNNER_TEMP/Packages"
           # The index decides which Mesa this is; expect_mesa is what makes a suite that moved a loud
           # failure rather than a different driver with the same name on it.
-          python3 tools/lavapipe/pick_deb.py --packages "$RUNNER_TEMP/Packages" \
-            --package mesa-vulkan-drivers --expect-version '${{ inputs.expect_mesa }}' \
-            > "$RUNNER_TEMP/mesa"
-          python3 tools/lavapipe/pick_deb.py --packages "$RUNNER_TEMP/Packages" \
-            --package libllvm19 --expect-version '' > "$RUNNER_TEMP/llvm"
+          # The runner cannot read its own logs from here, so whatever these scripts refuse with is put
+          # into an annotation, where the API does show it.
+          for spec in "mesa mesa-vulkan-drivers $EXPECT_MESA" "llvm libllvm19 "; do
+            set -- $spec
+            src=$1; pkg=$2; want=${3:-}
+            if ! python3 tools/lavapipe/pick_deb.py --packages "$RUNNER_TEMP/Packages" \
+                 --package "$pkg" --expect-version "$want" > "$RUNNER_TEMP/$src" \
+                 2> "$RUNNER_TEMP/$src.err"; then
+              { echo "::error::$pkg: $(tr '\n' ' ' < "$RUNNER_TEMP/$src.err" | cut -c1-900)"
+                echo "REFUSED: $pkg - $(cat "$RUNNER_TEMP/$src.err")"; exit 1; }
+            fi
+          done
           for src in mesa llvm; do
             while read -r line; do
               key=${line%%=*}; value=${line#*=}
@@ -124,21 +152,20 @@ jobs:
             dpkg-deb -x "debs/$base" "$name"
             echo "== $base -> $name/"
           done
-          find mesa llvm -name 'libvulkan_lvp.so' -o -name '${{ inputs.expect_llvm }}*' \
-            | sed 's/^/  found /'
+          find mesa llvm -name 'libvulkan_lvp.so' -o -name "$LLVM_SONAME*" | sed 's/^/  found /'
 
       - name: Assemble the driver
         run: |
           set -e
           mkdir -p stage
           LVP=$(find mesa -name 'libvulkan_lvp.so' | head -1)
-          LLVM=$(find llvm -name '${{ inputs.expect_llvm }}*' -type f | head -1)
+          LLVM=$(find llvm -name "$LLVM_SONAME*" -type f | head -1)
           if [ -z "$LVP" ]; then
-            echo "no libvulkan_lvp.so in ${{ inputs.debian_suite }}'s mesa-vulkan-drivers. Its libraries are:"
+            echo "no libvulkan_lvp.so in $SUITE's mesa-vulkan-drivers. Its libraries are:"
             find mesa -name '*.so*' | sed 's/^/  /'; exit 1
           fi
           if [ -z "$LLVM" ]; then
-            echo "no ${{ inputs.expect_llvm }} in the llvm package. It has:"
+            echo "no $LLVM_SONAME in the llvm package. It has:"
             find llvm -name 'libLLVM*' | sed 's/^/  /'; exit 1
           fi
           LLVM=$(basename "$LLVM")
@@ -191,7 +218,7 @@ jobs:
           LLVM=$(cat stage/.llvm_name); rm -f stage/.llvm_name
           python3 tools/lavapipe/make_meta.py --stage stage \
             --main-library libvulkan_lvp.so --companion "$LLVM" \
-            --suite '${{ inputs.debian_suite }}' \
+            --suite "$SUITE" \
             --mesa-version '${{ steps.pick.outputs.mesa_version }}' \
             --llvm-soname "$LLVM" --min-glibc "$(cat stage/.min_glibc)"
           cp tools/lavapipe/NOTICE.mesa.txt stage/NOTICE.txt
