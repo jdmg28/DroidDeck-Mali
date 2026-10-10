@@ -89,27 +89,35 @@ class GpuWatchdog(
             thermalTripped = false
             lastSampleAt = 0L
         }
-        thread = Thread({
-            GpuGuardLog.log(TAG, "watchdog on: frame budget ${budgetMs}ms, thermal ceiling " +
-                (if (thermalCeilingC > 0) "${thermalCeilingC}C" else "off"))
-            while (true) {
-                synchronized(lock) { if (!running) break }
-                try {
-                    Thread.sleep(SAMPLE_MS)
-                } catch (e: InterruptedException) {
-                    break
-                }
-                synchronized(lock) { if (!running) break }
-                try {
-                    sample()
-                } catch (t: Throwable) {
-                    // A watchdog that dies on an unexpected exception is worse than none: it
-                    // leaves the session running with nothing watching it, silently.
-                    GpuGuardLog.log(TAG, "sample failed: $t")
-                }
+        thread = Thread({ runLoop() }, "gpu-watchdog").apply { isDaemon = true; start() }
+    }
+
+    /**
+     * Whether the thread should keep going, read under the lock. It is a function and not a
+     * `break` inside `synchronized { }` because this project's Kotlin is older than the
+     * "break and continue in inline lambdas" language feature.
+     */
+    private fun isRunning(): Boolean = synchronized(lock) { running }
+
+    private fun runLoop() {
+        GpuGuardLog.log(TAG, "watchdog on: frame budget ${budgetMs}ms, thermal ceiling " +
+            (if (thermalCeilingC > 0) "${thermalCeilingC}C" else "off"))
+        while (isRunning()) {
+            try {
+                Thread.sleep(SAMPLE_MS)
+            } catch (e: InterruptedException) {
+                break
             }
-            GpuGuardLog.log(TAG, "watchdog off")
-        }, "gpu-watchdog").apply { isDaemon = true; start() }
+            if (!isRunning()) break
+            try {
+                sample()
+            } catch (t: Throwable) {
+                // A watchdog that dies on an unexpected exception is worse than none: it
+                // leaves the session running with nothing watching it, silently.
+                GpuGuardLog.log(TAG, "sample failed: $t")
+            }
+        }
+        GpuGuardLog.log(TAG, "watchdog off")
     }
 
     fun stop() {

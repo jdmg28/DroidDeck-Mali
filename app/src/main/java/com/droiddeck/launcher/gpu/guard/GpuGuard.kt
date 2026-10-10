@@ -81,8 +81,11 @@ object GpuGuard {
     var levelReason: String = ""
         private set
 
-    /** A notice to show over a running session ("the GPU has stalled"); cleared when it ends. */
-    @Volatile
+    /**
+     * A notice to show over a running session ("the GPU has stalled"); cleared when it ends. The
+     * state object is itself the thread-safe part - it is written from the watchdog's thread and
+     * read from the UI's - so no @Volatile here (it cannot be applied to a delegated property).
+     */
     var alert by mutableStateOf<String?>(null)
         internal set
 

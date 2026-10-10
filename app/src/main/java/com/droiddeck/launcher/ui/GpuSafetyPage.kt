@@ -4,10 +4,14 @@ package com.droiddeck.launcher.ui
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
@@ -139,9 +143,9 @@ internal fun GpuSafetyPanel(host: MenuHost, modifier: Modifier = Modifier) {
 
         SettingsGroup(stringResource(R.string.gpu_safety_record)) {
             ActionRow(stringResource(R.string.gpu_safety_copy), stringResource(R.string.gpu_safety_copy_hint),
-                stringResource(R.string.gpu_safety_copy_button)) { copyReport(context) }
+                stringResource(R.string.gpu_safety_copy_button), onClick = { copyReport(context) })
             ActionRow(stringResource(R.string.gpu_safety_forget), stringResource(R.string.gpu_safety_forget_hint),
-                stringResource(R.string.gpu_safety_forget_button)) { GpuGuard.forget(context); apply() }
+                stringResource(R.string.gpu_safety_forget_button), onClick = { GpuGuard.forget(context); apply() })
             if (log.isNotEmpty()) {
                 Text(log, fontSize = 11.sp, fontFamily = FontFamily.Monospace,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
