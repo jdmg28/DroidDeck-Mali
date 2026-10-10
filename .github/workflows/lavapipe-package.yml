@@ -241,7 +241,7 @@ jobs:
             --prerelease \
             --title "DroidDeck software Vulkan driver (Mesa lavapipe ${{ steps.pick.outputs.mesa_version }})" \
             --notes "Mesa's lavapipe ICD and the libLLVM it links against (\`${{ steps.pick.outputs.llvm_version }}\`),
-          taken from Debian \`${{ inputs.debian_suite }}\` for arm64: mesa-vulkan-drivers
+          taken from Debian \`$SUITE\` for arm64: mesa-vulkan-drivers
           ${{ steps.pick.outputs.mesa_version }}, with \`DT_RUNPATH=\$ORIGIN\` written into the driver so it
           finds its LLVM beside itself after DroidDeck's importer renames and relocates it.
 

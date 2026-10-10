@@ -108,7 +108,11 @@ def main():
         have = max_version(args.rootfs_libc)
 
     shipped = set(args.provides)
-    present = sonames_in(args.rootfs_libdir) if args.rootfs_libdir else set()
+    # Without a rootfs to look at there is nothing to compare the dependencies against, and an empty set
+    # is not evidence of absence: holding every NEEDED entry against a directory nobody passed would
+    # refuse every real driver. Report mode says what is needed and leaves the verdict to the device.
+    judging_deps = bool(args.rootfs_libdir)
+    present = sonames_in(args.rootfs_libdir) if judging_deps else set()
     if args.rootfs_libdir and not present:
         problems.append("no libraries found under %s - the rootfs extraction is wrong, and an empty "
                         "list is not evidence that the driver's dependencies are missing"
@@ -130,6 +134,11 @@ def main():
         needed = needed_by(lib, "readelf")
         if needed is None:
             lines.append("  (readelf unavailable: NEEDED of %s was not checked)" % os.path.basename(lib))
+            continue
+        if not judging_deps:
+            lines.append("  %s needs: %s (not judged: no --rootfs-libdir was given, so nothing here "
+                         "knows what the runtime has)"
+                         % (os.path.basename(lib), ", ".join(needed) or "nothing"))
             continue
         for dep in needed:
             if dep in present or dep in shipped or dep in args.allow_missing:

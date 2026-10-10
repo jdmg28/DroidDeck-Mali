@@ -123,7 +123,16 @@ printf '%s\n' "$LAST_OUT" | grep -q "needs at most GLIBC_2.40" \
 # ld-linux-x86-64.so.2, which is absent from the fake rootfs and present in the next run.
 REAL=$(readlink -f /lib/*/libc.so.6 /lib/libc.so.6 2>/dev/null | head -1)
 if [ -n "$REAL" ] && command -v readelf >/dev/null; then
-    check 1 "a NEEDED library neither the runtime nor the zip provides is refused" \
+    if [ -n "$REAL" ] && command -v readelf >/dev/null; then
+    # The combination the packaging job actually runs, and the one this suite missed until it failed in
+    # CI: a real ELF's NEEDED list with no rootfs to compare against. Judging that against an empty set
+    # refuses every driver ever built, so it has to be a report.
+    check 0 "a real binary's dependencies are reported, not refused, when no rootfs was given" \
+        --lib "$REAL"
+    printf '%s\n' "$LAST_OUT" | grep -q "needs: ld-" \
+        && ok "  ...and the list is still printed" || fail "  ...and the list is still printed"
+fi
+check 1 "a NEEDED library neither the runtime nor the zip provides is refused" \
         --rootfs-libc "$W/libc.so.6" --rootfs-libdir "$W/rootfs/usr/lib" --lib "$REAL"
     printf 'cp "$W/../" /dev/null 2>/dev/null; mkdir -p "$W/rootfs/usr/lib/ld" && touch \
         "$W/rootfs/usr/lib/ld/ld-linux-x86-64.so.2"
