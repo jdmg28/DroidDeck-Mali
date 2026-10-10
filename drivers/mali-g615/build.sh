@@ -23,7 +23,6 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
-OUT="${1:-$HERE/dist}"
 SRC="$HERE/adapter/droiddeck_mali_icd.c"
 CC="${CC:-aarch64-linux-gnu-gcc}"
 [ "${NATIVE:-0}" = 1 ] && CC="${CC_NATIVE:-cc}"
@@ -40,6 +39,10 @@ VK_INC="${VULKAN_INCLUDE_DIR:-/usr/include}"
 # carries is named in driverVersion, and both are recorded in meta.json with their digests.
 ADAPTER_VERSION=$(sed -n 's/.*ICD adapter, version \([0-9.]*\)\..*/\1/p' "$SRC" | head -1)
 [ -n "$ADAPTER_VERSION" ] || { echo "could not read the adapter version from $SRC"; exit 1; }
+
+# Resolved before anything changes directory: the archive is written from inside the staging tree,
+# where a relative OUT would point somewhere else entirely.
+OUT="$(mkdir -p "${1:-$HERE/dist}" && cd "${1:-$HERE/dist}" && pwd)"
 
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
@@ -86,6 +89,21 @@ if b"libc.so.6" not in data:
 print("  backend %.1f MB, %s, glibc" % (
     len(data) / 1e6, "AArch64" if machine == 0xB7 else "e_machine 0x%x" % machine))
 PY
+
+# The digest of the binary, not just of the download: this is how you prove a repackaged driver
+# carries the exact official build rather than something that merely came from the same URL.
+if [ -n "${EXPECTED_BACKEND_SHA256:-}" ]; then
+    got=$(sha256sum "$BACKEND" | cut -d' ' -f1)
+    if [ "$got" != "$EXPECTED_BACKEND_SHA256" ]; then
+        echo "the backend inside the upstream zip is not the build you expected"
+        echo "  expected $EXPECTED_BACKEND_SHA256"
+        echo "  found    $got"
+        echo "Upstream may have rebuilt the release. Compare it against the SHA-256 table in the"
+        echo "release notes before putting this on a phone that reboots when the GPU faults."
+        exit 1
+    fi
+    echo "  backend digest verified: $got"
+fi
 
 cp "$BACKEND" "$STAGE/libpanvk_backend.so"
 cp "$SRC" "$STAGE/src/droiddeck_mali_icd.c"
