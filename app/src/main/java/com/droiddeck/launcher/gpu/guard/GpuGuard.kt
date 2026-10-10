@@ -224,9 +224,18 @@ object GpuGuard {
             return null
         }
         if (uptime >= end.uptimeMs) return null   // the uptime never went backwards: no restart
-        val how = if (end.byGuard) "the guard stopped it" else "it ended abnormally"
-        return "the device restarted ${formatGap(elapsed)} after session ${end.id}, which $how - an " +
-            "ending the guard forced is the last thing it records before a kernel fault, not a clean end"
+        // Read out loud, because it is the line someone reads after a reboot: "after session X,
+        // which the guard stopped it" was ungrammatical, and a report that has to be re-read is a
+        // report that gets misread.
+        return if (end.byGuard)
+            "the device restarted ${formatGap(elapsed)} after the guard stopped session ${end.id}. " +
+            "An ending the guard forced is the last thing this app records before a kernel fault, so " +
+            "it is not evidence the session ended on its own - and it is no longer believed to keep " +
+            "the phone up: on this device both guarded aborts were followed by a reboot anyway, 48 s " +
+            "and 66 s later."
+        else
+            "the device restarted ${formatGap(elapsed)} after session ${end.id} ended abnormally, " +
+            "with no guard intervention involved"
     }
 
     /** Records a crash on the latch's books, whether it was proved by the platform or by us. */
