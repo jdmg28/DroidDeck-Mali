@@ -2178,5 +2178,5 @@
     <string name="gpu_safety_boot_blind">The boot reason could not be read (%1$s), so the guard cannot see a crash from the phone itself. It detects one from its own record instead: a session left running when the uptime went backwards.</string>
     <string name="gpu_safety_probe_required">Treat a probe that could not run as a failure</string>
     <string name="gpu_safety_probe_required_hint">If the GPU cannot be tested, do not start Steam. Off, a skipped probe launches anyway - which is how a session reaches the kernel with nothing having been shown to work.</string>
-    <string name="gpu_guard_probe_skipped_blocked">The GPU test could not be run, so Steam was not started. Turn it off in Setup, Safety, or create the file droiddeck-no-gpu-probe in the app's folder.</string>
+    <string name="gpu_guard_probe_skipped_blocked">The GPU test could not be run, so Steam was not started. Turn it off in Setup, Safety, or create the file droiddeck-no-gpu-probe in the app\'s folder.</string>
 </resources>
