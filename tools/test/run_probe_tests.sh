@@ -75,12 +75,27 @@ check "the device is reported as the Mali-G615" ""                   "Mali-G615 
 check "a fence that never signals blocks"       "MOCK_FENCE_RESULT=2" "DD_GPU_PROBE_SUBMIT_TIMEOUT: "  78
 check "a fence that lies about the work blocks" "MOCK_SKIP_FILL=1"     "DD_GPU_PROBE_FAILED: "          78
 
-# No loader at all: the probe must report a skip and must never block the launch.
-out=$(python3 "$WORK/probe.py" /nonexistent/icd.json 2>&1); status=$?
-if printf '%s\n' "$out" | grep -q "DD_GPU_PROBE_SKIPPED: no Vulkan loader" && [ "$status" = 0 ]; then
-    echo "  ok   no loader is a skip, and a skip never blocks"
+# A loader that was asked for by name and is not there. Deterministic, unlike "no loader at all":
+# ubuntu-24.04 runners ship a system libvulkan.so.1, so a case built on its absence passed at home
+# and did the opposite here - which is the whole reason the loader is selectable by name.
+out=$(env DD_GPU_PROBE_LOADER="$WORK/nope.so" python3 "$WORK/probe.py" /nonexistent/icd.json 2>&1); status=$?
+if printf '%s\n' "$out" | grep -q "DD_GPU_PROBE_LOADER=.*cannot be opened" && [ "$status" = 0 ]; then
+    echo "  ok   a loader named and missing is named back, as a probe that could not run"
 else
-    echo "  FAIL no loader is a skip, and a skip never blocks (exit $status)"
+    echo "  FAIL a loader named and missing is named back, as a probe that could not run (exit $status)"
+    printf '%s\n' "$out" | tail -3 | sed 's/^/       /'
+    FAILED=1
+fi
+
+# No driver manifest. On a machine with a loader the loader answers and finds nothing behind it;
+# on a machine without one the probe reports a skip. Either way it must not claim the GPU works,
+# and only those two answers are allowed - anything else is an unhandled death.
+out=$(env LD_LIBRARY_PATH="$WORK/empty" python3 "$WORK/probe.py" "$WORK/absent.json" 2>&1); status=$?
+if ! printf '%s\n' "$out" | grep -q "DD_GPU_PROBE_OK" && { [ "$status" = 0 ] || [ "$status" = 78 ]; }; then
+    echo "  ok   no driver present never reads as a pass"
+else
+    echo "  FAIL no driver present never reads as a pass (exit $status)"
+    printf '%s\n' "$out" | tail -3 | sed 's/^/       /'
     FAILED=1
 fi
 

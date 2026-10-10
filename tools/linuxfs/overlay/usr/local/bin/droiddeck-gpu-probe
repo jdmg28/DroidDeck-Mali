@@ -377,6 +377,18 @@ def open_loader():
     the session started with no GPU test behind it at all. Dispatching entry points is precisely
     what the loader exists to do, and it is the path the real session takes as well.
     """
+    # DD_GPU_PROBE_LOADER picks the loader to open. It exists for the test suite in tools/test,
+    # which has to be able to ask "what happens when there is no loader" on a machine where one
+    # happens to be installed, and it is useful by hand: a build of the loader can be pointed at
+    # without touching the session. A name given and not openable is an error, not a skip - being
+    # told which loader to use and not finding it is reported, not swallowed: it arrives as a
+    # probe that could not be run, which the app already treats as one that failed.
+    override = os.environ.get("DD_GPU_PROBE_LOADER", "").strip()
+    if override:
+        try:
+            return ctypes.CDLL(override, mode=os.RTLD_NOW | os.RTLD_LOCAL), override
+        except OSError as error:
+            raise Fail("DD_GPU_PROBE_LOADER=%s cannot be opened (%s)" % (override, error))
     tried = []
     for name in ("libvulkan.so.1", "libvulkan.so"):
         try:
