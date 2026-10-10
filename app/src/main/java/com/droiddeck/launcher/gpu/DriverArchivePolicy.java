@@ -40,7 +40,7 @@ public final class DriverArchivePolicy {
      */
     public static boolean isRuntimeLibrary(String name) {
         return name != null
-                && (name.matches("libLLVM(-19|\\.so\\.19)(\\.[0-9]+)*")
+                && (name.matches("libLLVM(\\.so\\.19(\\.[0-9]+)*|-19\\.so(\\.[0-9]+)*)")
                         || name.matches("libedit\\.so\\.[0-9]+")
                         || name.matches("libtinfo\\.so\\.[0-9]+")
                         || name.matches("libbsd\\.so\\.[0-9]+")
