@@ -114,6 +114,10 @@ jobs:
             exit 1
           fi
           echo "libc=$libc" >> "$GITHUB_ENV"
+          # The runtime is Arch: /lib is a symlink to usr/lib, and qemu looks for the interpreter
+          # at /lib/ld-linux-aarch64.so.1 inside the sysroot, which is not there unless we say so.
+          if [ ! -e rootfs/lib ] && [ -d rootfs/usr/lib ]; then ln -s usr/lib rootfs/lib; fi
+          ls -ld rootfs/lib rootfs/usr/lib || true
 
       - name: Measure the runtime's glibc
         id: glibc

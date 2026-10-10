@@ -19,29 +19,28 @@ package=$("$tools/aapt" dump badging "$apk" |
     sed -n "s/^package: name='\([^']*\)' versionCode='\([^']*\)'.*/\1 \2/p" | head -1)
 [ -n "$package" ] || { echo "apk-identity: $apk has no package line" >&2; exit 1; }
 
-# Verified twice: once as the platform would (which accepts an apk signed with v1 only) and once
-# demanding the v2 that a device running Android 8 or later checks for. An apk signed with v1 only
-# still installs, and still updates from the same key, so its certificate is still worth reading -
-# but the difference is worth knowing about, so it is reported.
+# apksigner prints the certificates whether or not it is happy, and its happiness depends on the
+# sdk range it is asked about: an apk carrying only a v3 signature fails a min-sdk-version 26 check
+# because v3 is not read before Android 9. The certificate is the identity here, so it is read from
+# both runs and the complaints are reported rather than obeyed.
 said=$(mktemp)
 trap 'rm -f "$said"' EXIT
-if "$tools/apksigner" verify --print-certs "$apk" >"$said" 2>&1; then ok_any=1; else ok_any=0; fi
-if "$tools/apksigner" verify --min-sdk-version 26 --print-certs "$apk" >>"$said" 2>&1; then ok26=1; else ok26=0; fi
+"$tools/apksigner" verify --print-certs "$apk" >"$said" 2>&1 || true
+"$tools/apksigner" verify --min-sdk-version 28 --print-certs "$apk" >>"$said" 2>&1 || true
 
-# Every signer's certificate: one line each, so a single-signed apk gives one digest.
-certs=$(sed -n 's/^Signer #[0-9]* certificate SHA-256 digest: \([0-9a-fA-F]\{64\}\).*/\1/p' "$said" | sort -u)
+# Every signer's certificate: one line each, so a single-signed apk gives one digest. apksigner
+# labels them "Signer #1" or "V3.0 Signer" depending on what it found.
+certs=$(sed -n 's/^.*certificate SHA-256 digest: \([0-9a-fA-F]\{64\}\).*/\1/p' "$said" | sort -u)
 count=$(printf '%s\n' "$certs" | grep -c '[0-9a-fA-F]\{64\}' || true)
 if [ "$count" != 1 ]; then
     {
         echo "apk-identity: expected exactly one signing certificate, found $count"
-        echo "apksigner verify: exit $ok_any; with --min-sdk-version 26: exit $ok26"
+        echo "apk-identity: $apk is \`$package\`"
         echo "--- apksigner said:"
         cat "$said"
     } >&2
     exit 1
 fi
-if [ "$ok26" != 1 ]; then
-    echo "apk-identity: note: $apk has no v2 signature, so a device on Android 8 or later" \
-         "would not accept it as a fresh install; its certificate is read all the same" >&2
-fi
+# Whatever apksigner objects to, it is worth knowing about even when the certificate is readable.
+sed -n 's/^\(WARNING\|ERROR\): /apk-identity note: /p' "$said" | sort -u >&2 || true
 echo "$package $certs"
