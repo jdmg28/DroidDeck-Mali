@@ -142,50 +142,31 @@ object BootReason {
      * a kernel panic - a panic is not a shutdown - but it does name the ordinary cases, and
      * `UNKNOWN` after a restart we know was not requested is itself worth recording next to
      * everything else.
+     *
+     * Reached by reflection, with the constants looked up by name, because the method arrived in a
+     * later API level than this app compiles against: a symbol the compiler cannot resolve is a
+     * build that does not run at all, which is a worse outcome than one source fewer.
      */
     fun lastShutdownReason(context: Context): String? {
         if (android.os.Build.VERSION.SDK_INT < 30) return null
         return try {
-            val manager = context.getSystemService(android.content.Context.POWER_SERVICE) as? android.os.PowerManager
-            when (manager?.lastShutdownReason) {
-                android.os.PowerManager.SHUTDOWN_REASON_SHUTDOWN -> "shutdown"
-                android.os.PowerManager.SHUTDOWN_REASON_REBOOT -> "reboot"
-                android.os.PowerManager.SHUTDOWN_REASON_USER_REQUESTED -> "reboot,userrequested"
-                android.os.PowerManager.SHUTDOWN_REASON_BATTERY_THERMAL_STATE -> "shutdown,thermal"
-                android.os.PowerManager.SHUTDOWN_REASON_LOW_BATTERY -> "shutdown,battery"
-                android.os.PowerManager.SHUTDOWN_REASON_THERMAL_SHUTDOWN -> "shutdown,thermal"
-                else -> null
+            val manager = context.getSystemService(Context.POWER_SERVICE) as? android.os.PowerManager
+                ?: return null
+            val value = android.os.PowerManager::class.java
+                .getMethod("getLastShutdownReason").invoke(manager) as? Int ?: return null
+            for ((name, label) in SHUTDOWN_REASONS) {
+                val constant = try {
+                    android.os.PowerManager::class.java.getField(name).getInt(null)
+                } catch (e: Exception) {
+                    continue
+                }
+                if (constant == value) return label
             }
+            null
         } catch (e: Exception) {
+            Log.i(TAG, "last shutdown reason: not available ($e)")
             null
         }
-    }
-
-    /**
-     * A reboot reason to a [Kind]. Deliberately broad: vendors spell the same event several ways
-     * (`reboot,kernel_panic`, `kernel_panic,watchdog`, `HWWDT`, `thermal_shutdown`), and missing a
-     * real panic is the expensive mistake here while treating an ordinary reboot as fatal only
-     * costs the user one confirmation.
-     */
-    fun classify(raw: String): Kind {
-        val text = raw.lowercase()
-        // Panic first: "kernel_panic,watchdog" is a panic that a watchdog then finished, and the
-        // panic is the part that says the GPU driver was involved.
-        if (text.contains("panic") || text.contains("oops") || text.contains("bug(")) return Kind.KERNEL_PANIC
-        if (text.contains("watchdog") || text.contains("wdog") || text.contains("hwwt") ||
-            text.contains("hw watchdog") || text.contains("hwdt")
-        ) return Kind.WATCHDOG
-        if (text.contains("thermal") || text.contains("overheat") || text.contains("overtemp") ||
-            text.contains("shutdown,therm")
-        ) return Kind.THERMAL
-        if (text.contains("reboot") || text.contains("power_key") || text.contains("powerkey") ||
-            text.contains("poweron") || text.contains("cold") || text.contains("rtc") ||
-            text.contains("alarm") || text.contains("adb") || text.contains("shell") ||
-            text.contains("bootloader") || text.contains("recovery") || text.contains("factory") ||
-            text.contains("charger") || text.contains("usb") || text.contains("userrequested") ||
-            text.contains("key_power") || text.contains("kpdpwr") || text.contains("normal")
-        ) return Kind.NORMAL
-        return Kind.UNKNOWN
     }
 
     /** android.os.SystemProperties.get, which apps may read but not call directly. */
