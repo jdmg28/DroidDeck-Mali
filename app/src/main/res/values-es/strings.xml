@@ -2150,4 +2150,6 @@
     <string name="gpu_guard_probe_failed">La guardia de GPU detuvo el inicio: la prueba previa no pasó.</string>
     <string name="gpu_guard_alert_title">La GPU se ha bloqueado</string>
     <string name="gpu_guard_session_stopped">La sesión se detuvo para proteger el dispositivo.</string>
+    <string name="gpu_safety_probe_skipped">salteada: no se probó la GPU</string>
+    <string name="gpu_safety_boot_blind">No se pudo leer el motivo del arranque (%1$s), así que la guardia no puede ver un fallo desde el teléfono mismo. Lo detecta con su propio registro: una sesión que quedó abierta cuando el uptime volvió hacia atrás.</string>
 </resources>

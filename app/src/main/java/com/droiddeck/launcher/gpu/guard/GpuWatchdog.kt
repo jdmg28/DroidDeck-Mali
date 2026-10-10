@@ -61,7 +61,13 @@ class GpuWatchdog(
     private var warned = false
     private var acted = false
 
+    /** When the wedged-process check is allowed to fire: [GRACE_MS] after the session starts. */
+    private var wedgedArmedAt = 0L
+
     private var lastSampleAt = 0L
+
+    /** Whether the compositor has ever given us a frame interval at all, in this process. */
+    private var frameTimingSeenHere = false
 
     /** The newest readings, for the HUD line and the log. */
     @Volatile
@@ -82,6 +88,11 @@ class GpuWatchdog(
         synchronized(lock) {
             if (running) return
             running = true
+            // Arming is delayed, not gated on the first frame. The first version waited for
+            // `firstFrameSeen`, which meant that for the first twenty-odd seconds of a session -
+            // the part where Steam is warming up, and the part in which this device's fault has
+            // actually happened every time - the watchdog was watching nothing.
+            wedgedArmedAt = SystemClock.elapsedRealtime() + GRACE_MS
             acted = false
             warned = false
             stallSamples = 0
@@ -139,6 +150,7 @@ class GpuWatchdog(
     private fun sample() {
         val interactive = power?.isInteractive ?: true
         val presenting = SessionState.firstFrameSeen && !SessionState.suspended
+        val wedgedArmed = !SessionState.suspended && SystemClock.elapsedRealtime() >= wedgedArmedAt
 
         // A screen that is off presents nothing and suspends the session's GPU work by design.
         // Treating that as a stall would stop every session the moment the phone sleeps.
@@ -150,7 +162,14 @@ class GpuWatchdog(
 
         val frame = WaylandCompositor.recentFrameIntervalMs()
         lastFrameIntervalMs = frame
-        val wedged = if (presenting) uninterruptibleCount() else 0
+        if (frame >= 0 && !frameTimingSeenHere) {
+            frameTimingSeenHere = true
+            frameTimingSeen = true
+        }
+        // Deliberately not gated on `presenting`: a fence that will never be signalled parks its
+        // waiters in D whether or not a frame was ever presented, and the clients that hit it are
+        // the ones that never got that far.
+        val wedged = if (wedgedArmed) uninterruptibleCount() else 0
         lastWedged = wedged
         val thermal = thermalCelsius()
         lastThermalC = thermal
@@ -159,7 +178,9 @@ class GpuWatchdog(
         val now = SystemClock.elapsedRealtime()
         if (lastSampleAt == 0L || now - lastSampleAt >= TRACE_MS) {
             lastSampleAt = now
-            GpuGuardLog.log(TAG, "sample: frames ${frame}ms, wedged $wedged, " +
+            GpuGuardLog.log(TAG, "sample: frames " +
+                (if (frame < 0) "unavailable" else "${frame}ms") +
+                ", wedged $wedged${if (wedgedArmed) "" else " (check not armed yet)"}, " +
                 (if (thermal == Int.MIN_VALUE) "thermal unknown" else "battery ${thermal}C"))
         }
 
@@ -178,7 +199,7 @@ class GpuWatchdog(
             stallSamples = 0
         }
 
-        if (presenting && wedged >= WEDGED_COUNT) {
+        if (wedgedArmed && wedged >= WEDGED_COUNT) {
             wedgedSamples++
             if (wedgedSamples == WEDGED_SAMPLES) {
                 act(Action.ABORT, "$wedged processes of this app stuck in uninterruptible sleep " +
@@ -301,5 +322,20 @@ class GpuWatchdog(
 
         /** How far the temperature has to come back before the thermal trip is cleared. */
         const val HYSTERESIS_C = 3
+
+        /**
+         * How long after a session starts before a wedged process counts. Short enough to be
+         * armed well before the window in which this device has faulted, long enough that the
+         * startup's own I/O is over.
+         */
+        const val GRACE_MS = 8_000L
+
+        /**
+         * Whether the compositor has reported a frame interval at any point in this process.
+         * Read by the guard's report: a stall detector with no frame timings is switched on and
+         * blind at the same time, and the person reading the report has to be told which.
+         */
+        @Volatile
+        var frameTimingSeen = false
     }
 }

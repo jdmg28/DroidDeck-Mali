@@ -2,6 +2,7 @@
 package com.droiddeck.launcher.gpu.guard
 
 import android.content.Context
+import android.os.SystemClock
 import com.droiddeck.launcher.core.DeviceSupport
 
 /**
@@ -144,11 +145,21 @@ object GpuSafetyPrefs {
     fun lastProbeSummary(context: Context): String =
         prefs(context).getString("lastProbeSummary", "") ?: ""
 
-    fun setLastProbe(context: Context, ok: Boolean, summary: String) =
+    /**
+     * The verdict line the probe printed (`DD_GPU_PROBE_OK` / `_SKIPPED` / `_FAILED` / ...).
+     * Kept apart from [lastProbeOk] because "did not block" and "was actually run" are different
+     * questions: a skipped probe is allowed through by design, and reporting it as a pass is how
+     * a session ends up starting with no GPU test behind it at all.
+     */
+    fun lastProbeVerdict(context: Context): String =
+        prefs(context).getString("lastProbeVerdict", "") ?: ""
+
+    fun setLastProbe(context: Context, ok: Boolean, summary: String, verdict: String = "") =
         prefs(context).edit()
             .putLong("lastProbeAt", System.currentTimeMillis())
             .putBoolean("lastProbeOk", ok)
             .putString("lastProbeSummary", summary.take(2000))
+            .putString("lastProbeVerdict", verdict.take(200))
             .apply()
 
     /**
@@ -161,6 +172,49 @@ object GpuSafetyPrefs {
 
     fun setLastSeenUptime(context: Context, uptimeMillis: Long) =
         prefs(context).edit().putLong("lastSeenUptime", uptimeMillis).apply()
+
+    /**
+     * A session that started and was never recorded as ending.
+     *
+     * This is the guard's own witness, and it is the one that matters on a phone whose boot reason
+     * cannot be read. It needs no property, no permission and no hidden API: uptime only ever
+     * moves forward except across a reboot, so an uptime now that is behind the uptime the session
+     * started at, or behind where the wall clock says it should be, is a reboot, proved.
+     */
+    class OpenSession(
+        /** The session folder's name: what to look for in the logs. */
+        val id: String,
+        /** UTC wall clock at start, to say how long the session had been going. */
+        val wallMs: Long,
+        /** `elapsedRealtime()` at start, which only resets when the phone restarts. */
+        val uptimeMs: Long,
+        val profile: String,
+    )
+
+    fun openSession(context: Context): OpenSession? {
+        val id = prefs(context).getString("openSessionId", "") ?: ""
+        if (id.isEmpty()) return null
+        val store = prefs(context)
+        return OpenSession(
+            id,
+            store.getLong("openSessionWall", 0L),
+            store.getLong("openSessionUptime", 0L),
+            store.getString("openSessionProfile", "") ?: "",
+        )
+    }
+
+    /** Called the moment a session starts, and the only thing that makes the check below possible. */
+    fun markSessionOpen(context: Context, id: String, profile: String) = prefs(context).edit()
+        .putString("openSessionId", id)
+        .putLong("openSessionWall", System.currentTimeMillis())
+        .putLong("openSessionUptime", SystemClock.elapsedRealtime())
+        .putString("openSessionProfile", profile)
+        .apply()
+
+    /** The session ended and the app saw it end, so it stops being evidence of anything. */
+    fun clearOpenSession(context: Context) = prefs(context).edit()
+        .remove("openSessionId")
+        .apply()
 
     /** Clears the crash history and the lock. The counters are evidence; this throws it away. */
     fun reset(context: Context) = prefs(context).edit()

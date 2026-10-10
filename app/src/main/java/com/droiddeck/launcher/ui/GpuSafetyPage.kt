@@ -68,14 +68,21 @@ internal fun GpuSafetyPanel(host: MenuHost, modifier: Modifier = Modifier) {
     val locked = remember(tick) { p.lockEngaged(context) }
     val reason = remember(tick) { p.lastFatalBootReason(context) }
     val log = remember(tick) { GpuGuardLog.read(context, 40) }
-    val boot = remember { BootReason.read() }
+    val boot = remember { BootReason.read(context.applicationContext) }
 
     val apply: () -> Unit = { tick++; GpuGuard.refresh(context) }
 
     Column(modifier = modifier.fillMaxWidth()) {
         SettingsGroup(stringResource(R.string.gpu_safety_status)) {
+            // Where it came from, and what it means when it came from nowhere: an unreadable boot
+            // reason leaves the latch resting on the guard's own session record, and the person
+            // looking at this needs to know that is the case.
             StatusRow(stringResource(R.string.gpu_safety_boot_reason),
-                if (boot.raw.isEmpty()) stringResource(R.string.gpu_safety_boot_unknown) else "${boot.raw} · ${kindText(boot.kind)}")
+                if (boot.raw.isEmpty()) stringResource(R.string.gpu_safety_boot_unknown)
+                else "${boot.raw} · ${kindText(boot.kind)}")
+            if (boot.kind == com.droiddeck.launcher.gpu.guard.BootReason.Kind.UNKNOWN) {
+                Note(stringResource(R.string.gpu_safety_boot_blind, boot.source))
+            }
             StatusRow(stringResource(R.string.gpu_safety_crashes), crashes.toString())
             if (crashes > 0 && reason.isNotEmpty()) StatusRow(stringResource(R.string.gpu_safety_last_crash), reason)
             StatusRow(stringResource(R.string.gpu_safety_lock), stringResource(if (locked) R.string.gpu_safety_lock_on else R.string.gpu_safety_lock_off))
@@ -84,7 +91,14 @@ internal fun GpuSafetyPanel(host: MenuHost, modifier: Modifier = Modifier) {
             val lastProbe = remember(tick) { GpuGuard.lastProbe }
             StatusRow(stringResource(R.string.gpu_safety_last_probe),
                 if (lastProbe == null) stringResource(R.string.gpu_safety_none_yet)
-                else (if (lastProbe.ok) "✓ " else "✗ ") + lastProbe.summary)
+                // A skipped probe is allowed through on purpose, so saying "✓" next to it would
+                // be a lie that costs a phone: it is marked as the absence of a test instead.
+                else when {
+                    lastProbe.skipped -> "? " + stringResource(R.string.gpu_safety_probe_skipped) +
+                        " - " + lastProbe.summary
+                    lastProbe.ok -> "✓ " + lastProbe.summary
+                    else -> "✗ " + lastProbe.summary
+                })
         }
 
         if (!DeviceSupport.mali()) {

@@ -2174,4 +2174,6 @@
     <string name="gpu_guard_probe_failed">The GPU guard stopped the launch: the pre-flight probe did not pass.</string>
     <string name="gpu_guard_alert_title">The GPU has stalled</string>
     <string name="gpu_guard_session_stopped">The session was stopped to keep the device safe.</string>
+    <string name="gpu_safety_probe_skipped">skipped: no GPU test was run</string>
+    <string name="gpu_safety_boot_blind">The boot reason could not be read (%1$s), so the guard cannot see a crash from the phone itself. It detects one from its own record instead: a session left running when the uptime went backwards.</string>
 </resources>

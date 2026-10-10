@@ -626,7 +626,10 @@ class SessionService : Service() {
                 // itself is a reboot.
                 Thread({
                     try {
-                        Thread.sleep(4000)
+                        // Short: everything from the first wedged sample to the last straggler
+                        // being killed has to fit inside the kernel's own 3 s fence timeout, or
+                        // the sweep is tidying up after a reboot instead of preventing one.
+                        Thread.sleep(1200)
                         killGuestLeftovers()
                         killStragglers()
                         com.droiddeck.launcher.gpu.guard.GpuGuardLog.log("guard", "swept what the session left")

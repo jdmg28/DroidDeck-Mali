@@ -102,6 +102,17 @@ object GpuGuard {
 
     private val lock = Any()
 
+    /**
+     * How far behind the wall clock the uptime may be before it counts as a reboot rather than a
+     * clock step. Ten minutes: an NTP correction or a long sleep with the screen off moves the
+     * wall clock, and `elapsedRealtime()` keeps counting through both, so the gap this is looking
+     * for is a whole boot's worth of uptime, never a minute's.
+     */
+    private const val REBOOT_SLACK_MS = 10L * 60L * 1000L
+
+    /** No frame budget above this can fire before the kernel does; see [startWatchdog]. */
+    private const val MAX_STALL_BUDGET_MS = 2_000L
+
     // ── Start of the app process ──────────────────────────────────────────────────────────────
 
     /**
@@ -125,28 +136,71 @@ object GpuGuard {
             return
         }
 
-        val reading = BootReason.read()
+        val reading = BootReason.read(app)
         GpuGuardLog.log("boot", "app started on a new boot (${formatUptime(uptime)} up); " +
-            "boot reason: ${if (reading.raw.isEmpty()) "not readable" else reading.raw} [${reading.kind}]")
-        if (reading.fatal) {
-            val count = GpuSafetyPrefs.fatalBootCount(app) + 1
-            GpuSafetyPrefs.setFatalBootCount(app, count)
-            GpuSafetyPrefs.setLastFatalBootAt(app, System.currentTimeMillis())
-            GpuSafetyPrefs.setLastFatalBootReason(app, reading.toString())
-            GpuSafetyPrefs.setCleanSessionsSinceFatal(app, 0)
-            if (GpuSafetyPrefs.lockAfterFatalBoot(app)) {
-                GpuSafetyPrefs.setLockEngaged(app, true)
-                GpuGuardLog.log("latch", "boot recorded as ${reading.kind}: launch locked until it is " +
-                    "re-armed (crash $count on record)")
-            } else {
-                GpuGuardLog.log("latch", "boot recorded as ${reading.kind}: crash $count on record; " +
-                    "locking is off, so the launch is only restricted")
-            }
-        } else if (reading.kind == BootReason.Kind.UNKNOWN) {
-            GpuGuardLog.log("boot", "the boot reason could not be read; the guard cannot tell whether " +
-                "the last power-off was clean and leaves the latch as it is")
+            "boot reason: ${if (reading.raw.isEmpty()) "not readable" else reading.raw} [${reading.kind}] " +
+            "(from ${reading.source})")
+
+        // The boot reason is the platform's word for what happened, and on this device it cannot be
+        // read at all - the hidden property API is refused and getprop is the only thing left. So
+        // the guard also keeps its own record, and its own record is the stronger evidence: it does
+        // not say "the phone restarted" in the abstract, it says "a session of ours was running
+        // when it restarted", which is the thing that has to be refused next time.
+        val interrupted = if (com.droiddeck.launcher.session.SessionState.running) null else interruptedSession(app, uptime)
+
+        when {
+            reading.fatal -> noteFatalBoot(app, reading.toString())
+            interrupted?.rebooted == true -> noteFatalBoot(app, interrupted.reason)
+            interrupted != null -> GpuGuardLog.log("boot",
+                "session ${interrupted.id} was left open, but the uptime never went backwards: the app " +
+                    "was killed rather than the phone restarted (${formatUptime(uptime)} up)")
+            reading.kind == BootReason.Kind.UNKNOWN -> GpuGuardLog.log("boot",
+                "no boot reason and no interrupted session: the guard cannot tell whether the last " +
+                    "power-off was clean and leaves the latch as it is")
         }
         refresh(app)
+    }
+
+    /**
+     * A session the app started and never saw end, and whether the phone restarted under it.
+     *
+     * The whole argument is that `elapsedRealtime()` is monotonic and resets only on a reboot, so
+     * an uptime now that is behind the uptime the session began at is a restart, proved. The second
+     * test covers the case where the phone has been up again for longer than it had been up before
+     * (the user waited before opening the app): the uptime is then compared with where the wall
+     * clock says it should be, with ten minutes of slack for clock steps and long sleeps.
+     */
+    private fun interruptedSession(app: android.content.Context, uptime: Long): Interruption? {
+        val mark = GpuSafetyPrefs.openSession(app) ?: return null
+        GpuSafetyPrefs.clearOpenSession(app)
+        val wallElapsed = System.currentTimeMillis() - mark.wallMs
+        val expected = mark.uptimeMs + wallElapsed
+        val rebooted = uptime + 30_000L < mark.uptimeMs || uptime + REBOOT_SLACK_MS < expected
+        val reason = if (rebooted) {
+            "the device restarted while session ${mark.id} was running (uptime had reached " +
+                "${formatUptime(mark.uptimeMs)}, it is ${formatUptime(uptime)} now; profile ${mark.profile})"
+        } else {
+            ""
+        }
+        return Interruption(mark.id, rebooted, reason)
+    }
+
+    private class Interruption(val id: String, val rebooted: Boolean, val reason: String)
+
+    /** Records a crash on the latch's books, whether it was proved by the platform or by us. */
+    private fun noteFatalBoot(app: android.content.Context, reason: String) {
+        val count = GpuSafetyPrefs.fatalBootCount(app) + 1
+        GpuSafetyPrefs.setFatalBootCount(app, count)
+        GpuSafetyPrefs.setLastFatalBootAt(app, System.currentTimeMillis())
+        GpuSafetyPrefs.setLastFatalBootReason(app, reason)
+        GpuSafetyPrefs.setCleanSessionsSinceFatal(app, 0)
+        if (GpuSafetyPrefs.lockAfterFatalBoot(app)) {
+            GpuSafetyPrefs.setLockEngaged(app, true)
+            GpuGuardLog.log("latch", "$reason: launch locked until it is re-armed (crash $count on record)")
+        } else {
+            GpuGuardLog.log("latch", "$reason: crash $count on record; locking is off, so the launch " +
+                "is only restricted")
+        }
     }
 
     /** Recomputes [level] and [profile] from the settings and the crash history. */
@@ -237,6 +291,10 @@ object GpuGuard {
         alert = null
         sessionStopped = false
         constrainLaunch()
+        // Left on the books so that, if the phone dies under this session, the next start can
+        // prove it from the uptime alone - which is the only way to detect a crash on a device
+        // whose boot reason cannot be read.
+        GpuSafetyPrefs.markSessionOpen(app, sessionDir?.name ?: "session", profile.id)
         GpuGuardLog.openSession(sessionDir, listOf(
             "level $level, profile ${profile.id}",
             "output ${SessionState.outputSize.first}x${SessionState.outputSize.second}" +
@@ -282,9 +340,18 @@ object GpuGuard {
     fun startWatchdog(context: Context, onAction: (GpuWatchdog.Action, String) -> Unit): GpuWatchdog? {
         val app = context.applicationContext
         if (!GpuSafetyPrefs.guardEnabled(app) || !GpuSafetyPrefs.liveWatchdog(app)) return null
+        // The kernel on this device gives a fence 3000 ms before it dumps and then panics. A
+        // budget longer than that is a detector that is guaranteed to arrive after the reboot it
+        // exists to prevent, so it is capped here whatever the setting says. Two samples at half a
+        // second put the abort at about 3 s from the last frame, with the sweep right behind it.
+        val budget = minOf(GpuSafetyPrefs.stallBudgetMs(app).toLong(), MAX_STALL_BUDGET_MS)
+        if (budget < GpuSafetyPrefs.stallBudgetMs(app)) {
+            GpuGuardLog.log("guard", "frame budget capped to ${budget}ms: the kernel's own fence " +
+                "timeout on this device is 3000ms")
+        }
         val dog = GpuWatchdog(
             context = app,
-            budgetMs = GpuSafetyPrefs.stallBudgetMs(app).toLong(),
+            budgetMs = budget,
             thermalCeilingC = GpuSafetyPrefs.thermalCeilingC(app),
             onAction = onAction,
         )
@@ -311,6 +378,9 @@ object GpuGuard {
     fun noteSessionEnded(context: Context, endedNormally: Boolean) {
         val app = context.applicationContext
         stopWatchdog()
+        // The app has seen this session end, so it stops being evidence of a crash. It must happen
+        // before the early return below: an ending the guard forced is an ending all the same.
+        GpuSafetyPrefs.clearOpenSession(app)
         GpuGuardLog.closeSession(if (endedNormally) "clean" else "abnormal")
         // An ending the guard forced keeps its notice on screen: the user has to be told why the
         // session they were playing is gone. It is cleared when the next one starts.
@@ -340,7 +410,8 @@ object GpuGuard {
     /** The pre-flight probe's verdict, remembered for the page and the log. */
     fun noteProbe(context: Context, result: Probe.Result) {
         lastProbe = result
-        GpuSafetyPrefs.setLastProbe(context.applicationContext, result.ok, result.summary)
+        GpuSafetyPrefs.setLastProbe(context.applicationContext, result.ok, result.summary,
+            result.verdict ?: "")
         GpuGuardLog.log("probe", result.summary)
     }
 
@@ -352,19 +423,45 @@ object GpuGuard {
         val p = GpuSafetyPrefs
         val lines = mutableListOf<String>()
         lines.add("GPU guard: ${if (p.guardEnabled(app)) "on" else "off"}, level $level, profile ${profile.id}")
-        lines.add("  boot reason (this boot): ${BootReason.read()}")
+
+        // What each part can actually see, not merely whether it is switched on. A guard whose
+        // sensors are blind and says so is worth more than one that reports "on" and was never
+        // able to tell anything.
+        val reading = BootReason.read(app)
+        val reasonBlind = reading.kind == BootReason.Kind.UNKNOWN
+        lines.add("  boot reason (this boot): $reading (from ${reading.source})")
+        lines.add("  crash detection: " + if (reasonBlind)
+            "the guard's session record ONLY - the boot reason is not readable on this device, " +
+                "so the latch cannot see a crash from the phone itself"
+        else "boot reason + the guard's session record")
         lines.add("  boots recorded as a crash: ${p.fatalBootCount(app)}")
         val at = p.lastFatalBootAt(app)
         if (at > 0L) lines.add("  last crash: ${stamp.format(Date(at))} (${p.lastFatalBootReason(app)})")
         lines.add("  launch locked: ${p.lockEngaged(app)}")
         lines.add("  clean sessions since the last crash: ${p.cleanSessionsSinceFatal(app)}")
         lines.add("  sessions stopped by the guard: ${p.guardStops(app)}")
-        lines.add("  watchdog: ${p.liveWatchdog(app)} (frame budget ${p.stallBudgetMs(app)} ms, " +
-            "thermal ceiling ${if (p.thermalCeilingC(app) > 0) "${p.thermalCeilingC(app)} C" else "off"})")
-        lines.add("  pre-flight probe: ${p.preflightProbe(app)}")
+
+        val watchdogOn = p.liveWatchdog(app)
+        lines.add("  watchdog: $watchdogOn (frame budget ${minOf(p.stallBudgetMs(app).toLong(), MAX_STALL_BUDGET_MS)} ms, " +
+            "thermal ceiling ${if (p.thermalCeilingC(app) > 0) "${p.thermalCeilingC(app)} C" else "off"})" +
+            if (watchdogOn && !GpuWatchdog.frameTimingSeen)
+                "  <- the compositor has never reported a frame interval, so the stall detector " +
+                    "cannot fire; only the wedged-process and thermal checks are live"
+            else "")
+
+        val probeOn = p.preflightProbe(app)
+        lines.add("  pre-flight probe: $probeOn")
         val probeAt = p.lastProbeAt(app)
-        if (probeAt > 0L) lines.add("  last probe: ${stamp.format(Date(probeAt))} - " +
-            "${if (p.lastProbeOk(app)) "passed" else "FAILED"}: ${p.lastProbeSummary(app)}")
+        if (probeAt > 0L) {
+            val verdict = p.lastProbeVerdict(app)
+            val skipped = verdict.startsWith("DD_GPU_PROBE_SKIPPED")
+            lines.add("  last probe: ${stamp.format(Date(probeAt))} - " + when {
+                skipped -> "SKIPPED, NO GPU TEST WAS RUN"
+                p.lastProbeOk(app) -> "passed"
+                else -> "FAILED"
+            } + ": ${p.lastProbeSummary(app)}" + if (skipped)
+                "  <- Steam was started WITHOUT the GPU having been tested" else "")
+        }
         return lines.joinToString("\n")
     }
 

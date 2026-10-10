@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-only */
 package com.droiddeck.launcher.gpu.guard
 
+import android.content.Context
 import android.util.Log
 
 /**
@@ -38,7 +39,7 @@ object BootReason {
         UNKNOWN,
     }
 
-    class Reading(val raw: String, val kind: Kind) {
+    class Reading(val raw: String, val kind: Kind, val source: String = "") {
         /** Whether this boot is evidence that the previous one ended in a crash. */
         val fatal: Boolean
             get() = kind == Kind.KERNEL_PANIC || kind == Kind.WATCHDOG || kind == Kind.THERMAL
@@ -59,14 +60,105 @@ object BootReason {
         "vendor.sys.boot.reason",
     )
 
-    fun read(): Reading {
+    fun read(): Reading = read(null)
+
+    /**
+     * Why the phone started the last time, with every source tried in turn.
+     *
+     * [systemProperty] goes first because it is free, but it is a hidden API and on current
+     * Android it is refused: `android.os.SystemProperties` is not in the SDK and reflection into
+     * it returns nothing on a modern device, which is exactly what happened on the Mali-G615 this
+     * was written for - the property came back empty for all five keys and the latch never knew a
+     * crash had happened. So the same properties are then read the way a shell would read them,
+     * by running `getprop`, which is an ordinary unprivileged binary and is not hidden. Last comes
+     * what the platform is willing to say through the SDK about the previous shutdown.
+     */
+    fun read(context: android.content.Context?): Reading {
         for (key in KEYS) {
             val value = systemProperty(key)
             if (value.isBlank()) continue
-            return Reading(value.trim(), classify(value))
+            return Reading(value.trim(), classify(value), "SystemProperties $key")
         }
-        Log.i(TAG, "boot reason: no property under any of $KEYS could be read")
-        return Reading("", Kind.UNKNOWN)
+
+        val properties = getprop()
+        if (properties.isNotEmpty()) {
+            for (key in KEYS) {
+                val value = properties[key]
+                if (value.isNullOrBlank()) continue
+                return Reading(value.trim(), classify(value), "getprop $key")
+            }
+        }
+
+        if (context != null) {
+            val shutdown = lastShutdownReason(context)
+            if (shutdown != null) {
+                return Reading(shutdown, classify(shutdown), "PowerManager.getLastShutdownReason")
+            }
+        }
+
+        Log.i(TAG, "boot reason: no property under any of $KEYS could be read by any means " +
+            "(SystemProperties refused, getprop ${if (properties.isEmpty()) "unavailable" else "had none of them"})")
+        return Reading("", Kind.UNKNOWN, "not readable")
+    }
+
+    /**
+     * Every property the phone has, read by running `getprop` once.
+     *
+     * This is the fallback that matters. A hidden API can be closed; `/system/bin/getprop` is a
+     * binary any app may execute, and it reads the very same property area. It is parsed into a
+     * map so one process start covers every key and every later question.
+     */
+    fun getprop(): Map<String, String> {
+        val out = HashMap<String, String>()
+        for (command in listOf("/system/bin/getprop", "getprop")) {
+            try {
+                val process = ProcessBuilder(command).redirectErrorStream(true).start()
+                if (!process.waitFor(3, java.util.concurrent.TimeUnit.SECONDS)) {
+                    process.destroyForcibly()
+                    continue
+                }
+                process.inputStream.bufferedReader().useLines { lines ->
+                    for (line in lines) {
+                        // "[ro.foo]: [bar]"
+                        val start = line.indexOf('[')
+                        if (start < 0) continue
+                        val middle = line.indexOf("]: [", start)
+                        if (middle < 0) continue
+                        val end = line.lastIndexOf(']')
+                        if (end <= middle) continue
+                        out[line.substring(start + 1, middle)] = line.substring(middle + 4, end)
+                    }
+                }
+                if (out.isNotEmpty()) return out
+            } catch (e: Exception) {
+                Log.i(TAG, "getprop: $command did not run: $e")
+            }
+        }
+        return out
+    }
+
+    /**
+     * What Android recorded as the reason for the last shutdown, through the SDK. It does not name
+     * a kernel panic - a panic is not a shutdown - but it does name the ordinary cases, and
+     * `UNKNOWN` after a restart we know was not requested is itself worth recording next to
+     * everything else.
+     */
+    fun lastShutdownReason(context: Context): String? {
+        if (android.os.Build.VERSION.SDK_INT < 30) return null
+        return try {
+            val manager = context.getSystemService(android.content.Context.POWER_SERVICE) as? android.os.PowerManager
+            when (manager?.lastShutdownReason) {
+                android.os.PowerManager.SHUTDOWN_REASON_SHUTDOWN -> "shutdown"
+                android.os.PowerManager.SHUTDOWN_REASON_REBOOT -> "reboot"
+                android.os.PowerManager.SHUTDOWN_REASON_USER_REQUESTED -> "reboot,userrequested"
+                android.os.PowerManager.SHUTDOWN_REASON_BATTERY_THERMAL_STATE -> "shutdown,thermal"
+                android.os.PowerManager.SHUTDOWN_REASON_LOW_BATTERY -> "shutdown,battery"
+                android.os.PowerManager.SHUTDOWN_REASON_THERMAL_SHUTDOWN -> "shutdown,thermal"
+                else -> null
+            }
+        } catch (e: Exception) {
+            null
+        }
     }
 
     /**

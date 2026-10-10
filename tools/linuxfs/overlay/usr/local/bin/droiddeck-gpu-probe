@@ -100,13 +100,14 @@ fi
 
 submit_seconds_int=${submit_seconds%s}
 if command -v timeout >/dev/null 2>&1; then
-    DD_GPU_PROBE_SUBMIT=1 DD_GPU_PROBE_FENCE_NS="$fence_ns" \
+    DD_GPU_PROBE_SUBMIT=1 DD_GPU_PROBE_FENCE_NS="$fence_ns" VK_LOADER_DEBUG=warn \
         timeout "${submit_seconds_int}s" python3 - "$icd" <<'PY'
 import ctypes
 import json
 import os
 import pathlib
 import sys
+import traceback
 
 # A minimal Vulkan submit, straight against the session's ICD - no loader, so there is nothing
 # between this script and the driver the session itself would use. The whole point is the fence:
@@ -350,30 +351,68 @@ def check(result, what):
     return result
 
 
+def stage(name):
+    """Where the probe had got to, printed as it goes: after a hang, the last stage named is
+    the whole answer to 'what was it doing when it stopped'."""
+    print("== probe stage: %s" % name)
+    sys.stdout.flush()
+
+
+def open_loader():
+    """
+    The guest's Vulkan loader: the same one every application in the session goes through.
+
+    The first version of this probe dlopened the ICD and asked its vk_icdGetInstanceProcAddr
+    for every entry point it needed, instance-level and device-level alike, before any instance
+    existed. That is undefined territory - an ICD is entitled to answer NULL for vkCreateDevice
+    and vkGetDeviceProcAddr when there is no instance yet, and this one did. The NULL was then
+    reported by a broken error path (a .decode() on a str), so the run was labelled a skip and
+    the session started with no GPU test behind it at all. Dispatching entry points is precisely
+    what the loader exists to do, and it is the path the real session takes as well.
+    """
+    tried = []
+    for name in ("libvulkan.so.1", "libvulkan.so"):
+        try:
+            return ctypes.CDLL(name, mode=os.RTLD_NOW | os.RTLD_LOCAL), name
+        except OSError as error:
+            tried.append("%s: %s" % (name, error))
+    for path in (
+        "/usr/lib/x86_64-linux-gnu/libvulkan.so.1",
+        "/usr/lib/aarch64-linux-gnu/libvulkan.so.1",
+        "/usr/lib64/libvulkan.so.1",
+        "/usr/lib/libvulkan.so.1",
+    ):
+        if os.path.exists(path):
+            try:
+                return ctypes.CDLL(path, mode=os.RTLD_NOW | os.RTLD_LOCAL), path
+            except OSError as error:
+                tried.append("%s: %s" % (path, error))
+    raise Fail("no Vulkan loader could be opened (%s)" % "; ".join(tried[:3]))
+
+
 def main():
-    library = manifest_library(sys.argv[1])
-    if not library or not library.is_file():
-        raise Fail("the driver library could not be found from %s" % sys.argv[1])
+    stage("start")
+    print("== python: %s" % sys.version.split()[0])
+    print("== driver manifest: %s" % sys.argv[1])
+    print("== icd library: %s" % manifest_library(sys.argv[1]))
 
-    # RTLD_NOW: a dependency this ICD cannot resolve must fail here, before anything is queued.
-    driver = ctypes.CDLL(str(library), mode=os.RTLD_NOW | os.RTLD_LOCAL)
+    loader, loader_name = open_loader()
+    print("== loader: %s" % loader_name)
+    stage("loader opened")
 
-    negotiate = driver.vk_icdNegotiateLoaderICDInterfaceVersion
-    negotiate.argtypes = [ctypes.POINTER(ctypes.c_uint32)]
-    negotiate.restype = ctypes.c_int32
-    version = ctypes.c_uint32(7)
-    check(negotiate(ctypes.byref(version)), "vk_icdNegotiateLoaderICDInterfaceVersion")
-
-    gipa = driver.vk_icdGetInstanceProcAddr
+    # Which driver answers is decided by VK_DRIVER_FILES / VK_ICD_FILENAMES, exported for this
+    # probe exactly as they are for the session. Every device property found is printed below,
+    # so the log says which driver answered and not merely that one did.
+    gipa = loader.vkGetInstanceProcAddr
     gipa.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
     gipa.restype = ctypes.c_void_p
     if not gipa(None, b"vkCreateInstance"):
-        raise Fail("the ICD has no vkCreateInstance entry point")
+        raise Fail("the loader exposes no vkCreateInstance")
 
     def instance_fn(name, argtypes=None, restype=ctypes.c_int32):
         address = gipa(None, name.encode())
         if not address:
-            raise Fail("the ICD has no %s" % name.decode())
+            raise Fail("the loader has no %s" % name)
         return ctypes.cast(address, ctypes.CFUNCTYPE(restype, *(() if argtypes is None else argtypes)))
 
     vk_create_instance = instance_fn(
@@ -429,6 +468,7 @@ def main():
     instance_info = VkInstanceCreateInfo(sType=ST_INSTANCE_CREATE_INFO, pApplicationInfo=ctypes.cast(ctypes.byref(application), ctypes.c_void_p))
     instance = ctypes.c_uint64(0)
     check(vk_create_instance(ctypes.byref(instance_info), None, ctypes.byref(instance)), "vkCreateInstance")
+    stage("instance created")
     instance_value = instance.value
     if instance_value == 0:
         raise Fail("vkCreateInstance reported success but handed back a null instance")
@@ -463,6 +503,7 @@ def main():
             chosen_vendor = props.vendorID
             print("== note: no Mali-G615 among the devices; using %s" % chosen_name)
         print("== device: %s (vendor 0x%x)" % (chosen_name, chosen_vendor))
+        stage("device chosen")
 
         families = ctypes.c_uint32(0)
         vk_get_physical_device_queue_family_properties(chosen, ctypes.byref(families), None)
@@ -498,6 +539,7 @@ def main():
         )
         device = ctypes.c_uint64(0)
         check(vk_create_device(chosen, ctypes.byref(device_info), None, ctypes.byref(device)), "vkCreateDevice")
+        stage("device created")
         device_value = device.value
         if device_value == 0:
             raise Fail("vkCreateDevice reported success but handed back a null device")
@@ -630,11 +672,14 @@ def main():
 
         submit_info = VkSubmitInfo(sType=ST_SUBMIT_INFO, commandBufferCount=1)
         submit_info.pCommandBuffers = ctypes.cast(ctypes.byref(command_buffer), ctypes.c_void_p)
+        stage("submitting")
         check(vk_queue_submit(queue.value, 1, ctypes.byref(submit_info), fence_value), "vkQueueSubmit")
+        stage("submitted")
         sys.stdout.write("== submitted one %d-byte fill; waiting for its fence\n" % SIZE)
         sys.stdout.flush()
 
         # ── From here on, the GPU's answer is the only thing being measured. ──────────────────
+        stage("waiting for the fence")
         fence_array = (ctypes.c_uint64 * 1)(fence_value)
         status = vk_wait_for_fences(device_value, 1, fence_array, 1, int(os.environ.get("DD_GPU_PROBE_FENCE_NS", "2000000000")))
         if status == VK_TIMEOUT:
@@ -643,6 +688,7 @@ def main():
             sys.exit(78)
         check(status, "vkWaitForFences")
 
+        stage("reading back")
         words = ctypes.cast(mapped, ctypes.POINTER(ctypes.c_uint32))
         bad = -1
         for index in range(SIZE // 4):
@@ -680,6 +726,11 @@ except BaseException as error:
     # Anything unexpected - a struct the driver disagrees with, a Python quirk - is a test that
     # could not be run, and must never be reported as the GPU having failed.
     print("DD_GPU_PROBE_SKIPPED: the submit stage could not be built: %s: %s" % (type(error).__name__, error))
+    # Where it died matters more than what it died of: the stage markers above say how far the
+    # probe got, and the frames say which call. Both go to the log, because a probe that skips
+    # has to leave behind enough to fix it.
+    for frame in traceback.format_exc().splitlines()[-8:]:
+        print("== traceback: %s" % frame)
     sys.exit(0)
 PY
     probe_status=$?
