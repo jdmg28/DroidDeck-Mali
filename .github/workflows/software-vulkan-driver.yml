@@ -459,8 +459,9 @@ jobs:
               gpuVendor: "software",
               sourceLibraryName: "libvulkan_lvp.so",
               vulkanApiVersion: $manifestApi,
-              # What the probe measured: the manifest advertises $manifestApi and the driver took
-              # an instance at $instanceApi through the runtime's own loader.
+              # What the probe measured: the manifest advertises $manifestApi and the driver
+              # took an instance at $instanceApi through the loader of the runtime itself.
+              # No apostrophes in here: the program is inside single quotes for the shell.
               measuredApiVersion: $instanceApi,
               runtimeLibraries: $runtimeLibraries,
               notes: "Mesa lavapipe: a Vulkan driver that rasterises on the CPU. Imported as the runtime driver, it lets a session start with the device GPU kept out of the guest entirely. Far too slow to play on.",

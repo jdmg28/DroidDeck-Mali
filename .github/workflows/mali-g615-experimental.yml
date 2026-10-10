@@ -319,9 +319,13 @@ jobs:
             echo "- [$ASSET]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/download/$TAG/$ASSET)"
             echo
             echo "What is in it: the software (lavapipe) safety mode - on a Mali device the session is"
-            echo "given no GPU node at all and draws on the CPU. Import the software driver zip from the"
-            echo "[software-driver-latest](https://github.com/$GITHUB_REPOSITORY/releases/tag/software-driver-latest)"
-            echo "release under Components -> GPU drivers -> Advanced -> Runtime driver -> Import."
+            echo "given no GPU node at all and draws on the CPU. Without the imported driver the session"
+            echo "starts with the runtime's own and still touches no GPU node; to draw on the CPU import"
+            echo "[DroidDeck-Software-Vulkan-lavapipe.zip](https://github.com/$GITHUB_REPOSITORY/releases/tag/software-mode-lavapipe)"
+            echo "under Components -> GPU drivers -> Advanced -> Runtime driver -> Import. That zip is"
+            echo "built by the other workflow on this branch, which measures the runtime's glibc, checks"
+            echo "every library it ships resolves in that runtime, and loads the ICD through the runtime's"
+            echo "own loader before it publishes anything."
             echo
             echo "Built by [this run]($RUN_URL) from \`${{ github.sha }}\`."
           } > "$RUNNER_TEMP/notes.md"
