@@ -214,7 +214,18 @@ jobs:
 
       - name: Package it for the importer
         run: |
-          set -e
+          # This step's output is captured and, on failure, repeated as an annotation, because the
+          # runner's log lives on a host this machine cannot reach - and a refusal that can only be read
+          # in a web UI is not a diagnosis for whoever is debugging at 3am.
+          #
+          # The shape of the wrapper is deliberate and was tested: `set -e` does not apply inside a
+          # group or a subshell that stands on the left of `||`, so { ...; } 2>&1 | tee ... || { echo
+          # error; exit 1; } would let a failing command in the middle run on to the end and report
+          # success - the exact "green means nothing" failure this branch has already been caught by
+          # twice. So the status is taken from an explicit $( ... ) subshell with its own `set -e`, off
+          # any || list, and only then reported.
+          set +e
+          ( set -e
           LLVM=$(cat stage/.llvm_name); rm -f stage/.llvm_name
           python3 tools/lavapipe/make_meta.py --stage stage \
             --main-library libvulkan_lvp.so --companion "$LLVM" \
@@ -229,8 +240,17 @@ jobs:
           python3 tools/lavapipe/check_sizes.py --archive "$ZIP" --stage stage \
             --policy app/src/main/java/com/droiddeck/launcher/gpu/DriverArchivePolicy.java --zip "$ZIP"
           python3 tools/lavapipe/check_archive.py "$ZIP"
-          sha256sum "$ZIP" | tee sha256.txt
+          sha256sum "$ZIP" > sha256.txt
+          cat sha256.txt
           unzip -l "$ZIP"
+          ) > "$RUNNER_TEMP/package.log" 2>&1
+          status=$?
+          set -e
+          cat "$RUNNER_TEMP/package.log"
+          if [ "$status" != 0 ]; then
+            echo "::error::packaging failed (exit $status): $(tr '\n' '|' < "$RUNNER_TEMP/package.log" | tail -c 900)"
+            exit 1
+          fi
 
       - name: Publish
         run: |
