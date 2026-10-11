@@ -300,8 +300,15 @@ if [ -z "${BL_INSIDE:-}" ]; then
       echo "DD_SOFTWARE_NO_XWAYLAND: this runtime has no Xwayland, so nothing can be displayed"
       exit 66
     fi
-    Xwayland :1 -screen "${width}x${height}" -nolisten tcp >>"${BL_DEBUG_DIR:-/tmp}/xwayland.log" 2>&1 &
+    # -geometry, not -screen: this Xwayland takes the size of its window from -geometry and
+    # rejects -screen outright ("Unrecognized option: -screen", fatal) - which is how the first
+    # software session ended, with Steam unable to open a display.
+    Xwayland :1 -geometry "${width}x${height}" -nolisten tcp >>"${BL_DEBUG_DIR:-/tmp}/xwayland.log" 2>&1 &
     for _ in $(seq 1 100); do [ -S /tmp/.X11-unix/X1 ] && break; sleep 0.1; done
+    if [ ! -S /tmp/.X11-unix/X1 ]; then
+      echo "DD_SOFTWARE_XWAYLAND_FAILED: Xwayland never answered; see xwayland.log"
+      exit 66
+    fi
     export DISPLAY=:1
     echo "== software: Xwayland on $DISPLAY at ${width}x${height}, a client of ${WAYLAND_DISPLAY:-no compositor}"
   else

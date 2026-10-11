@@ -1,0 +1,187 @@
+name: Mali PanVK-kbase driver package (G615)
+
+# A package the app's Linux driver importer accepts that draws on the Mali GPU: zenithblue's
+# standalone Mesa PanVK (talking straight to mali_kbase) with DroidDeck's own ICD adapter in front
+# of it. Published as a release asset, never inside the APK.
+#
+# Why the adapter: gamescope refuses a physical device with no DRM primary node ("physical device
+# has no primary node"), and a driver that reaches the GPU through mali_kbase rather than through
+# DRM has none to report. The adapter is a 67 KB ICD shim - source in the kit zip in this repo's
+# root, MIT - that answers gamescope's question for it: it forwards everything to the backend and
+# fills VK_EXT_physical_device_drm with the real device numbers of /dev/mali0. It never opens the
+# GPU itself. Imported raw, without the shim, the driver loads, names the GPU and then stops there.
+#
+# This package is the GPU path, not the safe one: installing and selecting it means a session
+# issues real work to the GPU. The software (lavapipe) package from the other workflow is the one
+# that keeps the GPU out of the guest.
+on:
+  push:
+    branches: [ mali-g615-experimental, 'arena/**' ]
+    paths:
+      - .github/workflows/mali-panvk-driver.yml
+      - DroidDeck-Mali-G615-driver-0.1.0.zip
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: mali-panvk-driver
+  cancel-in-progress: true
+
+env:
+  GH_TOKEN: ${{ github.token }}
+  # Upstream: zenithblue's PanVK-kbase, glibc build (the Linux runtime is glibc; the Android .so
+  # in the same release would not load in the guest at all). Their own reference device for it is
+  # a Poco X6 Pro - Mali-G615 MC6, the phone this branch is for. Pinned by checksum.
+  UPSTREAM_TAG: g615-v11-csf-v0.1.0-beta.18-rc1
+  UPSTREAM_ASSET: libvulkan_panfrost-glibc-aarch64.so
+  UPSTREAM_SHA256: 4603b00f98e66f673b8c9695dda0ded826a3fad1b43d62c1ae3d5f81fe5d398e
+  # The adapter: DroidDeck's ICD shim, shipped in the kit zip committed in this repo's root.
+  KIT_ZIP: DroidDeck-Mali-G615-driver-0.1.0.zip
+  ADAPTER_NAME: libvulkan_droiddeck_mali.so
+  ADAPTER_SHA256: 73fb851722987479276db954fc45b555de5d1d090f6a0f19927300d4d31ae97b
+  RELEASE_TAG: mali-panvk-latest
+  RELEASE_ASSET: DroidDeck-Mali-G615-PanVK-kbase-beta18.zip
+
+jobs:
+  package:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Fetch the upstream PanVK-kbase driver
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 3 -o upstream.so \
+            "https://github.com/zenithblue-oss/panvk-kbase-android/releases/download/$UPSTREAM_TAG/$UPSTREAM_ASSET"
+          echo "$UPSTREAM_SHA256  upstream.so" | sha256sum -c -
+          ls -l upstream.so
+
+      - name: Take the adapter out of the kit in this repo
+        run: |
+          set -euo pipefail
+          # -j: the kit has it at the root, and only the file itself is wanted here.
+          unzip -o -j "$KIT_ZIP" "$ADAPTER_NAME" -d kit
+          echo "$ADAPTER_SHA256  kit/$ADAPTER_NAME" | sha256sum -c -
+          unzip -o -j "$KIT_ZIP" "LICENSE.adapter" "NOTICE.txt" -d kit/licenses >/dev/null 2>&1 || true
+
+      - name: Both halves are aarch64 and glibc
+        run: |
+          set -euo pipefail
+          # The same two checks the app makes when it imports a driver: an aarch64 object that
+          # links glibc's versioned soname. A bionic .so would load in neither place.
+          for f in "kit/$ADAPTER_NAME" upstream.so; do
+            readelf -h "$f" | grep -q AArch64 || { echo "::error::$f is not an aarch64 object"; exit 1; }
+            grep -qa "libc.so.6" "$f" || { echo "::error::$f does not link glibc"; exit 1; }
+            echo "$f: $(readelf -h "$f" | sed -n 's/^ *Machine: *//p')"
+          done
+          # The adapter loads its backend by name, from its own directory.
+          grep -qa "libpanvk_backend.so" "kit/$ADAPTER_NAME" || { echo "::error::the adapter does not look for libpanvk_backend.so"; exit 1; }
+
+      - name: Write the package
+        run: |
+          set -euo pipefail
+          work=build
+          mkdir -p "$work"
+          cp "kit/$ADAPTER_NAME" "$work/$ADAPTER_NAME"
+          cp upstream.so "$work/libpanvk_backend.so"
+          [ -d kit/licenses ] && cp -r kit/licenses "$work/licenses" || true
+          # What the importer reads: the name it offers, the version it shows, the glibc the
+          # driver needs, and the Vulkan API version for the manifest it writes. gpuVendor is not
+          # "software" here on purpose - this package draws with the GPU.
+          cat > "$work/meta.json" <<JSON
+          {
+            "schemaVersion": 1,
+            "kind": "linux-vulkan-icd",
+            "name": "DroidDeck Mali-G615 PanVK-kbase beta.18-rc1",
+            "driverVersion": "Adapter 0.1.0 / PanVK-kbase beta.18-rc1 / Mesa 26.3.0-devel 5a07217f",
+            "minGlibc": "2.38",
+            "libc": "glibc",
+            "vulkanApiVersion": "1.4.363",
+            "gpuVendor": "mali",
+            "gpu": "Mali-G615 MC6",
+            "kernelInterface": "mali_kbase CSF",
+            "backendLibraryName": "libpanvk_backend.so",
+            "upstreamRelease": "$UPSTREAM_TAG",
+            "upstreamLibrary": "$UPSTREAM_ASSET",
+            "upstreamSha256": "$UPSTREAM_SHA256",
+            "adapterSha256": "$ADAPTER_SHA256"
+          }
+          JSON
+          python3 -c 'import json,sys; json.load(open("'"$work"'/meta.json")); print("meta.json parses")'
+          ( cd "$work" && zip -q -r -9 "../$RELEASE_ASSET" . )
+          sha256sum -- "$RELEASE_ASSET" > "$RELEASE_ASSET.sha256"
+          cat "$RELEASE_ASSET.sha256"
+          unzip -l "$RELEASE_ASSET"
+
+      - name: Publish
+        run: |
+          set -euo pipefail
+          TAG=$RELEASE_TAG
+          ASSET=$RELEASE_ASSET
+          work=$RUNNER_TEMP/publish
+          mkdir -p "$work"
+          cp "$ASSET" "$ASSET.sha256" "$work/"
+          if ! gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$TAG" -R "$GITHUB_REPOSITORY" --prerelease \
+              --title "DroidDeck Mali PanVK-kbase driver (GPU)" --notes "Replaced by every build."
+          fi
+          gh release upload "$TAG" "$work"/* -R "$GITHUB_REPOSITORY" --clobber
+          # One zip, the one just built: an asset an older build left is removed, so the release
+          # never offers two things to import.
+          keep=$(cd "$work" && ls | jq -R . | jq -sc .)
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" |
+            jq -r --argjson keep "$keep" '.assets[] | select(.name as $n | $keep | index($n) | not) | .id' |
+            while IFS= read -r id; do
+              gh api --method DELETE "repos/$GITHUB_REPOSITORY/releases/assets/$id" >/dev/null
+            done
+          {
+            echo "## DroidDeck Mali PanVK-kbase driver package"
+            echo
+            echo "Mesa PanVK (zenithblue) talking to mali_kbase, with DroidDeck's ICD adapter in"
+            echo "front, as one zip the app's Linux driver importer accepts:"
+            echo "Components -> GPU drivers -> Advanced -> Runtime driver -> Import."
+            echo
+            echo "- [$ASSET]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/download/$TAG/$ASSET)"
+            echo "- [$ASSET.sha256](https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/$ASSET.sha256)"
+            echo
+            echo "**What it is for:** a session that draws with the Mali GPU. gamescope needs a"
+            echo "DRM primary node to composite at all, and a driver that reaches the GPU through"
+            echo "kbase has none to report - the adapter is what answers for it."
+            echo
+            echo "**It uses the GPU.** This is not the safe path: selecting it puts real work on"
+            echo "the GPU, and an earlier build of this driver froze a phone mid-session. The safe"
+            echo "path is the lavapipe package in"
+            echo "[software-mode-lavapipe](https://github.com/$GITHUB_REPOSITORY/releases/tag/software-mode-lavapipe),"
+            echo "which keeps the GPU out of the guest entirely."
+            echo
+            echo "Pinned by checksum in the workflow: the upstream driver"
+            echo "\`$UPSTREAM_ASSET\` ($UPSTREAM_TAG) and the adapter, whose source ships in the kit"
+            echo "zip in this repository. Both halves are checked to be aarch64 glibc before they"
+            echo "are packaged."
+            echo
+            echo "Built by [this run]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID)"
+            echo "from \`${GITHUB_SHA}\`."
+          } > "$RUNNER_TEMP/notes.md"
+          gh release edit "$TAG" -R "$GITHUB_REPOSITORY" --notes-file "$RUNNER_TEMP/notes.md"
+
+      - name: Upload the zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: DroidDeck-Mali-G615-PanVK-kbase-beta18
+          path: '*.zip'
+          if-no-files-found: error
+
+      - name: Report
+        if: always()
+        run: |
+          {
+            echo "## Mali PanVK-kbase package"
+            echo
+            echo "Upstream \`$UPSTREAM_ASSET\` ($UPSTREAM_TAG), adapter from \`$KIT_ZIP\`."
+            echo "Published as \`$RELEASE_TAG\` when it got that far."
+          } >> "$GITHUB_STEP_SUMMARY"
