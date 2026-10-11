@@ -48,6 +48,14 @@ collect_steam_logs() {
   # and that is still the only thing that says why a game stopped.
   find "$HOME" -maxdepth 1 -type f -name 'steam-*.log' -size -8192k \
     -exec cp {} "$BL_DEBUG_DIR/steam/" \; 2>/dev/null
+  # One past that is trimmed to its end instead of dropped, which is what the app now does with a
+  # big log in this folder when it shares it: a run with +loaddll writes more than 8 MB, and this
+  # log's answer to why a game stopped is its last lines, never its first.
+  find "$HOME" -maxdepth 1 -type f -name 'steam-*.log' ! -size -8192k -print 2>/dev/null \
+  | while IFS= read -r proton_log; do
+      { echo "... (this log was trimmed: only its last 8 MB are here)"
+        tail -c 8388608 "$proton_log" | tail -n +2; } > "$BL_DEBUG_DIR/steam/${proton_log##*/}" 2>/dev/null
+    done
   # NOT copied, ever: loginusers.vdf, config.vdf and the ssfn* files, which hold the credentials
   # themselves rather than a mention of them.
   local sync_store=$HOME/.local/share/droiddeck-esync sync_file
