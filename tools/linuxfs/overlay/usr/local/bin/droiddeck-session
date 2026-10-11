@@ -303,7 +303,11 @@ if [ -z "${BL_INSIDE:-}" ]; then
     # -geometry, not -screen: this Xwayland takes the size of its window from -geometry and
     # rejects -screen outright ("Unrecognized option: -screen", fatal) - which is how the first
     # software session ended, with Steam unable to open a display.
-    Xwayland :1 -geometry "${width}x${height}" -nolisten tcp >>"${BL_DEBUG_DIR:-/tmp}/xwayland.log" 2>&1 &
+    # -nolock as well: under proot the lock file cannot be linked into place
+    # ("Linking lock file (/tmp/.X1-lock) in place failed: Operation not permitted"), and
+    # Xwayland treats that as fatal - there is one client of this server and nothing to lock it
+    # against.
+    Xwayland :1 -geometry "${width}x${height}" -nolisten tcp -nolock >>"${BL_DEBUG_DIR:-/tmp}/xwayland.log" 2>&1 &
     for _ in $(seq 1 100); do [ -S /tmp/.X11-unix/X1 ] && break; sleep 0.1; done
     if [ ! -S /tmp/.X11-unix/X1 ]; then
       echo "DD_SOFTWARE_XWAYLAND_FAILED: Xwayland never answered; see xwayland.log"
