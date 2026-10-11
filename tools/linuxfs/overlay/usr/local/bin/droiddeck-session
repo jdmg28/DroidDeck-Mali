@@ -303,17 +303,25 @@ if [ -z "${BL_INSIDE:-}" ]; then
     # -geometry, not -screen: this Xwayland takes the size of its window from -geometry and
     # rejects -screen outright ("Unrecognized option: -screen", fatal) - which is how the first
     # software session ended, with Steam unable to open a display.
-    # -nolock as well: under proot the lock file cannot be linked into place
-    # ("Linking lock file (/tmp/.X1-lock) in place failed: Operation not permitted"), and
-    # Xwayland treats that as fatal - there is one client of this server and nothing to lock it
-    # against.
-    Xwayland :1 -geometry "${width}x${height}" -nolisten tcp -nolock >>"${BL_DEBUG_DIR:-/tmp}/xwayland.log" 2>&1 &
-    for _ in $(seq 1 100); do [ -S /tmp/.X11-unix/X1 ] && break; sleep 0.1; done
-    if [ ! -S /tmp/.X11-unix/X1 ]; then
+    # No display number of our own, and -displayfd instead of -nolock: the server takes the first
+    # free display and writes its number to the fd, and -displayfd is what turns the lock off -
+    # xserver sets nolock for it (os/utils.c) for any user. -nolock itself is refused to everyone
+    # but root ("Warning: the -nolock option can only be used by root", and this session runs as
+    # uid 10370), and the lock then cannot be linked into place under proot either:
+    # "Linking lock file (/tmp/.X1-lock) in place failed: Operation not permitted", fatal. It is
+    # how gamescope starts its own Xwaylands, which is why they come up where ours did not.
+    _bl_xdisplay=$(mktemp "${BL_DEBUG_DIR:-/tmp}/xwayland-display.XXXXXX")
+    Xwayland -geometry "${width}x${height}" -nolisten tcp -displayfd 3 3>"$_bl_xdisplay" \
+      >>"${BL_DEBUG_DIR:-/tmp}/xwayland.log" 2>&1 &
+    for _ in $(seq 1 100); do [ -s "$_bl_xdisplay" ] && break; sleep 0.1; done
+    _bl_xnum=$(tr -cd 0-9 < "$_bl_xdisplay")
+    rm -f "$_bl_xdisplay"
+    if [ -z "$_bl_xnum" ]; then
       echo "DD_SOFTWARE_XWAYLAND_FAILED: Xwayland never answered; see xwayland.log"
       exit 66
     fi
-    export DISPLAY=:1
+    for _ in $(seq 1 100); do [ -S "/tmp/.X11-unix/X$_bl_xnum" ] && break; sleep 0.1; done
+    export DISPLAY=:$_bl_xnum
     echo "== software: Xwayland on $DISPLAY at ${width}x${height}, a client of ${WAYLAND_DISPLAY:-no compositor}"
   else
     exec gamescope "${args[@]}" -- "$0" "$mode" "$@"
@@ -894,11 +902,19 @@ BUSCONF
         done
       ) &
     fi
-    # Software mode leaves the client's browser free to fall back to its own software rasteriser:
-    # -cef-force-gpu would keep it waiting for a GPU (ANGLE over lavapipe) that may not come up,
-    # and a browser that cannot fall back draws nothing at all.
+    # The client's browser (CEF) is kept off the GPU unless BL_CEF_GPU=1 asks for it: on a
+    # Mali-G615 the session came all the way up - gamescope compositing on the real GPU, both
+    # Xwaylands answering, the client past its own checks - and the device restarted seconds
+    # after the browser asked that GPU for Vulkan. Games keep the GPU either way; this is only
+    # the store and the library, and a browser drawing on the CPU costs far less than the phone
+    # restarting. Software mode never asks: it has no GPU to give, and a browser told to wait
+    # for one draws nothing at all.
     _bl_cef=(-no-cef-sandbox -cef-ozone-platform=x11 -cef-use-gl=angle -cef-use-angle=vulkan)
-    [ "$software" = yes ] || _bl_cef+=(-cef-force-gpu)
+    if [ "$software" != yes ] && [ "${BL_CEF_GPU:-0}" = 1 ]; then
+      _bl_cef+=(-cef-force-gpu)
+    else
+      _bl_cef+=(-cef-disable-gpu)
+    fi
     echo "== steam args: ${_bl_ui[*]} ${_bl_cdp[*]} ${_bl_lang[*]} -clientbeta $steam_channel ${_bl_cef[*]} $*"
     # An update that cannot install asks for a restart (rc=42) every time; the count is capped so a
     # session can never again loop in silence, which reads as a menu opening and closing by itself.
