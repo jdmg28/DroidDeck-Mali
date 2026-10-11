@@ -78,6 +78,11 @@ while read -r block file sum; do
     { rm -f "$work/$file"; part_curl "$cdn/$file" -o "$work/$file"; }
   echo "$sum  $work/$file" | sha256sum -c --quiet
   unzip -qo "$work/$file" -d "$steam_root"
+  # The package file itself, kept under the name the manifest gave it: before the client believes
+  # the install it looks for every one of these in package/ and reports "Package file ... missing
+  # or incorrect size" for each that is not there. Thrown away here, the first start downloads the
+  # 666 MB it already has again, in the dark, while the session looks stuck.
+  cp -f "$work/$file" "$steam_root/package/$file"
   rm -f "$work/$file"
 done < "$work/parts"
 # Some entries are zipped with Windows separators; unzip keeps the backslash in the file name.
