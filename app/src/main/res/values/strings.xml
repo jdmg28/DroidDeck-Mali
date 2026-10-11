@@ -295,6 +295,8 @@
     <string name="mode_deck_mode_hint">Steam\'s Deck interface and Quick Access performance controls. Applies next session.</string>
     <string name="mode_mangoapp">Performance overlay</string>
     <string name="mode_mangoapp_hint">Turn off if games crash or go black in Deck mode. Applies next session.</string>
+    <string name="mode_steam_ui_gpu">Steam interface on the GPU (experimental)</string>
+    <string name="mode_steam_ui_gpu_hint">Off: the store and the library are drawn by the CPU while games keep using the GPU. Turn it on only to test, it has restarted a phone. Applies next session.</string>
     <string name="mode_branch">Client branch</string>
     <string name="mode_branch_deck">Steam Deck public beta (required by Deck mode).</string>
     <string name="mode_branch_hint">Applies next session. Steam may update itself once.</string>

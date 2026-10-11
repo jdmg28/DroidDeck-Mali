@@ -482,6 +482,15 @@ object SessionPrefs {
     fun setMangoapp(context: Context, on: Boolean) { prefs(context).edit().putBoolean("mangoapp", on).apply() }
 
     /**
+     * The client's own browser (CEF) on the GPU instead of on the CPU. Off by default, and off is
+     * the safe side: a session on a Mali-G615 had gamescope compositing on the real GPU and both
+     * Xwaylands answering, and the device restarted seconds after the client's browser asked that
+     * GPU for Vulkan. Games use the GPU either way - this is the store and the library only.
+     */
+    fun steamUiOnGpu(context: Context): Boolean = prefs(context).getBoolean("steamUiGpu", false)
+    fun setSteamUiOnGpu(context: Context, on: Boolean) { prefs(context).edit().putBoolean("steamUiGpu", on).apply() }
+
+    /**
      * Zink's lazy descriptor mode (ZINK_DESCRIPTORS=lazy) with its compact set layout
      * (ZINK_DEBUG=compact) for the client's GL-on-Vulkan UI, as WinNative runs it. On by default.
      */

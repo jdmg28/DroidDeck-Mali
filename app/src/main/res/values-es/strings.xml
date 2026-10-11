@@ -289,6 +289,8 @@
     <string name="mode_deck_mode_hint">La interfaz Deck de Steam y los controles de rendimiento de Quick Access. Se aplica en la próxima sesión.</string>
     <string name="mode_mangoapp">Superposición de rendimiento</string>
     <string name="mode_mangoapp_hint">Desactívalo si los juegos fallan o se quedan en negro en modo Deck. Se aplica en la próxima sesión.</string>
+    <string name="mode_steam_ui_gpu">Interfaz de Steam en la GPU (experimental)</string>
+    <string name="mode_steam_ui_gpu_hint">Apagado: la tienda y la biblioteca se dibujan con la CPU mientras los juegos siguen usando la GPU. Prendelo solo para probar; hay un teléfono que se reinició por esto. Se aplica en la próxima sesión.</string>
     <string name="mode_branch">Rama del cliente</string>
     <string name="mode_branch_deck">Beta pública de Steam Deck (requerida por el modo Deck).</string>
     <string name="mode_branch_hint">Se aplica en la próxima sesión. Steam puede actualizarse una vez.</string>

@@ -668,6 +668,9 @@ class SessionService : Service() {
         guest.add("GLIBC_TUNABLES=glibc.pthread.rseq=0:glibc.malloc.top_pad=16777216")
         if (SessionState.mode == MODE_STEAM) guest.add("BL_STEAMDECK=" + (if (SessionPrefs.steamDeckMode(this)) "1" else "0"))
         if (SessionState.mode == MODE_STEAM) guest.add("BL_MANGOAPP=" + (if (!mali && SessionPrefs.mangoapp(this)) "1" else "0"))
+        // The client's browser (CEF) on the GPU; off unless asked, so a browser that panics the
+        // GPU driver does not take the phone with it (droiddeck-session reads BL_CEF_GPU).
+        if (SessionState.mode == MODE_STEAM) guest.add("BL_CEF_GPU=" + (if (SessionPrefs.steamUiOnGpu(this)) "1" else "0"))
         if (steamHere) guest.add("BL_STEAM_CHANNEL=" + SessionPrefs.steamChannel(this))
         if (SessionState.mode == MODE_STEAM) {
             guest.add("BL_GAMESCOPE_STRETCH_16X9=" + (if (SessionPrefs.stretch16x9(this)) "1" else "0"))
