@@ -121,17 +121,25 @@ class SessionLogShareTest {
         assertTrue(zip(folder).values.none { it.contains(leaked) })
     }
 
-    @Test fun steamLogsPastTheSizeLimitStayOut() {
+    @Test fun steamLogsPastTheSizeLimitGoInAsTheirTail() {
         val folder = tmp.newFolder("2026-10-06-07-steam")
         File(folder, "session.log").writeText("ok\n")
         File(folder, "steam").mkdirs()
         File(folder, "steam/console_log.txt").writeText("ok\n")
-        File(folder, "steam/cef_log.previous.txt").outputStream().use { out ->
+        val big = File(folder, "steam/cef_log.previous.txt")
+        big.outputStream().use { out ->
             val line = ByteArray(1024) { 'x'.code.toByte() }.also { it[it.size - 1] = '\n'.code.toByte() }
             repeat(9 * 1024) { out.write(line) }
         }
-        val names = zip(folder).keys
-        assertTrue("steam/console_log.txt" in names)
-        assertFalse("steam/cef_log.previous.txt" in names)
+        val out = zip(folder)
+        // A log under the limit is still whole.
+        assertEquals("ok\n", out.getValue("steam/console_log.txt"))
+        // One over it is in, as its end: cut on a line, and saying what was left out. The last line
+        // is the one that says why a game stopped, which is the point of keeping it.
+        val tail = out["steam/cef_log.previous.txt"] ?: error("the log past the limit was left out")
+        val over = big.length() - 8L * 1024 * 1024
+        assertTrue(tail.endsWith("... (this log was trimmed: its first ${over / 1024} KB were left out)\n"))
+        assertEquals(1024, tail.substringBefore('\n').length)
+        assertTrue(tail.length <= 8L * 1024 * 1024 + 100)
     }
 }
