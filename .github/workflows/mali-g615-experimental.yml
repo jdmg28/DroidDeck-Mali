@@ -187,7 +187,19 @@ jobs:
         run: |
           test -f app/src/main/java/com/droiddeck/launcher/gpu/GpuSafety.kt
           test -f tools/release/apk-identity.sh
-          bash tools/build_local.sh
+          # Kept, and uploaded below when it fails: a broken build is a wall of compiler output
+          # that otherwise exists only in this job's log, which cannot be fetched from outside
+          # the runner - so a failure here used to be unreadable.
+          bash tools/build_local.sh 2>&1 | tee "$RUNNER_TEMP/build.log"
+          exit "${PIPESTATUS[0]}"
+
+      - name: Upload the build log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: ${{ runner.temp }}/build.log
+          if-no-files-found: warn
 
       # build_local.sh assembles the apk and nothing else, so the tests it does not run are run
       # here: GpuSafetyTest says what a device with no stored setting does, which is the whole of
