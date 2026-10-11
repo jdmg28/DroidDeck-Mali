@@ -367,12 +367,22 @@ for name in %s; do
  [ -n "$depot" ] && break
 done
 # Why a game stopped is a question only Proton's own log answers, and Proton does not write one
-# unless it is asked: BL_PROTON_LOG=1 (droiddeck-env) turns it on for every launch, into this
-# session's log folder beside the copy of the client's logs, so the next report carries it.
-if [ "${BL_PROTON_LOG:-0}" = 1 ] && [ -n "${BL_DEBUG_DIR:-}" ]; then
-  mkdir -p "$BL_DEBUG_DIR/steam" 2>/dev/null
-  export PROTON_LOG=1 PROTON_LOG_DIR="$BL_DEBUG_DIR/steam"
-fi
+# unless it is asked. On by default (BL_PROTON_LOG=0 turns it off) while a title does not get past
+# its loading screen: it goes into this session's log folder, beside the copy of the client's logs,
+# so the next report carries it without anyone having to find it.
+# WINEDEBUG is named too. Proton keeps one that is already set and otherwise asks for +debugstr,
+# which is a line per frame from some titles - the log would say everything and be unreadable.
+# These are the channels that say how far a game got and what ended it.
+case ${BL_PROTON_LOG:-1} in
+  0) ;;
+  *)
+    if [ -n "${BL_DEBUG_DIR:-}" ]; then
+      mkdir -p "$BL_DEBUG_DIR/steam" 2>/dev/null
+      export PROTON_LOG=1 PROTON_LOG_DIR="$BL_DEBUG_DIR/steam"
+      export WINEDEBUG="${WINEDEBUG:-+timestamp,+pid,+tid,+seh,+err,+warn,+loaddll,+module}"
+    fi
+    ;;
+esac
 if [ -n "$depot" ]; then
   bl_components "$depot"
   bl_directaudio "$depot"
