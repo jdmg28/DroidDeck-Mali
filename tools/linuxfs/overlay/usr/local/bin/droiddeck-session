@@ -43,6 +43,11 @@ collect_steam_logs() {
   [ -d "$steam_root/logs" ] && find "$steam_root/logs" -maxdepth 1 -type f -size -8192k \
     -exec cp {} "$BL_DEBUG_DIR/steam/" \; 2>/dev/null
   [ -f "$HOME/.steam/steam/logs/steamwebhelper.log" ] && cp "$HOME/.steam/steam/logs/steamwebhelper.log" "$BL_DEBUG_DIR/steam/" 2>/dev/null
+  # Proton's own log, when BL_PROTON_LOG=1 asked for it. It is pointed at this folder through
+  # PROTON_LOG_DIR; a Proton that does not read that writes steam-<appid>.log in $HOME instead,
+  # and that is still the only thing that says why a game stopped.
+  find "$HOME" -maxdepth 1 -type f -name 'steam-*.log' -size -8192k \
+    -exec cp {} "$BL_DEBUG_DIR/steam/" \; 2>/dev/null
   # NOT copied, ever: loginusers.vdf, config.vdf and the ssfn* files, which hold the credentials
   # themselves rather than a mention of them.
   local sync_store=$HOME/.local/share/droiddeck-esync sync_file

@@ -366,6 +366,13 @@ for name in %s; do
  done <<< "$libraries"
  [ -n "$depot" ] && break
 done
+# Why a game stopped is a question only Proton's own log answers, and Proton does not write one
+# unless it is asked: BL_PROTON_LOG=1 (droiddeck-env) turns it on for every launch, into this
+# session's log folder beside the copy of the client's logs, so the next report carries it.
+if [ "${BL_PROTON_LOG:-0}" = 1 ] && [ -n "${BL_DEBUG_DIR:-}" ]; then
+  mkdir -p "$BL_DEBUG_DIR/steam" 2>/dev/null
+  export PROTON_LOG=1 PROTON_LOG_DIR="$BL_DEBUG_DIR/steam"
+fi
 if [ -n "$depot" ]; then
   bl_components "$depot"
   bl_directaudio "$depot"
