@@ -27,10 +27,23 @@ class SteamInstallTest(unittest.TestCase):
         self.bin.mkdir()
         # Only the network is faked: exercise real manifest parsing, checksums and zip extraction.
         curl = self.bin / 'curl'
+        # Flags are read, not counted: the script's curl invocation gained retries and timeouts,
+        # and a stub that took the url and the output file as $2 and $4 broke on the first one.
         curl.write_text('''#!/bin/bash
 set -eu
-printf '%s\\n' "$2" >> "$TEST_REQUESTS"
-cp "$TEST_CDN/${2##*/}" "$4"
+url=
+out=
+while [ $# -gt 0 ]; do
+  case $1 in
+    -o) out=$2; shift 2 ;;
+    -w|-C|--retry|--retry-delay|--connect-timeout|--speed-limit|--speed-time) shift 2 ;;
+    -f|-s|-S|-L|--retry-all-errors) shift ;;
+    -*) shift ;;
+    *) [ -n "$url" ] || url=$1; shift ;;
+  esac
+done
+printf '%s\\n' "$url" >> "$TEST_REQUESTS"
+cp "$TEST_CDN/${url##*/}" "$out"
 ''')
         curl.chmod(0o755)
         # macOS has shasum; the guest and Linux CI have sha256sum.
