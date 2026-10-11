@@ -127,10 +127,11 @@ class SessionLogShareTest {
         File(folder, "steam").mkdirs()
         File(folder, "steam/console_log.txt").writeText("ok\n")
         val big = File(folder, "steam/cef_log.previous.txt")
-        big.outputStream().use { out ->
-            val line = ByteArray(1024) { 'x'.code.toByte() }.also { it[it.size - 1] = '\n'.code.toByte() }
-            repeat(9 * 1024) { out.write(line) }
-        }
+        // Lines that read like a log: a wall of one letter is 1024 opaque characters, and the
+        // redactor, rightly, turns a run that long into <redacted:token>.
+        val text = "proton: [pid 1234] loaded /usr/lib/x86_64-linux-gnu/libfoo.so for appid 363970"
+        val line = (text.padEnd(1024, ' ') + "\n").toByteArray()
+        big.outputStream().use { out -> repeat(9 * 1024) { out.write(line) } }
         val out = zip(folder)
         // A log under the limit is still whole.
         assertEquals("ok\n", out.getValue("steam/console_log.txt"))
