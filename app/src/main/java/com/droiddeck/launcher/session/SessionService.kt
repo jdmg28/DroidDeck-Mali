@@ -605,15 +605,29 @@ class SessionService : Service() {
         guest.add("WAYLAND_DISPLAY=wayland-0")
         guest.add("BL_ANDROID_CLIPBOARD=" + File(filesDir, "session/android-clipboard").path)
         guest.add("GAMESCOPE_FORCE_GENERAL_QUEUE=1")
-        // Steam's CEF needs GL and the rootfs ships no native GL driver: route it through Zink.
-        guest.add("MESA_LOADER_DRIVER_OVERRIDE=zink")
-        guest.add("GALLIUM_DRIVER=zink")
-        guest.add("LIBGL_KOPPER_DRI2=true")
         val mali = com.droiddeck.launcher.core.DeviceSupport.mali()
         // GpuSafety: in software mode the guest is given no GPU node at all (LinuxRuntime) and
         // draws with an imported CPU driver. The switch is handed to the session script, which
         // drops the Mali driver's own requirements and its probe for it.
         val software = com.droiddeck.launcher.gpu.GpuSafety.software(this)
+        // Steam's CEF needs GL and the rootfs ships no native GL driver: route it through Zink,
+        // over whatever Vulkan driver the session is drawing with. Not in software mode, where
+        // there is no GPU to put under Zink and forcing it costs more than it gives: Mesa loads
+        // zink for every GL client then, its own software fallback included
+        // ("failed to load driver: zink" after "glx: failed to create drisw screen"), GLX is left
+        // with no visual at all, and the client's vgui2 surfaces abort on glXChooseVisual - which
+        // is how a software session ended, with the update window on screen and nothing after it.
+        // Mesa's own software GL is asked for instead; it is the renderer the client's own system
+        // report already prints for this runtime (llvmpipe).
+        if (software) {
+            guest.add("GALLIUM_DRIVER=llvmpipe")
+            guest.add("MESA_LOADER_DRIVER_OVERRIDE=llvmpipe")
+            guest.add("LIBGL_ALWAYS_SOFTWARE=1")
+        } else {
+            guest.add("MESA_LOADER_DRIVER_OVERRIDE=zink")
+            guest.add("GALLIUM_DRIVER=zink")
+            guest.add("LIBGL_KOPPER_DRI2=true")
+        }
         guest.add("BL_GPU_SAFETY=" + if (software) "software" else "device")
         if (software) {
             // How many device nodes the app covered up, for the session log to print beside what
