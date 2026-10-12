@@ -346,11 +346,28 @@ jobs:
           # Only the files this build made: an apk published under an older name is not left beside
           # it, so the release never offers two builds of the same app.
           keep=$(cd "$work" && ls | jq -R . | jq -sc .)
-          gh release upload "$TAG" "$work"/* -R "$GITHUB_REPOSITORY" --clobber
+          # Retried: an upload of 45 MB across a runner's network is not a thing that always
+          # succeeds, and a build that made a perfectly good apk should not be thrown away for a
+          # connection that died half way through putting it where it can be installed.
+          uploaded=0
+          for attempt in 1 2 3; do
+            if gh release upload "$TAG" "$work"/* -R "$GITHUB_REPOSITORY" --clobber; then
+              uploaded=1
+              break
+            fi
+            echo "the upload to $TAG failed (attempt $attempt of 3); trying again"
+            sleep 10
+          done
+          if [ "$uploaded" != 1 ]; then
+            echo "::error::the apk was built and signed but could not be uploaded to $TAG"
+            exit 1
+          fi
+          # An asset already gone - deleted by an earlier run that got as far as this - answers 404
+          # here, and a 404 on a delete is the outcome wanted, not a reason to fail the build.
           gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" |
             jq -r --argjson keep "$keep" '.assets[] | select(.name as $n | $keep | index($n) | not) | .id' |
             while IFS= read -r id; do
-              gh api --method DELETE "repos/$GITHUB_REPOSITORY/releases/assets/$id" >/dev/null
+              gh api --method DELETE "repos/$GITHUB_REPOSITORY/releases/assets/$id" >/dev/null || true
             done
           {
             echo "## DroidDeck Mali-G615 - branch APK, $(date -u +%Y-%m-%d' '%H:%M) UTC"
