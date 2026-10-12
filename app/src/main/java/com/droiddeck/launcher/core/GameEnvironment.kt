@@ -35,6 +35,14 @@ object GameEnvironment {
         // .NET's W^X writes JIT code through a second mapping that FEX does not watch, so FEX keeps
         // running the stale translation and the game hangs at startup.
         "DOTNET_EnableWriteXorExecute" to "0",
+        // FEX's L2 translation table and unbounded L1 block caches grow by hundreds of MB inside
+        // every Wine process on a JIT-heavy title (Clicker Heroes hit 1.4-1.7 GB on its main menu
+        // with COMPATIBILITY selected). Trim them in every preset unless a profile overrides them.
+        "FEX_DISABLEL2CACHE" to "1",
+        "FEX_DYNAMICL1CACHE" to "1",
+        "FEX_DYNAMICL1CACHEINCREASECOUNTHEURISTIC" to "250",
+        "FEX_DYNAMICL1CACHEDECREASECOUNTHEURISTIC" to "50",
+        "FEX_SILENTLOG" to "1",
     ).apply {
         FexPreset.env(preset).forEach { put(it.substringBefore('='), it.substringAfter('=')) }
         // Steam settings' Force SSBS: droiddeck-game-env preloads libssbs.so into the game's Wine.

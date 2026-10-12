@@ -163,6 +163,23 @@ class GameEnvironmentTest(unittest.TestCase):
                     text=True, capture_output=True)
                 self.assertEqual(result.returncode, 7, result.stderr)
                 self.assertEqual(json.loads(result.stdout), ["specific", ["waitforexitandrun", "game with spaces.exe"]])
+                # Steam's post-logon d3ddriverquery64.exe probe exits 0 without starting Proton.
+                probe = subprocess.run([str(wrapper), "run", "/steam/bin/d3ddriverquery64.exe", "-d3d12"],
+                    env={"PATH": os.defpath, "HOME": tmp, "STEAM_COMPAT_DATA_PATH": "/compatdata/0", "STEAM_COMPAT_CLIENT_INSTALL_PATH": str(steam)},
+                    text=True, capture_output=True)
+                self.assertEqual((probe.returncode, probe.stdout), (0, ""), probe.stderr)
+            for base in (depot, extra):
+                (base / "proton").write_text("#!/usr/bin/python3\nimport json, os\nprint(json.dumps({k: os.environ.get(k) for k in ('DXVK_CONFIG', 'FEX_DISABLEL2CACHE', 'FEX_DYNAMICL1CACHE', 'FEX_SILENTLOG', 'PROTON_FSR4_UPGRADE')}))\n")
+            for wrapper in wrappers:
+                result = subprocess.run([str(wrapper), "waitforexitandrun", "Game.exe"],
+                    env={"PATH": os.defpath, "HOME": tmp, "STEAM_COMPAT_DATA_PATH": "/compatdata/42", "STEAM_COMPAT_CLIENT_INSTALL_PATH": str(steam)},
+                    text=True, capture_output=True, check=True)
+                seen = json.loads(result.stdout)
+                self.assertEqual(seen["DXVK_CONFIG"],
+                    "dxvk.numCompilerThreads=2;dxvk.enableGraphicsPipelineLibrary=True;dxvk.trackPipelineLifetime=True;"
+                    "dxvk.maxMemoryBudget=1024;dxgi.maxDeviceMemory=1024;dxgi.maxSharedMemory=1024")
+                self.assertEqual((seen["FEX_DISABLEL2CACHE"], seen["FEX_DYNAMICL1CACHE"], seen["FEX_SILENTLOG"], seen["PROTON_FSR4_UPGRADE"]),
+                    ("1", "1", "1", "0"))
 
     def test_default_is_compatible_tool_and_labels_mark_it(self):
         with tempfile.TemporaryDirectory() as tmp:

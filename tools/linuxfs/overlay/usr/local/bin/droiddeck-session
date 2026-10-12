@@ -281,9 +281,12 @@ if [ -z "${BL_INSIDE:-}" ]; then
   # Resolution never reaches its display (docs/development/steam-display-scaling.md). The client's
   # overlay is also on another server than the game, so opening it no longer takes the game's X
   # keyboard focus, which made games like FlatOut shrink their window.
-  # BL_XWAYLAND_COUNT=1 in Download/droiddeck-env goes back to one.
-  if [ "$mode" = steam ] && [ "${BL_XWAYLAND_COUNT:-2}" -gt 1 ]; then
-    args+=(--xwayland-count "${BL_XWAYLAND_COUNT:-2}")
+  # One Xwayland server by default on this 7.1 GB Mali branch: a second Xwayland server loads a
+  # second Mesa Zink + PanVK + Fossilize stack (~215 MB of RAM before a game even starts) and lets
+  # STEAM_MULTIPLE_XWAYLANDS=1 override the game server's mode to 800x600@120 even when the session
+  # is 960x720@30. BL_XWAYLAND_COUNT=2 in Download/droiddeck-env restores two servers.
+  if [ "$mode" = steam ] && [ "${BL_XWAYLAND_COUNT:-1}" -gt 1 ]; then
+    args+=(--xwayland-count "${BL_XWAYLAND_COUNT:-1}")
     export STEAM_MULTIPLE_XWAYLANDS=1
   fi
   # Touch passes through to the client as touch until the client says otherwise, as SteamOS's
@@ -494,7 +497,7 @@ case $mode in
         declare -A _bl_pinned=()
         for ((_i = 0; _i < 720; _i++)); do
           for _d in /proc/[0-9]*; do
-            IFS= read -r -d '' _c < "$_d/cmdline" 2>/dev/null || continue
+            { IFS= read -r -d '' _c < "$_d/cmdline"; } 2>/dev/null || continue
             case $_c in *steamwebhelper*|*steamrtarm64/steam|*gamescope*) ;; *) continue ;; esac
             _t=("$_d"/task/*)
             _p=${_d#/proc/}
@@ -1013,6 +1016,67 @@ BUSCONF
           _bl_who=$(ps -eo rss=,pid=,args= --sort=-rss 2>/dev/null | head -8 |
             awk '{ cmd = substr($0, index($0, $3), 44); printf "%d MB [%s] %s · ", $1 / 1024, $2, cmd }')
           echo "== memory low ($(( _bl_free / 1024 )) MB): ${_bl_who% · }"
+        fi
+        # A game running, read off /proc rather than guessed: the client launches one with the
+        # game's own path in its command line, and nothing else in the session carries it.
+        _bl_game=0
+        for _d in /proc/[0-9]*; do
+          { IFS= read -r -d '' _c < "$_d/cmdline"; } 2>/dev/null || continue
+          case $_c in *steamapps/common*) _bl_game=1; break ;; esac
+        done
+        # The client's browser, which is the largest thing a session carries that is not the
+        # game: eight renderers, 1,259 MB, before a game had even been asked for (build 41's
+        # log), and 640 MB of it still held while the game was dying for memory. So the browser
+        # gets a budget of its own instead of being counted in the device's (500 MB in menus,
+        # 350 MB while a game is running). The client starts a renderer again the moment a page
+        # needs one, so a page left behind a game is reloaded when it is looked at, not lost -
+        # but it is not held either. Two are always left: below that the client's own interface
+        # is what suffers. BL_WEB_MB=0 turns it off.
+        _bl_web_cap=${BL_WEB_MB:-500}
+        [ "$_bl_game" = 1 ] && [ "${BL_WEB_MB:-500}" -gt 0 ] 2>/dev/null && _bl_web_cap=${BL_WEB_GAME_MB:-350}
+        if [ "$_bl_web_cap" -gt 0 ] 2>/dev/null; then
+          _bl_web_mb=$(ps -eo rss=,comm= 2>/dev/null |
+            awk '$2 ~ /steamwebhelper/ { n++; s += $1 } END { printf "%d %d", s / 1024, n }')
+          if [ "${_bl_web_mb%% *}" -gt "$_bl_web_cap" ] 2>/dev/null &&
+             [ "${_bl_web_mb##* }" -gt "${BL_WEB_MIN:-2}" ] 2>/dev/null; then
+            _bl_now=$(date +%s)
+            if [ $(( _bl_now - ${_bl_web_at:-0} )) -ge "${BL_WEB_SECS:-20}" ]; then
+              _bl_fat=$(ps -eo rss=,pid=,comm= --sort=-rss 2>/dev/null |
+                awk '$3 ~ /steamwebhelper/ { print $2; exit }')
+              if [ -n "$_bl_fat" ]; then
+                _bl_web_at=$_bl_now
+                echo "== web trim: the client's browser is ${_bl_web_mb%% *} MB in ${_bl_web_mb##* } renderers, over its $_bl_web_cap MB budget - dropping the largest [$_bl_fat]"
+                kill "$_bl_fat" 2>/dev/null || :
+              fi
+            fi
+          fi
+        fi
+        # Wine servers the client's own probes leave behind. On the way in the client runs Proton
+        # in the shared prefix to ask the machine what it is, and those runs leave a wineserver
+        # with an explorer.exe drawing a desktop nobody ever sees: 197 MB each, two of them, held
+        # for the whole session in build 41's log. No game runs in that prefix - a real launch
+        # gets one of its own - so with memory this tight they are the safest thing here to take
+        # back. BL_WINE_SWEEP_MB=0 turns it off.
+        if [ "${_bl_free:-0}" -lt $(( ${BL_WINE_SWEEP_MB:-1500} * 1024 )) ] &&
+           [ "${BL_WINE_SWEEP_MB:-1500}" -gt 0 ] 2>/dev/null; then
+          _bl_now=$(date +%s)
+          if [ $(( _bl_now - ${_bl_sweep_at:-0} )) -ge "${BL_MEM_VALVE_SECS:-30}" ]; then
+            for _pat in '(explorer|services|winedevice|plugplay)\.exe' '^wineserver$'; do
+              for _d in /proc/[0-9]*; do
+                _p=${_d#/proc/}
+                _bl_c=$(cat "$_d/comm" 2>/dev/null) || continue
+                _bl_a=$(tr '\0' ' ' < "$_d/cmdline" 2>/dev/null) || _bl_a=
+                [[ $_bl_c =~ $_pat || $_bl_a =~ $_pat ]] || continue
+                tr '\0' '\n' < "$_d/environ" 2>/dev/null |
+                  grep -q '^WINEPREFIX=.*/compatdata/0/*$' || continue
+                _bl_rss=$(awk '/^VmRSS:/ { printf "%d", $2 / 1024 }' "$_d/status" 2>/dev/null)
+                if kill "$_p" 2>/dev/null; then
+                  _bl_sweep_at=$_bl_now
+                  echo "== wine sweep: $_bl_c [$_p] ${_bl_rss:-?} MB - a server the client's own probes left in the shared prefix"
+                fi
+              done
+            done
+          fi
         fi
         # BL_MEM_VALVE_MB (off unless set): with the device this close to killing the session, drop
         # the largest browser renderer. The client starts a small one again the moment it needs it,
