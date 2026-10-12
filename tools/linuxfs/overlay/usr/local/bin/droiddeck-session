@@ -985,11 +985,17 @@ BUSCONF
         # page is worth, and what dies otherwise is the game. Only ever the browser: never the
         # client, never the game.
         if [ -n "${BL_MEM_VALVE_MB:-}" ] && [ -n "$_bl_free" ] && [ "$_bl_free" -lt $(( BL_MEM_VALVE_MB * 1024 )) ]; then
-          _bl_fat=$(ps -eo rss=,pid=,comm= --sort=-rss 2>/dev/null |
-            awk '$3 ~ /steamwebhelper/ { print $2; exit }')
-          if [ -n "$_bl_fat" ]; then
-            echo "== memory valve: ${BL_MEM_VALVE_MB} MB left, dropping browser renderer [$_bl_fat]"
-            kill "$_bl_fat" 2>/dev/null || true
+          # One at a time, and at most one every BL_MEM_VALVE_SECS: four renderers dropped inside
+          # one beat is not a session saved, it is a client that has lost every page it had.
+          _bl_now=$(date +%s)
+          if [ $(( _bl_now - ${_bl_valve_at:-0} )) -ge "${BL_MEM_VALVE_SECS:-30}" ]; then
+            _bl_fat=$(ps -eo rss=,pid=,comm= --sort=-rss 2>/dev/null |
+              awk '$3 ~ /steamwebhelper/ { print $2; exit }')
+            if [ -n "$_bl_fat" ]; then
+              _bl_valve_at=$_bl_now
+              echo "== memory valve: ${BL_MEM_VALVE_MB} MB left, dropping browser renderer [$_bl_fat]"
+              kill "$_bl_fat" 2>/dev/null || true
+            fi
           fi
         fi
       done
