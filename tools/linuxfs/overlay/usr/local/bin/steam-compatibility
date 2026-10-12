@@ -372,14 +372,18 @@ done
 # so the next report carries it without anyone having to find it.
 # WINEDEBUG is named too. Proton keeps one that is already set and otherwise asks for +debugstr,
 # which is a line per frame from some titles - the log would say everything and be unreadable.
-# These are the channels that say how far a game got and what ended it.
+# These are the channels that say how far a game got and what ended it. Not +module: it is the
+# internals of the loader (LdrGetDllHandleEx, find_builtin_dll, map_image_into_view for every
+# section of every image) and in a session where a title was loading it was 61,661 of the 77,789
+# lines and 9 of the log's 9.5 MB, all of it noise around what +loaddll already says - which dll
+# went in, and when.
 case ${BL_PROTON_LOG:-1} in
   0) ;;
   *)
     if [ -n "${BL_DEBUG_DIR:-}" ]; then
       mkdir -p "$BL_DEBUG_DIR/steam" 2>/dev/null
       export PROTON_LOG=1 PROTON_LOG_DIR="$BL_DEBUG_DIR/steam"
-      export WINEDEBUG="${WINEDEBUG:-+timestamp,+pid,+tid,+seh,+err,+warn,+loaddll,+module}"
+      export WINEDEBUG="${WINEDEBUG:-+timestamp,+pid,+tid,+seh,+err,+warn,+loaddll}"
     fi
     ;;
 esac
