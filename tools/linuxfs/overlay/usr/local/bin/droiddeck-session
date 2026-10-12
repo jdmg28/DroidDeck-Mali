@@ -938,13 +938,24 @@ BUSCONF
     # says apart what is in anonymous pages - a process, or a driver holding it, which is not given
     # back - from what is cache, which is; and names the three largest processes by resident set.
     (
+      # How much of the cpu was busy over the last ten seconds, counted from /proc/stat rather than
+      # read off the load average: every one of these sessions has reported load 0.00 while frames
+      # stopped and memory went, and 0.00 says either nothing is running or the number is not the
+      # host's. This one is arithmetic on the host's own counters, so it cannot be quietly wrong -
+      # and it is the difference between a device that is too slow and one that is waiting on the
+      # gpu, which are fixed in opposite directions.
+      _bl_stat() { awk '/^cpu /{ idle = $5 + $6; tot = $2 + $3 + $4 + $5 + $6 + $7 + $8; print tot " " idle }' /proc/stat 2>/dev/null; }
+      _bl_cpu0=$(_bl_stat)
       for ((_i = 0; _i < 720; _i++)); do
         nap 10
         _bl_load=$(cut -d' ' -f1-3 /proc/loadavg 2>/dev/null) || continue
+        _bl_cpu1=$(_bl_stat)
+        _bl_busy=$(awk -v a="${_bl_cpu0:-0 0}" -v b="${_bl_cpu1:-0 0}" 'BEGIN { split(a, p); split(b, n); dt = n[1] - p[1]; di = n[2] - p[2]; printf "cpu %d%%", (dt > 0) ? (dt - di) * 100 / dt : 0 }')
+        _bl_cpu0=$_bl_cpu1
         _bl_mem=$(awk '/^MemAvailable:/ { a = $2 } /^AnonPages:/ { n = $2 } /^Cached:/ { c = $2 } END { printf "available %d MB · anon %d MB · cached %d MB", a / 1024, n / 1024, c / 1024 }' /proc/meminfo 2>/dev/null)
         _bl_top=$(ps -eo rss=,pid=,comm= --sort=-rss 2>/dev/null | head -3 | awk '{ printf "%d MB %s [%s] · ", $1 / 1024, $3, $2 }')
         _bl_top=${_bl_top% · }
-        echo "== heartbeat $(date +%T): load ${_bl_load// /,} · ${_bl_mem:-available ?} · top: ${_bl_top:-?}"
+        echo "== heartbeat $(date +%T): ${_bl_busy:-cpu ?} · load ${_bl_load// /,} · ${_bl_mem:-available ?} · top: ${_bl_top:-?}"
       done
     ) &
     # An update that cannot install asks for a restart (rc=42) every time; the count is capped so a
