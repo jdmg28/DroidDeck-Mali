@@ -405,8 +405,32 @@ esac
 # error, no thread started - and with 3.2 GB of the 7.1 GB in the device free to begin with, the
 # session died at 408 MB left. The compilers are the only thing in the stack that allocates like
 # that without saying so: 8 Mesa compilers, ~190 MB each. Two threads is a peak the device has room
-# for; BL_DXVK_COMPILER_THREADS=8 puts it back, and DXVK_CONFIG set outright wins over both.
-export DXVK_CONFIG="${DXVK_CONFIG:-dxvk.numCompilerThreads=${BL_DXVK_COMPILER_THREADS:-2}}"
+# for; BL_DXVK_COMPILER_THREADS=8 puts it back.
+#
+# The rest is what the "graphics card" is said to have. On a phone there is no card: the driver
+# reports the device's own memory, and a title that sizes its texture pools from that number will
+# happily ask for gigabytes of them. Saying 2 GB dedicated and 3 GB shared is a normal mid-range
+# card as far as a game is concerned, and one that budgets accordingly. These two options are a
+# number reported, not a cap - DXVK's own comment says a title may ignore them - so they cannot stop
+# a game that insists, but they are the only lever over the spike that session died of.
+# BL_DXVK_DEVICE_MEMORY and BL_DXVK_SHARED_MEMORY change them, in MB.
+#
+# DXVK separates the options in DXVK_CONFIG with ';' (Config::getUserConfig splits the variable on
+# ';' and parses each piece as one dxvk.conf line). A title's own Steam launch options can set
+# DXVK_CONFIG outright and then win over all of this; BL_DXVK_CONFIG adds to it instead - the one
+# worth knowing on software rendering is BL_DXVK_CONFIG="d3d11.disableMsaa=True", which drops every
+# texture to a single sample, where a good part of lavapipe's time and memory goes, at the cost of
+# no antialiasing at all.
+case ${DXVK_CONFIG:+set} in
+  set) ;;
+  *)
+    DXVK_CONFIG="dxvk.numCompilerThreads=${BL_DXVK_COMPILER_THREADS:-2}"
+    DXVK_CONFIG="$DXVK_CONFIG;dxgi.maxDeviceMemory=${BL_DXVK_DEVICE_MEMORY:-2048}"
+    DXVK_CONFIG="$DXVK_CONFIG;dxgi.maxSharedMemory=${BL_DXVK_SHARED_MEMORY:-3072}"
+    if [ -n "${BL_DXVK_CONFIG:-}" ]; then DXVK_CONFIG="$DXVK_CONFIG;$BL_DXVK_CONFIG"; fi
+    ;;
+esac
+export DXVK_CONFIG
 if [ -n "$depot" ]; then
   bl_components "$depot"
   bl_directaudio "$depot"
