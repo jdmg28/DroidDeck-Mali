@@ -42,7 +42,7 @@ GPU real - el modo experimental congeló y reinició el teléfono una vez y no s
 
 ---
 
-## 2. El HUD nuevo (build 35)
+## 2. El HUD nuevo (build 37)
 
 Arriba a la derecha, una línea por cosa medida. Antes sólo decía los fps, que en un teléfono es el
 número que menos explica: **una sesión no muere por falta de fotogramas, muere por falta de
@@ -101,7 +101,7 @@ La misma pantalla de ajustes. El coste en lavapipe es por píxel: bajar de 960x7
 un 31% de los píxeles, y a 640x480 un 56%. Es el cambio que más fps da por cada otra cosa que se
 estropea (y la que más se nota en la nitidez, claro).
 
-### 3.3 Preajuste de FEX "Ahorro de memoria" (nuevo en el build 35)
+### 3.3 Preajuste de FEX "Ahorro de memoria" (nuevo en el build 37)
 
 Ajustes del modo → **Preajuste de FEX** → *Ahorro de memoria*.
 
@@ -114,7 +114,7 @@ sesión muere **por memoria** en vez de por velocidad.
 El coste es real y conviene saberlo antes de culpar al teléfono: el código que se tiró hay que
 traducirlo otra vez, y eso se ve como **tirones**, no como menos fps.
 
-### 3.4 DXVK (build 35)
+### 3.4 DXVK (build 37)
 
 El contenedor de compatibilidad prepara esto para cada lanzamiento de Proton:
 
@@ -185,7 +185,7 @@ acceso al teléfono, y distinguirlas necesita el registro de una sesión en la q
    sin tiempo para el siguiente fotograma. **Esto es lo que el límite de fotogramas (3.1) debería
    arreglar, y es la razón de probarlo primero.**
 3. **Steam pone algo delante.** Si la ventana que presenta deja de ser la del juego, el HUD lo
-   cuenta: el build 35 escribe `presenting window: …` en el registro cada vez que cambia. Ver
+   cuenta: el build 37 escribe `presenting window: …` en el registro cada vez que cambia. Ver
    `game` → otra cosa justo cuando la imagen se congela sería la prueba.
 4. **gamescope y su reenvío directo de búferes.** gamescope manda los búferes de un juego a pantalla
    completa directamente y compone cuando el menú de Steam está encima. Un juego que el reenvío no
@@ -213,7 +213,9 @@ acceso al teléfono, y distinguirlas necesita el registro de una sesión en la q
 
 Orden: una cosa cada vez, y anotar qué se cambió. Si se puede, con el HUD activado todo el rato.
 
-1. Instalar el build 35 **sobre** el 34 (no desinstalar: los ~5 GB de runtime y de Steam se quedan).
+1. Instalar el build 37 **sobre** el que ya hay instalado, sin desinstalar: es una actualización
+   (mismo paquete, mismo firmante y versión superior, comprobado en el CI antes de publicarlo), así
+   que los ~5 GB de runtime y de Steam se quedan donde están.
 2. Ajustes del modo → Límite de fotogramas → **30**; jugar 5 minutos.
 3. Mismo juego, **sin límite**, otros 5 minutos.
 4. Si la sesión muere o se congela: compartir el registro de la sesión (el ZIP de la sesión, no una
