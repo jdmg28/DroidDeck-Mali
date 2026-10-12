@@ -27,7 +27,11 @@ env:
   RELEASE_ASSET: DroidDeck-Mali-G615-debug.apk
   # ...and the release the APK on the phone came from, which is what every build is checked
   # against: an update has to match its package and its signer, and raise its version code.
-  BASELINE_TAG: gpu-guard-latest
+  # It has to be the tag this branch actually publishes to - pointed at a tag nobody publishes to
+  # any more, the baseline job found no APK, and all three checks were skipped for looking like
+  # nothing was published, which is how builds 33 to 35 came out green without ever comparing
+  # themselves against the APK already installed.
+  BASELINE_TAG: software-mode-latest
 
 jobs:
   # What is on the phone today, read before anything is built: the numbers the build below has to
