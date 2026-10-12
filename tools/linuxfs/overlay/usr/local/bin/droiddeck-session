@@ -923,12 +923,20 @@ BUSCONF
     # restarting. Software mode never asks: it has no GPU to give, and a browser told to wait
     # for one draws nothing at all.
     _bl_cef=(-no-cef-sandbox -cef-ozone-platform=x11 -cef-use-gl=angle -cef-use-angle=vulkan)
+    # Anything the session wants to add to the client itself, one word list, never evaluated:
+    # BL_STEAM_ARGS="-cef-single-process" runs the whole browser in one process, which is the
+    # largest cut available in the client's own memory - and the one most likely to make the store
+    # come back blank instead, which is why it is not on by default.
+    _bl_extra_args=()
+    if [ -n "${BL_STEAM_ARGS:-}" ]; then
+      read -r -a _bl_extra_args <<<"$BL_STEAM_ARGS"
+    fi
     if [ "$software" != yes ] && [ "${BL_CEF_GPU:-0}" = 1 ]; then
       _bl_cef+=(-cef-force-gpu)
     else
       _bl_cef+=(-cef-disable-gpu)
     fi
-    echo "== steam args: ${_bl_ui[*]} ${_bl_cdp[*]} ${_bl_lang[*]} -clientbeta $steam_channel ${_bl_cef[*]} $*"
+    echo "== steam args: ${_bl_ui[*]} ${_bl_cdp[*]} ${_bl_lang[*]} -clientbeta $steam_channel ${_bl_cef[*]} ${_bl_extra_args[*]:-} $*"
     # The one thing a session that dies under a game cannot say for itself, and the one thing every
     # report has needed: whether it ran out of memory or out of CPU. Two reads of /proc every ten
     # seconds, printed beside everything else, so the last line before a death is the state that
@@ -955,7 +963,35 @@ BUSCONF
         _bl_mem=$(awk '/^MemAvailable:/ { a = $2 } /^AnonPages:/ { n = $2 } /^Cached:/ { c = $2 } END { printf "available %d MB · anon %d MB · cached %d MB", a / 1024, n / 1024, c / 1024 }' /proc/meminfo 2>/dev/null)
         _bl_top=$(ps -eo rss=,pid=,comm= --sort=-rss 2>/dev/null | head -3 | awk '{ printf "%d MB %s [%s] · ", $1 / 1024, $3, $2 }')
         _bl_top=${_bl_top% · }
-        echo "== heartbeat $(date +%T): ${_bl_busy:-cpu ?} · load ${_bl_load// /,} · ${_bl_mem:-available ?} · top: ${_bl_top:-?}"
+        # The client's browser, on its own: the store, the library and the chat are one CEF renderer
+        # each, and together they are the largest thing a session carries that is not the game. Named
+        # apart from the top three, so a number that climbs is visible as it climbs rather than being
+        # inferred from a bare "available" that has already fallen.
+        _bl_web=$(ps -eo rss=,comm= 2>/dev/null | awk '$2 ~ /steamwebhelper/ { n++; s += $1 } END { printf "%d MB en %d", s / 1024, n }')
+        echo "== heartbeat $(date +%T): ${_bl_busy:-cpu ?} · load ${_bl_load// /,} · ${_bl_mem:-available ?} · tienda ${_bl_web:-?} · top: ${_bl_top:-?}"
+        # Below BL_MEM_LOG_MB the three largest are no longer enough to say anything: sessions have
+        # been lost with 900 MB free, three processes named, and none of them the one that took it.
+        # So from there down every beat names eight, with their arguments, which is what tells a
+        # game's own resident set apart from the browser's, FEX's and the shader compilers'.
+        _bl_free=$(awk '/^MemAvailable:/ { print $2 }' /proc/meminfo 2>/dev/null)
+        if [ -n "$_bl_free" ] && [ "$_bl_free" -lt $(( ${BL_MEM_LOG_MB:-1024} * 1024 )) ]; then
+          _bl_who=$(ps -eo rss=,pid=,args= --sort=-rss 2>/dev/null | head -8 |
+            awk '{ cmd = substr($0, index($0, $3), 44); printf "%d MB [%s] %s · ", $1 / 1024, $2, cmd }')
+          echo "== memory low ($(( _bl_free / 1024 )) MB): ${_bl_who% · }"
+        fi
+        # BL_MEM_VALVE_MB (off unless set): with the device this close to killing the session, drop
+        # the largest browser renderer. The client starts a small one again the moment it needs it,
+        # which is the point - a store page left open while a game runs costs more memory than the
+        # page is worth, and what dies otherwise is the game. Only ever the browser: never the
+        # client, never the game.
+        if [ -n "${BL_MEM_VALVE_MB:-}" ] && [ -n "$_bl_free" ] && [ "$_bl_free" -lt $(( BL_MEM_VALVE_MB * 1024 )) ]; then
+          _bl_fat=$(ps -eo rss=,pid=,comm= --sort=-rss 2>/dev/null |
+            awk '$3 ~ /steamwebhelper/ { print $2; exit }')
+          if [ -n "$_bl_fat" ]; then
+            echo "== memory valve: ${BL_MEM_VALVE_MB} MB left, dropping browser renderer [$_bl_fat]"
+            kill "$_bl_fat" 2>/dev/null || true
+          fi
+        fi
       done
     ) &
     # An update that cannot install asks for a restart (rc=42) every time; the count is capped so a
@@ -1012,7 +1048,7 @@ BUSCONF
       fi
       step "starting the Steam client${BL_STEAM_UI:+ ($BL_STEAM_UI UI)}"
       "$steam_root/steamrtarm64/steam" "${_bl_ui[@]}" "${_bl_cdp[@]}" "${_bl_lang[@]}" -clientbeta "$steam_channel" \
-        "${_bl_cef[@]}" "$@"
+        "${_bl_cef[@]}" ${_bl_extra_args[@]+"${_bl_extra_args[@]}"} "$@"
       rc=$?
       echo "== steam exited rc=$rc"
       if [ -n "${BL_ADDED_GAMES:-}" ] && [ -f "$BL_ADDED_GAMES" ]; then

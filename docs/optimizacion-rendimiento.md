@@ -42,32 +42,46 @@ GPU real - el modo experimental congeló y reinició el teléfono una vez y no s
 
 ---
 
-## 2. El HUD nuevo (build 37)
+## 2. El HUD (build 38)
 
-Arriba a la derecha, una línea por cosa medida. Antes sólo decía los fps, que en un teléfono es el
-número que menos explica: **una sesión no muere por falta de fotogramas, muere por falta de
-memoria**, y una sesión que se ralentiza suele estar caliente.
+Cuatro líneas cortas, arriba a la derecha. Se leen mientras se juega, encima de la imagen: un HUD
+que tapa la pantalla es un HUD que se acaba apagando. Lo que dice es lo que decide si una sesión
+vive - antes sólo decía los fps, que en un teléfono es el número que menos explica: **una sesión no
+muere por falta de fotogramas, muere por falta de memoria**.
 
 ```
 27 fps · 37 ms
-RAM 2.1 GB libres de 7.1 GB · mata a 486 MB
-ClickerHeroes.exe [4521] 1.4 GB
-CPU 74% · 2.10 GHz · 8 núcleos · térmico: alto
-GPU llvmpipe (Mesa 25.0.7) · lavapipe 25.0.7
-960x720 · 120 Hz · tope 30 fps
+CPU 74% · GPU 61% · 2.10 GHz · térmico: alto
+RAM 900 MB de 7.1 GB · mata a 486 MB
+juego 1.4 GB · 960x720 · 120 Hz
 ```
 
 - **`27 fps · 37 ms`** - el intervalo entre fotogramas dice más que la tasa: 30 fps con 33 ms es una
   sesión sana; 30 fps con 90 ms es una que va a trompicones.
-- **`RAM … · mata a 486 MB`** - el umbral es el punto en el que Android empieza a matar procesos.
-  Libre **por encima** del umbral = sesión que sobrevive; por debajo = sesión cazada, y lo que
-  muere es lo que Android quiera, no necesariamente el juego.
-- **`ClickerHeroes.exe [4521] 1.4 GB`** - la memoria residente del programa cuyos fotogramas están
-  en pantalla. Es el número que ha decidido todas las sesiones hasta ahora.
-- **`CPU 74% · 2.10 GHz …`** - porcentaje de todos los núcleos (no la suma), la frecuencia del
-  núcleo más rápido y, cuando el dispositivo ya está bajando reloj, el estado térmico de Android.
-- **`GPU … · lavapipe …`** - con qué dibuja la sesión y qué controlador Linux lleva puesto.
-- **`960x720 · 120 Hz · tope 30 fps`** - la salida de la sesión, la tasa del panel y el límite.
+- **`CPU 74% · GPU 61% · 2.10 GHz`** - el porcentaje de **toda** la cpu (no la suma de los núcleos),
+  el reloj del núcleo más rápido y, sólo cuando el dispositivo ya está bajando frecuencia, el estado
+  térmico.
+- **`RAM 900 MB de 7.1 GB · mata a 486 MB`** - el umbral es el punto en el que Android empieza a
+  matar procesos para recuperar memoria. Libre **por encima** del umbral = sesión que sobrevive; por
+  debajo = sesión cazada, y lo que muere es lo que Android quiera, no necesariamente el juego.
+- **`juego 1.4 GB`** - la memoria residente del programa cuyos fotogramas están en pantalla. Es el
+  número que ha decidido todas las sesiones hasta ahora.
+
+### Qué es exactamente el `GPU %`
+
+Depende de con qué se dibuje:
+
+- **Con un controlador real** (el camino del Mali, hoy aparcado): el contador que el propio
+  controlador publica en `/sys` - el de kgsl en Qualcomm, el de utilización en los Mali que lo
+  exponen. No hay un estándar, así que se prueban los nodos conocidos y, si ninguno contesta, **no
+  se muestra nada**: una GPU a la que no se puede preguntar no es una GPU al 0%.
+- **En software (lavapipe, lo que usas hoy)**: no hay GPU a la que preguntar, porque lavapipe *es*
+  la cpu. El porcentaje que ves es **la parte de la cpu que se está usando el proceso del juego**,
+  que es donde viven FEX, DXVK y el rasterizado. Por eso sale siempre por debajo del `CPU %`: está
+  incluido en él, no sumado.
+
+Lo que dibuja y con qué controlador ya no se muestra en pantalla: se escribe una vez en el registro
+de la sesión (`gpu: …`).
 
 Todo esto se lee desde Kotlin (`/proc`, `/sys` y los gestores de Android): sin root, sin JNI nuevo,
 un muestreo por segundo. Lo único que el HUD **no** puede decir todavía es el porcentaje de uso de
@@ -77,6 +91,46 @@ Mali depende de cada fabricante.
 ---
 
 ## 3. Palancas, en orden de impacto
+
+### 3.0 La memoria del cliente de Steam (lo más grande que hay, y no hace falta build)
+
+El cliente es, con diferencia, lo que más memoria se lleva antes de que el juego exista, y lo que
+explica el número que viste: **1,9-2 GB libres al entrar al juego, 900 MB de golpe nada más
+arrancarlo**. No es una suposición: hay un informe de Linux de exactamente esto - «al arrancar un
+juego, el proceso steamwebhelper llena la RAM en segundos» - y la respuesta en todos los sitios es
+la misma. La tienda, la biblioteca y el chat son **un proceso renderizador de Chromium cada uno**, y
+Steam los mantiene vivos mientras juegas.
+
+Esto se cambia dentro del propio Steam (se queda guardado en el runtime, no hay que repetirlo):
+
+1. **Steam → Ajustes → Interfaz → desmarcar «Activar la representación acelerada por GPU en vistas
+   web»** y reiniciar Steam. Es el más grande con diferencia: hay informes de 1 a 2 GB recuperados,
+   y en Linux tiene un mecanismo conocido - CEF no tiene `GpuMemoryBuffers` nativos en Linux, así
+   que cada fotograma de una vista web hace una lectura de vuelta desde la GPU, y eso con un juego
+   funcionando es justo cuando la GPU está ocupada ([ValveSoftware/steam-for-linux #13513](
+   https://github.com/ValveSoftware/steam-for-linux/issues/13513)). **Es también un candidato serio
+   para la imagen congelada.**
+2. **Ajustes → Biblioteca**: activar *Modo de bajo ancho de banda*, *Modo de bajo rendimiento* y
+   *Desactivar contenido de la comunidad*. Entre 100 y 360 MB según el medidor de turno, y no cuesta
+   nada.
+3. **Ajustes → Amigos y chat**: desmarcar los avatares animados. **Ajustes → En el juego**:
+   desmarcar la superposición de Steam.
+4. **Ajustes → Precaché de sombreadores → desactivado**. Al arrancar un juego, Steam compila
+   sombreadores en segundo plano, y ésos son los compiladores de Mesa de los que se habla en el
+   punto 1 de más arriba. Desactivarlo quita el pico; se paga con tirones la primera vez que sale
+   cada efecto.
+5. **No dejar la tienda abierta**: cada pestaña de la tienda es un renderizador más. La biblioteca
+   gasta bastante menos.
+
+Y dos mecanismos en la sesión, los dos **desactivados por defecto** porque los dos tienen letra
+pequeña:
+
+- **`BL_STEAM_ARGS`** - argumentos que se añaden al cliente al arrancarlo. `-cef-single-process`
+  mete todo el navegador en un solo proceso: es el mayor recorte disponible del lado del cliente, y
+  el que más fácilmente puede hacer que la tienda vuelva en blanco.
+- **`BL_MEM_VALVE_MB=700`** - con la memoria libre por debajo de esa cifra, la sesión cierra por sí
+  misma el renderizador del navegador más grande. Steam levanta uno nuevo y pequeño en cuanto lo
+  necesita; lo que se muere si no es el juego. Sólo toca al navegador: nunca al cliente ni al juego.
 
 ### 3.1 Límite de fotogramas = 30 (lo primero que hay que probar)
 
@@ -101,7 +155,7 @@ La misma pantalla de ajustes. El coste en lavapipe es por píxel: bajar de 960x7
 un 31% de los píxeles, y a 640x480 un 56%. Es el cambio que más fps da por cada otra cosa que se
 estropea (y la que más se nota en la nitidez, claro).
 
-### 3.3 Preajuste de FEX "Ahorro de memoria" (nuevo en el build 37)
+### 3.3 Preajuste de FEX "Ahorro de memoria" (nuevo en el build 38)
 
 Ajustes del modo → **Preajuste de FEX** → *Ahorro de memoria*.
 
@@ -114,7 +168,7 @@ sesión muere **por memoria** en vez de por velocidad.
 El coste es real y conviene saberlo antes de culpar al teléfono: el código que se tiró hay que
 traducirlo otra vez, y eso se ve como **tirones**, no como menos fps.
 
-### 3.4 DXVK (build 37)
+### 3.4 DXVK (build 38)
 
 El contenedor de compatibilidad prepara esto para cada lanzamiento de Proton:
 
@@ -185,7 +239,7 @@ acceso al teléfono, y distinguirlas necesita el registro de una sesión en la q
    sin tiempo para el siguiente fotograma. **Esto es lo que el límite de fotogramas (3.1) debería
    arreglar, y es la razón de probarlo primero.**
 3. **Steam pone algo delante.** Si la ventana que presenta deja de ser la del juego, el HUD lo
-   cuenta: el build 37 escribe `presenting window: …` en el registro cada vez que cambia. Ver
+   cuenta: el build 38 escribe `presenting window: …` en el registro cada vez que cambia. Ver
    `game` → otra cosa justo cuando la imagen se congela sería la prueba.
 4. **gamescope y su reenvío directo de búferes.** gamescope manda los búferes de un juego a pantalla
    completa directamente y compone cuando el menú de Steam está encima. Un juego que el reenvío no
@@ -213,7 +267,7 @@ acceso al teléfono, y distinguirlas necesita el registro de una sesión en la q
 
 Orden: una cosa cada vez, y anotar qué se cambió. Si se puede, con el HUD activado todo el rato.
 
-1. Instalar el build 37 **sobre** el que ya hay instalado, sin desinstalar: es una actualización
+1. Instalar el build 38 **sobre** el que ya hay instalado, sin desinstalar: es una actualización
    (mismo paquete, mismo firmante y versión superior, comprobado en el CI antes de publicarlo), así
    que los ~5 GB de runtime y de Steam se quedan donde están.
 2. Ajustes del modo → Límite de fotogramas → **30**; jugar 5 minutos.
@@ -227,7 +281,18 @@ Lo que más quiero ver de cada pegada:
 
 - la línea **RAM** (libre y umbral) y la del **juego** (cuánto retiene) - juntas dicen si la sesión
   murió por memoria o por otra cosa;
-- si **CPU** está al 100% con la imagen congelada (hipótesis 2) o baja (hipótesis 1);
+- si **CPU** está al 100% con la imagen congelada (hipótesis 2) o baja (hipótesis 1), y qué hace
+  **GPU** - en software es la cpu del propio juego, así que GPU muy alta con CPU alta es el juego
+  comiéndose el dispositivo;
 - si aparece **`térmico`** antes de que la sesión se degrade;
-- del registro: las líneas `presenting window:` de alrededor del momento del congelamiento, y el
-  `heartbeat` de los últimos minutos (`available`, `anon`, y los tres procesos mayores).
+- del registro: el `heartbeat` de los últimos minutos, que desde el build 38 dice **`tienda N MB en
+  M`** (cuánto se lleva el navegador del cliente y en cuántos procesos) y, por debajo de 1 GB libres,
+  una línea **`== memory low`** que nombra los ocho procesos mayores con sus argumentos - con eso se
+  puede distinguir la memoria del juego de la del navegador, la de FEX y la de los compiladores;
+- las líneas `presenting window:` de alrededor del momento del congelamiento.
+
+**Cómo compartirlo**: el ZIP de sesión no puedo abrirlo desde aquí - el conector de Drive sólo me
+deja leer texto, y un ZIP entraría como binario y se llevaría toda la conversación. Lo que sí puedo
+leer es el **`session.log` suelto** (o cualquier `.txt`/`.log`) que subas a Drive, o las líneas que
+me pegues directamente en el chat. Si puedes abrir el ZIP en el teléfono y subir el archivo de texto
+de dentro, mejor; si no, pega las últimas 60-80 líneas del `heartbeat` y las de `== memory low`.

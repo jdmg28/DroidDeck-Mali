@@ -44,12 +44,10 @@
     <string name="hud_rate">%1$s · %2$d ms</string>
     <string name="hud_ram">RAM %1$s libres de %2$s · mata a %3$d MB</string>
     <string name="hud_low_memory">¡memoria baja!</string>
-    <string name="hud_game">juego</string>
-    <string name="hud_game_rss">%1$s [%2$d] %3$s</string>
-    <string name="hud_game_pid">%1$s [%2$d]</string>
+    <string name="hud_game_rss">juego %1$s</string>
     <string name="hud_cpu">CPU %1$d%%</string>
     <string name="hud_cores">%1$d núcleos</string>
-    <string name="hud_gpu">GPU %1$s</string>
+    <string name="hud_gpu">GPU %1$d%%</string>
     <string name="hud_gpu_driver">GPU %1$s · %2$s</string>
     <string name="hud_display">%1$dx%2$d · %3$.0f Hz</string>
     <string name="hud_display_cap"> · tope %1$d fps</string>

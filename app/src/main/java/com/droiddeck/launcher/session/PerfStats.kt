@@ -50,10 +50,72 @@ class PerfStats(context: Context) {
     }?.sortedBy { it.name.removePrefix("cpu").toIntOrNull() ?: 0 }.orEmpty()
 
     private var cpu: Cpu? = null
+    private val processes = HashMap<Int, Long>()
+    private var jiffiesSinceSample = 0L
 
     /** How many cores the device has, from cpufreq's own directories when they are there. */
     val coreCount: Int
         get() = cpuDirs.size.takeIf { it > 0 } ?: Runtime.getRuntime().availableProcessors()
+
+    /**
+     * Nodes a driver publishes its GPU's own busy counter on, tried in order. There is no standard
+     * for this: Qualcomm's kgsl has one file, some Mali builds another, some have none at all, and
+     * a device that publishes nothing is not a device whose GPU is idle - it is one this cannot ask.
+     */
+    private val gpuBusyNodes = listOf(
+        "/sys/class/kgsl/kgsl-3d0/gpu_busy",
+        "/sys/class/misc/mali0/device/utilization",
+        "/proc/mali/utilization",
+        "/sys/devices/platform/mali/utilisation",
+        "/sys/class/misc/mali0/device/gpu_busy",
+    )
+
+    /**
+     * What share of the device's cpu one process took since the previous [cpuPercent], 0-100, or
+     * -1 when it is not there or is not this app's to read.
+     *
+     * Measured against the whole machine's jiffies over the same interval rather than against a
+     * clock, so it needs no clock frequency and no core count: a process that used a tenth of
+     * everything the cpu did is 10% whether that is one core of eight or eight of eight. Call it
+     * once per tick, after [cpuPercent], which is what takes the other reading.
+     */
+    fun processCpuPercent(pid: Int): Int {
+        if (pid <= 0 || jiffiesSinceSample <= 0L) return -1
+        val now = processJiffies(pid)
+        if (now == null) {
+            processes.remove(pid)
+            return -1
+        }
+        val before = processes.put(pid, now) ?: return -1
+        return ((now - before).coerceAtLeast(0L) * 100L / jiffiesSinceSample).toInt().coerceIn(0, 100)
+    }
+
+    /**
+     * The GPU's own busy figure, read from whichever of the known sysfs nodes answers, or -1 where
+     * none of them does - which on a phone is the usual case, and is not the same as a GPU at 0%.
+     */
+    fun gpuPercent(): Int {
+        for (path in gpuBusyNodes) {
+            val text = try {
+                File(path).readText().trim()
+            } catch (t: Throwable) {
+                continue
+            }
+            val fields = text.split(Regex("\\s+"))
+            val first = fields.getOrNull(0)?.toLongOrNull() ?: continue
+            if (first <= 0L) continue
+            val second = fields.getOrNull(1)?.toLongOrNull()
+            // Two numbers is kgsl's "busy total", already a ratio. A single one is a percentage on
+            // some Mali builds and a 0-256 fraction on others; over 100 can only be the fraction.
+            val percent = when {
+                second != null && second > 0L -> first * 100L / second
+                first > 100L -> first * 100L / 256L
+                else -> first
+            }
+            return percent.coerceIn(0, 100).toInt()
+        }
+        return -1
+    }
 
     fun memory(): Memory? {
         val manager = am ?: return null
@@ -78,6 +140,7 @@ class PerfStats(context: Context) {
         val now = readCpu() ?: return -1
         val before = cpu
         cpu = now
+        jiffiesSinceSample = if (before == null) 0L else (now.total - before.total).coerceAtLeast(0L)
         return if (before == null) -1 else busyPercent(before.total, before.idle, now.total, now.idle)
     }
 
@@ -133,6 +196,26 @@ class PerfStats(context: Context) {
         // busy here, which is what a reader wants to know - iowait is work not getting done.
         val idle = at[3] + at[4]
         return Cpu(at[0] + at[1] + at[2] + idle + at[5] + at[6], idle)
+    }
+
+    /** Total jiffies [pid] has spent on the cpu, user and system together, or null if unreadable. */
+    private fun processJiffies(pid: Int): Long? {
+        val line = try {
+            File("/proc/$pid/stat").readText()
+        } catch (t: Throwable) {
+            return null
+        }
+        // The command name is in parentheses and can hold any character, including spaces and
+        // brackets of its own, so everything up to the last ')' is skipped rather than split.
+        val after = line.substringAfterLast(')', "")
+        if (after.isBlank()) return null
+        val fields = after.trim().split(Regex("\\s+"))
+        if (fields.size < 14) return null
+        // utime is the 12th field after the name and stime the 13th (state, ppid, pgrp, session,
+        // tty, tpgid, flags, minflt, cminflt, majflt, cmajflt, utime, stime).
+        val utime = fields[11].toLongOrNull() ?: return null
+        val stime = fields[12].toLongOrNull() ?: return null
+        return utime + stime
     }
 
     private fun firstLong(path: String): Long? = try {
