@@ -561,15 +561,37 @@ jobs:
             gh release create "$TAG" -R "$GITHUB_REPOSITORY" --prerelease \
               --title "DroidDeck software Vulkan driver (lavapipe)" --notes "Replaced by every build."
           fi
-          gh release upload "$TAG" "$work"/* -R "$GITHUB_REPOSITORY" --clobber
+          # Retried, and then read back: the PanVK package's release went missing after a job that
+          # reported success in every step, so the GPU path had nothing to import and nothing in the
+          # repository said so. A build that publishes something proves it is there before it calls
+          # itself done.
+          uploaded=0
+          for attempt in 1 2 3; do
+            if gh release upload "$TAG" "$work"/* -R "$GITHUB_REPOSITORY" --clobber; then
+              uploaded=1
+              break
+            fi
+            echo "the upload to $TAG failed (attempt $attempt of 3); trying again"
+            sleep 10
+          done
+          if [ "$uploaded" != 1 ]; then
+            echo "::error::$ASSET was built but could not be uploaded to $TAG"
+            exit 1
+          fi
           # One zip, the one just built: an asset left by an older build of this is removed, so the
-          # release never offers two things to import.
+          # release never offers two things to import. One already gone answers 404, and a 404 on a
+          # delete is the outcome wanted, not a reason to fail the build.
           keep=$(cd "$work" && ls | jq -R . | jq -sc .)
           gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" |
             jq -r --argjson keep "$keep" '.assets[] | select(.name as $n | $keep | index($n) | not) | .id' |
             while IFS= read -r id; do
-              gh api --method DELETE "repos/$GITHUB_REPOSITORY/releases/assets/$id" >/dev/null
+              gh api --method DELETE "repos/$GITHUB_REPOSITORY/releases/assets/$id" >/dev/null || true
             done
+          if ! gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json assets \
+                 --jq '.assets[].name' | grep -qx "$ASSET"; then
+            echo "::error::$TAG does not offer $ASSET after publishing it"
+            exit 1
+          fi
           {
             echo "## DroidDeck software Vulkan driver - Mesa lavapipe $DRIVER_VERSION"
             echo
