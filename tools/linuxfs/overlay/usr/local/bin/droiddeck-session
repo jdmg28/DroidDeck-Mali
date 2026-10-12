@@ -933,12 +933,18 @@ BUSCONF
     # report has needed: whether it ran out of memory or out of CPU. Two reads of /proc every ten
     # seconds, printed beside everything else, so the last line before a death is the state that
     # killed it - a load above the core count and a few hundred MB left say different things.
+    # Available on its own did not settle it: two sessions fell from 2.3 GB to 0.4 GB in under three
+    # minutes and died there, which says the memory went somewhere and not what took it. So it now
+    # says apart what is in anonymous pages - a process, or a driver holding it, which is not given
+    # back - from what is cache, which is; and names the three largest processes by resident set.
     (
       for ((_i = 0; _i < 720; _i++)); do
         nap 10
         _bl_load=$(cut -d' ' -f1-3 /proc/loadavg 2>/dev/null) || continue
-        _bl_free=$(awk '/MemAvailable/ { printf "%d MB", $2 / 1024 }' /proc/meminfo 2>/dev/null)
-        echo "== heartbeat $(date +%T): load ${_bl_load// /,} · available ${_bl_free:-?}"
+        _bl_mem=$(awk '/^MemAvailable:/ { a = $2 } /^AnonPages:/ { n = $2 } /^Cached:/ { c = $2 } END { printf "available %d MB · anon %d MB · cached %d MB", a / 1024, n / 1024, c / 1024 }' /proc/meminfo 2>/dev/null)
+        _bl_top=$(ps -eo rss=,pid=,comm= --sort=-rss 2>/dev/null | head -3 | awk '{ printf "%d MB %s [%s] · ", $1 / 1024, $3, $2 }')
+        _bl_top=${_bl_top% · }
+        echo "== heartbeat $(date +%T): load ${_bl_load// /,} · ${_bl_mem:-available ?} · top: ${_bl_top:-?}"
       done
     ) &
     # An update that cannot install asks for a restart (rc=42) every time; the count is capped so a
