@@ -177,7 +177,7 @@ class GameEnvironmentTest(unittest.TestCase):
                 seen = json.loads(result.stdout)
                 self.assertEqual(seen["DXVK_CONFIG"],
                     "dxvk.numCompilerThreads=2;dxvk.enableGraphicsPipelineLibrary=True;dxvk.trackPipelineLifetime=True;"
-                    "dxvk.maxMemoryBudget=1024;dxgi.maxDeviceMemory=1024;dxgi.maxSharedMemory=1024")
+                    "dxvk.maxMemoryBudget=512;dxgi.maxDeviceMemory=512;dxgi.maxSharedMemory=512")
                 self.assertEqual((seen["FEX_DISABLEL2CACHE"], seen["FEX_DYNAMICL1CACHE"], seen["FEX_SILENTLOG"], seen["PROTON_FSR4_UPGRADE"]),
                     ("1", "1", "1", "0"))
 

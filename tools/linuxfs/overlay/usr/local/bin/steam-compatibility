@@ -228,16 +228,24 @@ bl_libpath() {
   export FEX_DYNAMICL1CACHEINCREASECOUNTHEURISTIC=${FEX_DYNAMICL1CACHEINCREASECOUNTHEURISTIC:-250}
   export FEX_DYNAMICL1CACHEDECREASECOUNTHEURISTIC=${FEX_DYNAMICL1CACHEDECREASECOUNTHEURISTIC:-50}
   export FEX_SILENTLOG=${FEX_SILENTLOG:-1}
+  export WINEVMEMMAXSIZE=${WINEVMEMMAXSIZE:-4096}
   # Proton and DXVK logs for real game launches only (waitforexitandrun), shared by both
-  # droiddeck-proton and droiddeck-proton-wrap (GE-Proton, CachyOS).
+  # droiddeck-proton and droiddeck-proton-wrap (GE-Proton, CachyOS, DroidDeck-Proton).
   if [ "${verb:-}" = waitforexitandrun ]; then
     case ${BL_PROTON_LOG:-1} in
       0) ;;
-      *)
+      verbose)
         if [ -n "${BL_DEBUG_DIR:-}" ]; then
           mkdir -p "$BL_DEBUG_DIR/steam" 2>/dev/null
           export PROTON_LOG=1 PROTON_LOG_DIR="$BL_DEBUG_DIR/steam"
           export WINEDEBUG="${WINEDEBUG:-+timestamp,+pid,+tid,+seh,+err,+warn,+loaddll}"
+        fi
+        ;;
+      *)
+        if [ -n "${BL_DEBUG_DIR:-}" ]; then
+          mkdir -p "$BL_DEBUG_DIR/steam" 2>/dev/null
+          export PROTON_LOG=1 PROTON_LOG_DIR="$BL_DEBUG_DIR/steam"
+          export WINEDEBUG="${WINEDEBUG:-+timestamp,+pid,+tid,+err}"
         fi
         ;;
     esac
@@ -255,16 +263,18 @@ bl_libpath() {
   # Clicker Heroes ran through droiddeck-proton-wrap without DXVK_CONFIG and jumped from 840 MB to
   # 1,707 MB on its main menu: 8 compiler threads, background optimized-pipeline compilation
   # (enableGraphicsPipelineLibrary=Auto), and trackPipelineLifetime=Auto (which DXVK disables on
-  # 64-bit aarch64 builds, never freeing pipeline libraries).
+  # 64-bit aarch64 builds, never freeing pipeline libraries). On Mali-G615 (INTEGRATED_GPU),
+  # dxvk.maxMemoryBudget=512 clamps heap.memoryBudget so freeEmptyChunksInPool evicts unused chunks
+  # above 512 MiB instead of holding 1,605 MB of kbase ALLOC_EX mappings.
   case ${DXVK_CONFIG:+set} in
     set) ;;
     *)
       DXVK_CONFIG="dxvk.numCompilerThreads=${BL_DXVK_COMPILER_THREADS:-2}"
       DXVK_CONFIG="$DXVK_CONFIG;dxvk.enableGraphicsPipelineLibrary=${BL_DXVK_GPL:-True}"
       DXVK_CONFIG="$DXVK_CONFIG;dxvk.trackPipelineLifetime=${BL_DXVK_TRACK_PIPELINES:-True}"
-      DXVK_CONFIG="$DXVK_CONFIG;dxvk.maxMemoryBudget=${BL_DXVK_MEMORY_BUDGET:-1024}"
-      DXVK_CONFIG="$DXVK_CONFIG;dxgi.maxDeviceMemory=${BL_DXVK_DEVICE_MEMORY:-1024}"
-      DXVK_CONFIG="$DXVK_CONFIG;dxgi.maxSharedMemory=${BL_DXVK_SHARED_MEMORY:-1024}"
+      DXVK_CONFIG="$DXVK_CONFIG;dxvk.maxMemoryBudget=${BL_DXVK_MEMORY_BUDGET:-512}"
+      DXVK_CONFIG="$DXVK_CONFIG;dxgi.maxDeviceMemory=${BL_DXVK_DEVICE_MEMORY:-512}"
+      DXVK_CONFIG="$DXVK_CONFIG;dxgi.maxSharedMemory=${BL_DXVK_SHARED_MEMORY:-512}"
       if [ -n "${BL_DXVK_CONFIG:-}" ]; then DXVK_CONFIG="$DXVK_CONFIG;$BL_DXVK_CONFIG"; fi
       ;;
   esac

@@ -41,6 +41,35 @@ if [ -n "${BL_LOG:-}" ] && [ -z "${BL_INSIDE:-}" ]; then
   fi
 fi
 
+# What killed sessions leave in /tmp: MangoHud configs, Steam's crash pipes and shared-memory
+# files, Chromium's scoped_dir* with SingletonSocket inside, AppImage stamps, session buses, and
+# empty KWin decoration folders. Each pattern is skipped while the program that owns it is up in
+# another session (desktop + Steam); one find call takes the rest.
+clear_stale_tmp() {
+  local running names=() n
+  running=$(pgrep -af 'steamwebhelper|steamrtarm64/steam|--type=|droiddeck-appimage-run|dbus-run-session|dbus-daemon.*--session|dbus-launch|kwin|plasmashell' 2>/dev/null)
+  case $running in
+    *steamwebhelper* | *steamrtarm64/steam*) ;;
+    *) names+=(-o -name 'mangohud.????????' -o -name '.com.valvesoftware.Steam.??????'
+               -o -name 'steam_chrome_shmem_uid*' -o \( -type d -empty -name 'steam??????' \)) ;;
+  esac
+  case $running in *--type=*) ;; *) names+=(-o \( -type d -name 'scoped_dir??????' \)) ;; esac
+  case $running in *droiddeck-appimage-run*) ;; *) names+=(-o -name 'droiddeck-appimage.??????') ;; esac
+  case $running in
+    *dbus-run-session* | *dbus-daemon*--session* | *dbus-launch*) ;;
+    *) names+=(-o \( -type s -name 'dbus-??????????' \)) ;;
+  esac
+  case $running in
+    *kwin* | *plasmashell*) ;;
+    *) names+=(-o \( -type d -empty -name 'plasma-csd-generator.??????' \)) ;;
+  esac
+  [ ${#names[@]} -gt 0 ] || return 0
+  n=$(find /tmp -mindepth 1 -maxdepth 1 \( "${names[@]:1}" \) -print -exec rm -rf {} + 2>/dev/null | wc -l)
+  [ "$n" -gt 0 ] && echo "== /tmp: cleared $n entries earlier sessions left"
+  return 0
+}
+[ -z "${BL_INSIDE:-}" ] && clear_stale_tmp
+
 # Until the runtime is stable, Steam's own logs are copied beside the session log at exit so a
 # failed launch can be handed over as one folder.
 collect_steam_logs() {
@@ -310,7 +339,8 @@ if [ -z "${BL_INSIDE:-}" ]; then
   # BL_MANGOAPP=0 turns it off (one community build found Valve's mangoapp crashing on Turnip).
   if [ "$mode" = steam ] && [ "${BL_STEAMDECK:-0}" = 1 ] && [ "${BL_MANGOAPP:-1}" = 1 ] \
      && [ "${BL_STEAM_UI:-}" != desktop ] && command -v mangoapp >/dev/null 2>&1; then
-    MANGOHUD_CONFIGFILE=$(mktemp /tmp/mangohud.XXXXXXXX)
+    # One fixed file, rewritten each session: a mktemp name per session was never removed.
+    MANGOHUD_CONFIGFILE=/tmp/droiddeck-mangohud.conf
     echo no_display > "$MANGOHUD_CONFIGFILE"
     export MANGOHUD_CONFIGFILE STEAM_USE_MANGOAPP=1 STEAM_MANGOAPP_PRESETS_SUPPORTED=1 STEAM_MANGOAPP_HORIZONTAL_SUPPORTED=1
     args+=(--mangoapp)
@@ -882,6 +912,12 @@ BUSCONF
       export STEAM_GAMESCOPE_FANCY_SCALING_SUPPORT=1
       echo "== steam: Deck mode on (-steamdeck -steamos3)"
     fi
+    # The power menu's Shut Down and Restart. Without these the client blanks its interface and
+    # stays up (device, 2026-10-12: System.ShutdownPC and nothing after it). With them it does what
+    # SteamOS's gamescope session expects: writes the sentinel and exits. The loop below ends the
+    # session for one and starts the client again for the other.
+    export STEAMOS_STEAM_SHUTDOWN_SENTINEL="$HOME/.bl-steam-shutdown"
+    export STEAMOS_STEAM_REBOOT_SENTINEL="$HOME/.bl-steam-reboot"
     # What a killed session leaves behind. Android ends sessions without warning (backgrounding, the
     # low-memory killer), and the client then finds .crash - opening its update UI on the spinner -
     # and the web helper's Singleton* locks in htmlcache, owned by a process that is gone, which can
@@ -933,11 +969,11 @@ BUSCONF
     # The client's browser (CEF) is kept off the GPU unless BL_CEF_GPU=1 asks for it: on a
     # Mali-G615 the session came all the way up - gamescope compositing on the real GPU, both
     # Xwaylands answering, the client past its own checks - and the device restarted seconds
-    # after the browser asked that GPU for Vulkan. Games keep the GPU either way; this is only
-    # the store and the library, and a browser drawing on the CPU costs far less than the phone
-    # restarting. Software mode never asks: it has no GPU to give, and a browser told to wait
-    # for one draws nothing at all.
-    _bl_cef=(-no-cef-sandbox -cef-ozone-platform=x11 -cef-use-gl=angle -cef-use-angle=vulkan)
+    # after the browser asked that GPU for Vulkan. Passing -cef-use-gl=angle -cef-use-angle=vulkan
+    # alongside -cef-disable-gpu still caused CEF's browser and gpu-process to initialize ANGLE
+    # and Mesa Zink on panvk (537 MB RSS + ~220 MB kbase DMA-BUFs), so ANGLE/Vulkan flags are
+    # passed only when BL_CEF_GPU=1 is explicitly enabled.
+    _bl_cef=(-no-cef-sandbox -cef-ozone-platform=x11)
     # Anything the session wants to add to the client itself, one word list, never evaluated:
     # BL_STEAM_ARGS="-cef-single-process" runs the whole browser in one process, which is the
     # largest cut available in the client's own memory - and the one most likely to make the store
@@ -947,9 +983,9 @@ BUSCONF
       read -r -a _bl_extra_args <<<"$BL_STEAM_ARGS"
     fi
     if [ "$software" != yes ] && [ "${BL_CEF_GPU:-0}" = 1 ]; then
-      _bl_cef+=(-cef-force-gpu)
+      _bl_cef+=(-cef-use-gl=angle -cef-use-angle=vulkan -cef-force-gpu)
     else
-      _bl_cef+=(-cef-disable-gpu)
+      _bl_cef+=(-cef-disable-gpu -cef-disable-gpu-compositing)
     fi
     echo "== steam args: ${_bl_ui[*]} ${_bl_cdp[*]} ${_bl_lang[*]} -clientbeta $steam_channel ${_bl_cef[*]} ${_bl_extra_args[*]:-} $*"
     # The one thing a session that dies under a game cannot say for itself, and the one thing every
@@ -1018,34 +1054,45 @@ BUSCONF
           echo "== memory low ($(( _bl_free / 1024 )) MB): ${_bl_who% · }"
         fi
         # A game running, read off /proc rather than guessed: the client launches one with the
-        # game's own path in its command line, and nothing else in the session carries it.
+        # game's own path (Linux slashes or Wine backslashes) or reaper's SteamLaunch AppId= in
+        # its command line, and nothing else in the session carries it.
         _bl_game=0
         for _d in /proc/[0-9]*; do
-          { IFS= read -r -d '' _c < "$_d/cmdline"; } 2>/dev/null || continue
-          case $_c in *steamapps/common*) _bl_game=1; break ;; esac
+          _c=$(tr '\0' ' ' < "$_d/cmdline" 2>/dev/null) || continue
+          case $_c in *steamapps/common*|*steamapps\\common*|*"SteamLaunch AppId="*) _bl_game=1; break ;; esac
         done
-        # The client's browser, which is the largest thing a session carries that is not the
-        # game: eight renderers, 1,259 MB, before a game had even been asked for (build 41's
-        # log), and 640 MB of it still held while the game was dying for memory. So the browser
-        # gets a budget of its own instead of being counted in the device's (500 MB in menus,
-        # 350 MB while a game is running). The client starts a renderer again the moment a page
-        # needs one, so a page left behind a game is reloaded when it is looked at, not lost -
-        # but it is not held either. Two are always left: below that the client's own interface
-        # is what suffers. BL_WEB_MB=0 turns it off.
-        _bl_web_cap=${BL_WEB_MB:-500}
-        [ "$_bl_game" = 1 ] && [ "${BL_WEB_MB:-500}" -gt 0 ] 2>/dev/null && _bl_web_cap=${BL_WEB_GAME_MB:-350}
+        # Pick the largest replaceable CEF --type=renderer process (never the main steamwebhelper
+        # browser, --type=gpu-process, --type=zygote, or --type=utility: killing gpu-process 3
+        # times triggers CEF's gpu:3 full browser shutdown and restarts the Steam UI).
+        _bl_largest_renderer() {
+          local _p _a _rss _best_pid= _best_rss=0 _count=0
+          for _d in /proc/[0-9]*; do
+            _p=${_d#/proc/}
+            _a=$(tr '\0' ' ' < "$_d/cmdline" 2>/dev/null) || continue
+            case $_a in *steamwebhelper*--type=renderer*) ;; *) continue ;; esac
+            _count=$(( _count + 1 ))
+            _rss=$(awk '/^VmRSS:/ { printf "%d", $2 }' "$_d/status" 2>/dev/null) || continue
+            if [ "${_rss:-0}" -gt "$_best_rss" ]; then
+              _best_rss=$_rss
+              _best_pid=$_p
+            fi
+          done
+          [ "$_count" -gt "${BL_WEB_MIN:-3}" ] && [ -n "$_best_pid" ] && printf '%s' "$_best_pid"
+        }
+        # Optional browser renderer budget (off by default now that steamwebhelper is isolated
+        # from panvk/ANGLE; set BL_WEB_MB to enable).
+        _bl_web_cap=${BL_WEB_MB:-0}
+        [ "$_bl_game" = 1 ] && [ "${BL_WEB_MB:-0}" -gt 0 ] 2>/dev/null && _bl_web_cap=${BL_WEB_GAME_MB:-350}
         if [ "$_bl_web_cap" -gt 0 ] 2>/dev/null; then
           _bl_web_mb=$(ps -eo rss=,comm= 2>/dev/null |
             awk '$2 ~ /steamwebhelper/ { n++; s += $1 } END { printf "%d %d", s / 1024, n }')
-          if [ "${_bl_web_mb%% *}" -gt "$_bl_web_cap" ] 2>/dev/null &&
-             [ "${_bl_web_mb##* }" -gt "${BL_WEB_MIN:-2}" ] 2>/dev/null; then
+          if [ "${_bl_web_mb%% *}" -gt "$_bl_web_cap" ] 2>/dev/null; then
             _bl_now=$(date +%s)
-            if [ $(( _bl_now - ${_bl_web_at:-0} )) -ge "${BL_WEB_SECS:-20}" ]; then
-              _bl_fat=$(ps -eo rss=,pid=,comm= --sort=-rss 2>/dev/null |
-                awk '$3 ~ /steamwebhelper/ { print $2; exit }')
+            if [ $(( _bl_now - ${_bl_web_at:-0} )) -ge "${BL_WEB_SECS:-30}" ]; then
+              _bl_fat=$(_bl_largest_renderer)
               if [ -n "$_bl_fat" ]; then
                 _bl_web_at=$_bl_now
-                echo "== web trim: the client's browser is ${_bl_web_mb%% *} MB in ${_bl_web_mb##* } renderers, over its $_bl_web_cap MB budget - dropping the largest [$_bl_fat]"
+                echo "== web trim: the client's browser is ${_bl_web_mb%% *} MB in ${_bl_web_mb##* } processes, over its $_bl_web_cap MB budget - dropping renderer [$_bl_fat]"
                 kill "$_bl_fat" 2>/dev/null || :
               fi
             fi
@@ -1079,17 +1126,12 @@ BUSCONF
           fi
         fi
         # BL_MEM_VALVE_MB (off unless set): with the device this close to killing the session, drop
-        # the largest browser renderer. The client starts a small one again the moment it needs it,
-        # which is the point - a store page left open while a game runs costs more memory than the
-        # page is worth, and what dies otherwise is the game. Only ever the browser: never the
-        # client, never the game.
+        # the largest extra browser renderer. Only ever a replaceable --type=renderer: never the
+        # main browser, never --type=gpu-process, never the client, never the game.
         if [ -n "${BL_MEM_VALVE_MB:-}" ] && [ -n "$_bl_free" ] && [ "$_bl_free" -lt $(( BL_MEM_VALVE_MB * 1024 )) ]; then
-          # One at a time, and at most one every BL_MEM_VALVE_SECS: four renderers dropped inside
-          # one beat is not a session saved, it is a client that has lost every page it had.
           _bl_now=$(date +%s)
           if [ $(( _bl_now - ${_bl_valve_at:-0} )) -ge "${BL_MEM_VALVE_SECS:-30}" ]; then
-            _bl_fat=$(ps -eo rss=,pid=,comm= --sort=-rss 2>/dev/null |
-              awk '$3 ~ /steamwebhelper/ { print $2; exit }')
+            _bl_fat=$(_bl_largest_renderer)
             if [ -n "$_bl_fat" ]; then
               _bl_valve_at=$_bl_now
               echo "== memory valve: ${BL_MEM_VALVE_MB} MB left, dropping browser renderer [$_bl_fat]"
@@ -1102,7 +1144,7 @@ BUSCONF
     # An update that cannot install asks for a restart (rc=42) every time; the count is capped so a
     # session can never again loop in silence, which reads as a menu opening and closing by itself.
     steam_updates=0
-    rm -f "$HOME/.bl-stop-requested"
+    rm -f "$HOME/.bl-stop-requested" "$STEAMOS_STEAM_SHUTDOWN_SENTINEL" "$STEAMOS_STEAM_REBOOT_SENTINEL"
     if [ -n "${BL_LAUNCH_DIR:-}" ] && [ -d "$BL_LAUNCH_DIR" ]; then
       rm -f "$BL_LAUNCH_DIR/steam-stop" "$BL_LAUNCH_DIR/steam-game" "$BL_LAUNCH_DIR/steam-game.tmp"
       (
@@ -1166,6 +1208,18 @@ BUSCONF
       if [ -f "$HOME/.bl-stop-requested" ]; then
         rm -f "$HOME/.bl-stop-requested" "$HOME/.bl-restart-once"
         break
+      fi
+      if [ -e "$STEAMOS_STEAM_SHUTDOWN_SENTINEL" ]; then
+        rm -f "$STEAMOS_STEAM_SHUTDOWN_SENTINEL" "$HOME/.bl-steam-reboot"
+        echo "== steam: Shut Down from the power menu; ending the session"
+        rc=0
+        break
+      fi
+      if [ -e "$STEAMOS_STEAM_REBOOT_SENTINEL" ]; then
+        rm -f "$STEAMOS_STEAM_REBOOT_SENTINEL"
+        echo "== steam: Restart from the power menu; starting the client again"
+        set --
+        continue
       fi
       # The session asked for this exit (the ARM64 Proton landed): start again, without the URL
       # arguments, which were acted on. Not counted against the update cap.

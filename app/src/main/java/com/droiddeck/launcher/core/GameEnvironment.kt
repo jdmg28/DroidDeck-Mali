@@ -21,7 +21,7 @@ object GameEnvironment {
     )
 
     fun validName(name: String) = namePattern.matches(name)
-    fun supported(name: String) = name !in unused && !name.startsWith("BOX64_") && !name.startsWith("BOX86_")
+    fun supported(name: String) = name !in unused && !name.startsWith("BOX86_")
     fun validValue(value: String) = '\u0000' !in value && value.length <= 8192
     fun validScope(scope: String) = scope.isEmpty() || (Regex("[1-9][0-9]*").matches(scope) && scope.toLongOrNull()?.let { it in 1..4294967295L } == true)
 
@@ -29,6 +29,9 @@ object GameEnvironment {
         "MESA_SHADER_CACHE_DISABLE" to "false",
         "VKD3D_FEATURE_LEVEL" to "12_2",
         "VKD3D_SHADER_MODEL" to "6_9",
+        // Cap Wine virtual memory allocations (supported by DroidDeck-Proton / Bannerlator Wine) so
+        // runaway game allocations fail gracefully instead of triggering Android LMK.
+        "WINEVMEMMAXSIZE" to "4096",
         // .NET 7 and later reserve 256 GB of address space for the GC heap at startup, more than an
         // Android process has free, and the runtime fails to start. 32 GB is plenty for a game.
         "DOTNET_GCRegionRange" to "0x800000000",

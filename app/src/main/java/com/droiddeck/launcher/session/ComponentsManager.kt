@@ -47,12 +47,13 @@ object ComponentsManager {
     /** Release tag -> component. Only the Linux repacks: the Android releases carry bionic unixlibs. */
     private val RELEASES = linkedMapOf(
         "FexCore-Linux" to "fex",
+        "Box64-Nightly" to "fex",
         "Dxvk-Linux" to "dxvk",
         "Dxvk-arm64ec-Linux" to "dxvk",
         "Dxvk-gplasync-Linux" to "dxvk",
         "Vkd3d-proton-Linux" to "vkd3d",
     )
-    private val TYPES = mapOf("FEXCore-Linux" to "fex", "DXVK-Linux" to "dxvk", "VKD3D-Linux" to "vkd3d")
+    private val TYPES = mapOf("FEXCore-Linux" to "fex", "WOWBox64" to "fex", "DXVK-Linux" to "dxvk", "VKD3D-Linux" to "vkd3d")
     private val TYPE_OF = mapOf("fex" to "FEXCore-Linux", "dxvk" to "DXVK-Linux", "vkd3d" to "VKD3D-Linux")
     val COMPONENTS = listOf("fex", "dxvk", "vkd3d")
     val LABEL = mapOf("fex" to "FEX", "dxvk" to "DXVK", "vkd3d" to "VKD3D-Proton")
@@ -273,6 +274,15 @@ object ComponentsManager {
 
     private fun normalize(name: String) = name.removePrefix("./").trimStart('/')
 
+    /** Maps standalone WOWBox64 PE32+ packages (system32/wowbox64.dll) into Proton's WoW64 CPU backend slot. */
+    private fun mapWcpEntry(raw: String): String {
+        val rel = normalize(raw)
+        if (rel.equals("system32/wowbox64.dll", ignoreCase = true)) {
+            return "$WINE/aarch64-windows/libwow64fex.dll"
+        }
+        return rel
+    }
+
     private inline fun <T> readWcp(f: File, block: (TarArchiveInputStream) -> T): T =
         TarArchiveInputStream(ZstdInputStream(BufferedInputStream(FileInputStream(f), 1 shl 16))).use(block)
 
@@ -303,7 +313,7 @@ object ComponentsManager {
             readWcp(wcp) { tar ->
                 while (true) {
                     val e = tar.nextTarEntry ?: break
-                    val rel = normalize(e.name)
+                    val rel = mapWcpEntry(e.name)
                     if (e.isDirectory || !rel.startsWith("files/")) continue
                     require(rel.split('/').none { it == ".." }) { "unsafe path $rel" }
                     val out = File(staged, rel)
@@ -312,7 +322,12 @@ object ComponentsManager {
                 }
             }
             require(File(staged, "files").isDirectory) { "${wcp.name} has no files/" }
-            if (comp == "fex") FEX_FILES.filter { it.endsWith(".so") && !File(staged, it).isFile }.forEach { File(dir, it).delete() }
+            if (comp == "fex") {
+                FEX_FILES.filter {
+                    it.endsWith(".so") && !File(staged, it).isFile &&
+                        File(staged, it.replace("/aarch64-unix/", "/aarch64-windows/").removeSuffix(".so") + ".dll").isFile
+                }.forEach { File(dir, it).delete() }
+            }
             COMP_DIR[comp]?.let { compDir ->
                 for (arch in PE_ARCHES) {
                     val target = File(dir, "$compDir/$arch")
@@ -488,7 +503,7 @@ object ComponentsManager {
                     readWcp(wcp) { tar ->
                         while (true) {
                             val e = tar.nextTarEntry ?: break
-                            val rel = normalize(e.name)
+                            val rel = mapWcpEntry(e.name)
                             if (e.isDirectory || !rel.startsWith("files/") || rel.split('/').any { it == ".." }) continue
                             val out = File(unpacked, rel)
                             out.parentFile?.mkdirs()
@@ -654,6 +669,7 @@ object ComponentsManager {
                 val a = assets.getJSONObject(i)
                 val name = a.optString("name")
                 if (!name.endsWith(".wcp")) continue
+                if (tag == "Box64-Nightly" && !name.startsWith("WOWBox64", ignoreCase = true)) continue
                 // Only packages GitHub has a sha256 for are offered: the download is checked against it.
                 if (!Hashes.isGithubSha256(a.optString("digest"))) continue
                 items.put(JSONObject().put("file", name).put("comp", comp).put("release", tag)

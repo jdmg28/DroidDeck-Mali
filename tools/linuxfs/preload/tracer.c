@@ -20,6 +20,7 @@
 #include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/syscall.h>
@@ -50,6 +51,21 @@ static int is_status_path(const char *path) {
  * not come up within their patience here: it is left reading the truth. */
 static int is_web_helper(void) {
   return strcmp(program_invocation_short_name, "steamwebhelper") == 0;
+}
+
+/* Keep steamwebhelper (browser and --type=gpu-process) off the hardware Vulkan ICD (panvk on
+ * Mali-G615) and Gamescope WSI layer unless BL_CEF_GPU=1 is explicitly enabled. Even with
+ * -cef-disable-gpu, inheriting VK_ICD_FILENAMES and MESA_LOADER_DRIVER_OVERRIDE=zink caused CEF's
+ * browser and gpu-process to initialize four panvk instances and ~220 MB of kbase DMA-BUFs. */
+__attribute__((constructor)) static void bl_webhelper_isolate_gpu(void) {
+  if (!is_web_helper()) return;
+  const char *cef_gpu = getenv("BL_CEF_GPU");
+  if (cef_gpu != NULL && strcmp(cef_gpu, "1") == 0) return;
+  setenv("VK_ICD_FILENAMES", "/dev/null", 1);
+  setenv("VK_DRIVER_FILES", "/dev/null", 1);
+  setenv("LIBGL_ALWAYS_SOFTWARE", "1", 1);
+  unsetenv("MESA_LOADER_DRIVER_OVERRIDE");
+  unsetenv("ENABLE_GAMESCOPE_WSI");
 }
 
 static int write_all(int fd, const char *data, size_t len) {

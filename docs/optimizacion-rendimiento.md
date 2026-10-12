@@ -371,3 +371,61 @@ La fuga está dentro del controlador (viene precompilado de
 - En el heartbeat, cada 30 s: `== fds: 29412 of 32768 · worst: steamwebhelper [26488]`, que dice
   **quién** se los está llevando y cuánto techo queda.
 - Al llegar al 80% del techo: `== fd warning: ...`, con el nombre del proceso culpable.
+
+---
+
+## Diagnóstico de la sesión `2026-10-12-19-steam` (Build 42) y correcciones en Build 43
+
+En la sesión `2026-10-12-19-steam` se verificó que el techo de descriptores quedó resuelto (`fds: 7112 of 32768`), pero aparecieron dos fallos críticos: **reinicios repetidos de la interfaz de Steam** y **cierre inesperado de Clicker Heroes (`363970`) tras renderizar a 25.4 FPS**.
+
+### 1. Por qué se reiniciaba Steam repetidamente (`Triggering shutdown due to GPU process restarts`)
+
+1. **`-cef-use-gl=angle -cef-use-angle=vulkan` anulaba `-cef-disable-gpu`:**
+   `droiddeck-session` pasaba `-cef-use-gl=angle -cef-use-angle=vulkan` de forma incondicional antes de añadir `-cef-disable-gpu`, y `steamwebhelper` heredaba `VK_ICD_FILENAMES=/tmp/vulkan-icd.json`. Como resultado, tanto el proceso principal de `steamwebhelper` (395 MB RSS) como `steamwebhelper --type=gpu-process` (537 MB RSS) inicializaron **cuatro instancias de `panvk` (`Mali-G615`)** y reservaron **40 buffers DMA-BUF (`~220 MB` en `kbase`)**.
+2. **`web trim` mataba `--type=gpu-process` cada 20 s:**
+   Al superar los 500 MB, el recorte periódico (`web trim`) elegía el proceso `steamwebhelper` con mayor RSS —que siempre era `--type=gpu-process`— y le enviaba `SIGTERM`. Tras tres muertes seguidas de `--type=gpu-process`, Chromium/CEF activó su salvaguarda interna (`Triggering shutdown due to GPU process restarts`, `gpu:3`), cerrando y reiniciando toda la interfaz de Steam (`startcount=1, 2`) incluso mientras el juego arrancaba.
+
+**Corrección en Build 43:**
+- En `droiddeck-session`, `-cef-use-gl=angle -cef-use-angle=vulkan -cef-force-gpu` **solo** se pasan cuando `BL_CEF_GPU=1`. Por defecto se pasa `-cef-disable-gpu -cef-disable-gpu-compositing`.
+- En `libblsession.so` (`tracer.c`), un constructor aísla a `steamwebhelper` de Vulkan/PanVK cuando `BL_CEF_GPU != 1` (`VK_ICD_FILENAMES=/dev/null`, `LIBGL_ALWAYS_SOFTWARE=1`, sin `MESA_LOADER_DRIVER_OVERRIDE` ni `ENABLE_GAMESCOPE_WSI`), ahorrando **~500–700 MB de RAM y DMA-BUFs**.
+- El recorte de navegador (`_bl_largest_renderer`) solo considera procesos reemplazables `--type=renderer` y nunca toca el proceso principal ni `--type=gpu-process`.
+
+### 2. Por qué se cerró `Clicker Heroes` (`363970`) tras empezar a renderizar
+
+1. **`steam-launch-wrapper --oom-score-adjust 900` marcaba el juego como app en caché para Android `lmkd`:**
+   Steam lanza todos los juegos mediante `steam-launch-wrapper --oom-score-adjust 900`. En el kernel Linux 6.1 de Android, escribir `900` en `/proc/self/oom_score_adj` bloquea permanentemente `oom_score_adj_min = 900`, y el demonio `lmkd` de Android interpreta `oom_score_adj = 900` (`CACHED_APP_MIN_ADJ`) como una app en segundo plano desechable. Cuando `Clicker Heroes.exe` subió de 824 MB a 1.605 MB por asignaciones `ALLOC_EX` de `/dev/mali0` y CEF relanzó `--type=gpu-process`, `lmkd` mató `Clicker Heroes.exe` con `SIGKILL` a las `15:19:28.6` aunque aún quedaban ~573–753 MB disponibles.
+2. **Presupuesto de memoria de DXVK (`dxvk.maxMemoryBudget`):**
+   En GPUs integradas (`VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU`), DXVK usa `dxvk.maxMemoryBudget` para decidir cuándo purgar bloques vacíos (`freeEmptyChunksInPool`) y desfragmentar (`pickDefragChunk`).
+
+**Corrección en Build 43:**
+- En `libblsession.so` (`opens.c`), las escrituras a `/proc/.../oom_score_adj` se redirigen a `/dev/null`, evitando que `steam-launch-wrapper` marque los juegos como `CACHED_APP_MIN_ADJ (900)`.
+- `dxvk.maxMemoryBudget`, `dxgi.maxDeviceMemory` y `dxgi.maxSharedMemory` bajan por defecto de `1024` a **`512` MiB**, y se añade `WINEVMEMMAXSIZE=4096`.
+- El registro por defecto de Proton (`PROTON_LOG=1`) usa `WINEDEBUG=+timestamp,+pid,+tid,+err` (sin `+seh,+loaddll`, que generó 4.747 líneas de traza en el hilo principal durante el JIT de Mono).
+
+---
+
+## Capas de compatibilidad para juegos `.exe`: FEX, Box64 (`WOWBox64`) y `DroidDeck-Proton`
+
+### Cómo ejecuta ARM64 Proton los juegos `.exe`
+
+Los builds de Proton ARM64 (`Proton - Experimental`, `GE-Proton`, `proton-cachyos`, `DroidDeck-Proton`) usan un Wine `aarch64` nativo sobre glibc que delega la emulación de CPU de cada `.exe` a un módulo PE en el registro del prefijo (`HKLM\Software\Microsoft\Wow64`):
+
+| Tipo de ejecutable (`.exe`) | Registro de Wine (`dlls/ntdll/loader.c` / `dlls/wow64/syscall.c`) | Emulador por defecto | Alternativa disponible en Build 43 |
+|---|---|---|---|
+| **64 bits (`x86_64` PE32+)** | `HKLM\Software\Microsoft\Wow64\amd64` | `libarm64ecfex.dll` + `.so` (**FEX ARM64EC**) | Paquetes `FexCore-Linux` en **Components (`FEX`)** |
+| **32 bits (`x86` / `i386` PE32)** | `HKLM\Software\Microsoft\Wow64\x86` | `libwow64fex.dll` (**FEX WoW64**) | **`WOWBox64`** (`wowbox64.dll`, **Box64 WoW64**) en **Components (`FEX`)** |
+| **Binarios Linux (`x86_64` / `i386` ELF)** | `droiddeck-fex` (`FEXInterpreter` / `FEXLoader`) | **FEX-Emu** con rootfs Steam Linux Runtime | Preloads `libblsession.so` y `libfaultreport.so` |
+
+> **Nota sobre `box86`:** Los núcleos ARMv9 del Dimensity 8300-Ultra (Cortex-A715 / Cortex-A510) son exclusivamente de 64 bits (`aarch64`) y no tienen soporte en hardware para ejecutar código ARM de 32 bits (`armhf`), por lo que el `box86` clásico no puede ejecutarse en este SoC. En su lugar, Box64 compila **`WOWBox64` (`wowbox64.dll`)**, una DLL ARM64 de 64 bits que emula juegos Windows `.exe` de 32 bits directamente dentro del subsistema WoW64 de Wine 11.
+
+### Nuevas opciones integradas en Build 43 para pruebas
+
+1. **`DroidDeck-Proton` (`The412Banner/DroidDeck-Proton`):**
+   Disponible directamente en el menú **Proton** de la app junto a `GE-Proton` y `proton-cachyos`. Incluye parches específicos de ARM64/Android portados de CachyOS, Bannerlator y GameNative:
+   - Soporte para `WINEVMEMMAXSIZE` (límite de memoria virtual de Wine).
+   - Comprobación de límites en `RtlIsEcCode` (evita cierres por `SIGSEGV` en juegos con Denuvo/DRM bajo ARM64EC).
+   - `MAX_FONT_HANDLES` ampliado a 32.768 (evita fallos de carga de fuentes en motores con miles de llamadas a `AddFontMemResourceEx`).
+   - Mapeo de ejecutables `.exe`/`.dll` desde almacenamiento con `noexec` (tarjetas SD y carpetas compartidas de Android) y corrección de vídeo FMV DirectShow.
+2. **`WOWBox64` (`Box64-Nightly` en Components → `FEX`):**
+   Disponible en el gestor de **Components (`FEX`)** al pulsar actualizar catálogo. Permite sustituir el backend de 32 bits (`libwow64fex.dll`) de cualquier Proton por **`WOWBox64-*.wcp` (`wowbox64.dll`)**, manteniendo `libarm64ecfex.dll` intacto para los juegos de 64 bits. Se aceptan variables `BOX64_*` (por ejemplo `BOX64_DYNAREC_BIGBLOCK`, `BOX64_DYNAREC_SAFEFLAGS`, `BOX64_DYNAREC_STRONGMEM`) en el entorno del juego.
+

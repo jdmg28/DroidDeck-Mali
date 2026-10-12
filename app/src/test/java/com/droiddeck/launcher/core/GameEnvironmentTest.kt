@@ -9,9 +9,11 @@ class GameEnvironmentTest {
         assertEquals("false", values["MESA_SHADER_CACHE_DISABLE"])
         assertEquals("12_2", values["VKD3D_FEATURE_LEVEL"])
         assertEquals("6_9", values["VKD3D_SHADER_MODEL"])
+        assertEquals("4096", values["WINEVMEMMAXSIZE"])
         assertEquals("1", values["FEX_DISABLEL2CACHE"])
         assertEquals("1", values["FEX_DYNAMICL1CACHE"])
         assertEquals("1", values["FEX_SILENTLOG"])
+        assertTrue(GameEnvironment.supported("BOX64_DYNAREC_BIGBLOCK"))
     }
 
     @Test fun forceSsbsIsADefaultAGameCanTurnOff() {
