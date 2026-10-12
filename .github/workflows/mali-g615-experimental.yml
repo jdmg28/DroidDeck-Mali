@@ -97,9 +97,18 @@ jobs:
             sleep 20
           done
           if [ -z "$names" ]; then
-            echo "No apk on $TAG: ${err:-the release exists and has no .apk asset}"
-            echo "found=false" >> "$GITHUB_OUTPUT"
-            exit 0
+            # A release that is not there at all means nothing has been published yet, which is
+            # fine and is the first build's case. A release that IS there but has no apk is not
+            # fine: it is what a build that got half way through publishing leaves behind, and
+            # building on from it used to mean the three checks below were quietly skipped -
+            # exactly the failure they exist to catch. Say so, and stop.
+            if [ -n "$err" ]; then
+              echo "No release on $TAG yet (${err}); this build is the first one published there"
+              echo "found=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "::error::$TAG exists but carries no .apk after $(( attempt )) attempts - refusing to build without knowing what is on the phone"
+            exit 1
           fi
           name=$(printf '%s\n' "$names" | head -1)
           gh release download "$TAG" -R "$GITHUB_REPOSITORY" -p "$name" -D "$work"
