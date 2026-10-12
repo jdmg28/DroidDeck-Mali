@@ -387,6 +387,26 @@ case ${BL_PROTON_LOG:-1} in
     fi
     ;;
 esac
+# DXVK's own log, into the same folder: it is the only place that says what the graphics stack did
+# to a title that runs - sound and input working, its window showing one frame and no other - and
+# what it was doing when a session ran out of memory. BL_DXVK_LOG=0 turns it off.
+case ${BL_DXVK_LOG:-1} in
+  0) ;;
+  *)
+    if [ -n "${BL_DEBUG_DIR:-}" ]; then
+      mkdir -p "$BL_DEBUG_DIR/steam" 2>/dev/null
+      export DXVK_LOG_LEVEL=info DXVK_LOG_PATH="$BL_DEBUG_DIR/steam"
+    fi
+    ;;
+esac
+# How many shaders DXVK compiles at once: one thread per core by default, which is 8 here, and what
+# a session 40 measured is what that costs. Clicker Heroes sat at 940 MB for two minutes, then took
+# another 1.5 GB in 23 seconds while nothing at all happened in Proton's log - no dll loaded, no
+# error, no thread started - and with 3.2 GB of the 7.1 GB in the device free to begin with, the
+# session died at 408 MB left. The compilers are the only thing in the stack that allocates like
+# that without saying so: 8 Mesa compilers, ~190 MB each. Two threads is a peak the device has room
+# for; BL_DXVK_COMPILER_THREADS=8 puts it back, and DXVK_CONFIG set outright wins over both.
+export DXVK_CONFIG="${DXVK_CONFIG:-dxvk.numCompilerThreads=${BL_DXVK_COMPILER_THREADS:-2}}"
 if [ -n "$depot" ]; then
   bl_components "$depot"
   bl_directaudio "$depot"
