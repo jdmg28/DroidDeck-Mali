@@ -15,6 +15,7 @@ import org.apache.commons.compress.archivers.tar.TarArchiveInputStream
 import org.apache.commons.compress.archivers.tar.TarArchiveOutputStream
 import org.json.JSONArray
 import org.json.JSONObject
+import org.tukaani.xz.XZInputStream
 import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
 import java.io.File
@@ -47,22 +48,39 @@ object ComponentsManager {
     /** Release tag -> component. Only the Linux repacks: the Android releases carry bionic unixlibs. */
     private val RELEASES = linkedMapOf(
         "FexCore-Linux" to "fex",
-        "Box64-Nightly" to "fex",
-        "Dxvk-Linux" to "dxvk",
+        "nightly-latest" to "wowbox64",
+        "Wowbox64" to "wowbox64",
+        "Box64-Hybrid" to "wowbox64",
         "Dxvk-arm64ec-Linux" to "dxvk",
-        "Dxvk-gplasync-Linux" to "dxvk",
+        "Dxvk-Linux" to "dxvk",
+        "Vkd3d-proton-arm64ec-Linux" to "vkd3d",
         "Vkd3d-proton-Linux" to "vkd3d",
     )
-    private val TYPES = mapOf("FEXCore-Linux" to "fex", "WOWBox64" to "fex", "DXVK-Linux" to "dxvk", "VKD3D-Linux" to "vkd3d")
-    private val TYPE_OF = mapOf("fex" to "FEXCore-Linux", "dxvk" to "DXVK-Linux", "vkd3d" to "VKD3D-Linux")
-    val COMPONENTS = listOf("fex", "dxvk", "vkd3d")
-    val LABEL = mapOf("fex" to "FEX", "dxvk" to "DXVK", "vkd3d" to "VKD3D-Proton")
+    private val TYPES = mapOf(
+        "FEXCore-Linux" to "fex",
+        "WOWBox64" to "wowbox64",
+        "Box64" to "wowbox64",
+        "DXVK-Linux" to "dxvk",
+        "VKD3D-Linux" to "vkd3d",
+    )
+    private val TYPE_OF = mapOf(
+        "fex" to "FEXCore-Linux",
+        "wowbox64" to "WOWBox64",
+        "dxvk" to "DXVK-Linux",
+        "vkd3d" to "VKD3D-Linux",
+    )
+    val COMPONENTS = listOf("fex", "wowbox64", "dxvk", "vkd3d")
+    val LABEL = mapOf("fex" to "FEX", "wowbox64" to "WOWBox64", "dxvk" to "DXVK", "vkd3d" to "VKD3D-Proton")
 
     private const val WINE = "files/lib/wine"
     private val FEX_FILES = listOf(
         "$WINE/aarch64-windows/libarm64ecfex.dll",
         "$WINE/aarch64-windows/libwow64fex.dll",
         "$WINE/aarch64-unix/libarm64ecfex.so",
+        "$WINE/aarch64-unix/libwow64fex.so",
+    )
+    private val WOWBOX64_FILES = listOf(
+        "$WINE/aarch64-windows/libwow64fex.dll",
         "$WINE/aarch64-unix/libwow64fex.so",
     )
     private val COMP_DIR = mapOf("dxvk" to "$WINE/dxvk", "vkd3d" to "$WINE/vkd3d-proton")
@@ -259,13 +277,26 @@ object ComponentsManager {
             ?: unnamed
     }
 
+    /** The WoW64 32-bit backend build's version name (WOWBox64 or built-in FEX WoW64). */
+    private fun wowbox64Version(dir: File, unnamed: String = "FEX WoW64"): String {
+        val dll = File(dir, WOWBOX64_FILES[0])
+        if (!dll.isFile) return ""
+        val text = runCatching { String(dll.readBytes(), Charsets.ISO_8859_1) }.getOrDefault("")
+        Regex("WOWBox64[- ]v?\\d+\\.\\d+\\.\\d+[A-Za-z0-9._-]*", RegexOption.IGNORE_CASE).find(text)?.let { return it.value }
+        Regex("Box64\\s+v?\\d+\\.\\d+\\.\\d+[A-Za-z0-9._-]*", RegexOption.IGNORE_CASE).find(text)?.let { return "WOW" + it.value }
+        if (!text.contains("Wine builtin DLL")) return "WOWBox64"
+        return Regex("FEX-\\d{4}(?:\\.\\d+)?(?:-\\d+-g[0-9a-f]{6,})?").findAll(text).map { it.value }.maxByOrNull { it.length }
+            ?: unnamed
+    }
+
     private fun compFiles(dir: File, comp: String): List<String> {
         if (comp == "fex") return FEX_FILES.filter { File(dir, it).isFile }
+        if (comp == "wowbox64") return WOWBOX64_FILES.filter { File(dir, it).isFile }
         val base = File(dir, COMP_DIR.getValue(comp))
         return base.walkTopDown().filter { it.isFile }.map { it.relativeTo(dir).path }.sorted().toList()
     }
 
-    private fun owned(comp: String, rel: String) = comp == "fex" || PE_ARCHES.any { "/$it/" in rel }
+    private fun owned(comp: String, rel: String) = comp == "fex" || comp == "wowbox64" || PE_ARCHES.any { "/$it/" in rel }
 
     private fun fingerprint(dir: File, comp: String): Map<String, String> =
         compFiles(dir, comp).filter { owned(comp, it) }.associateWith { Hashes.sha256(File(dir, it)) }
@@ -283,8 +314,19 @@ object ComponentsManager {
         return rel
     }
 
-    private inline fun <T> readWcp(f: File, block: (TarArchiveInputStream) -> T): T =
-        TarArchiveInputStream(ZstdInputStream(BufferedInputStream(FileInputStream(f), 1 shl 16))).use(block)
+    private inline fun <T> readWcp(f: File, block: (TarArchiveInputStream) -> T): T {
+        val raw = BufferedInputStream(FileInputStream(f), 1 shl 16)
+        raw.mark(8)
+        val magic = ByteArray(6)
+        val n = raw.read(magic)
+        raw.reset()
+        val isXz = n == 6 &&
+            magic[0] == 0xFD.toByte() && magic[1] == 0x37.toByte() &&
+            magic[2] == 0x7A.toByte() && magic[3] == 0x58.toByte() &&
+            magic[4] == 0x5A.toByte() && magic[5] == 0x00.toByte()
+        val decompressed = if (isXz) XZInputStream(raw) else ZstdInputStream(raw)
+        return TarArchiveInputStream(decompressed).use(block)
+    }
 
     private fun readProfile(context: Context, f: File): JSONObject = readWcp(f) { tar ->
         while (true) {
@@ -302,7 +344,7 @@ object ComponentsManager {
     }
 
     fun packages(context: Context): List<Package> = packagesDir(context).listFiles()
-        ?.filter { it.isFile && it.name.endsWith(".wcp") }?.sortedBy { it.name }
+        ?.filter { it.isFile && it.name.endsWith(".wcp") && !it.name.startsWith("dxvk-1.", ignoreCase = true) }?.sortedBy { it.name }
         ?.mapNotNull { f -> runCatching { packageInfo(context, f) }.onFailure { Log.w(TAG, "skipping ${f.name}", it) }.getOrNull() }
         ?: emptyList()
 
@@ -322,8 +364,9 @@ object ComponentsManager {
                 }
             }
             require(File(staged, "files").isDirectory) { "${wcp.name} has no files/" }
-            if (comp == "fex") {
-                FEX_FILES.filter {
+            if (comp == "fex" || comp == "wowbox64") {
+                val checkFiles = if (comp == "wowbox64") WOWBOX64_FILES else FEX_FILES
+                checkFiles.filter {
                     it.endsWith(".so") && !File(staged, it).isFile &&
                         File(staged, it.replace("/aarch64-unix/", "/aarch64-windows/").removeSuffix(".so") + ".dll").isFile
                 }.forEach { File(dir, it).delete() }
@@ -395,9 +438,17 @@ object ComponentsManager {
         if (dest.isFile) return
         val active = state.sub("active").optJSONObject(p.id)?.optJSONObject(comp)
         if (active != null && active.optString("protonVersion") == p.version) return
+        if (comp == "wowbox64") {
+            val fexActive = state.sub("active").optJSONObject(p.id)?.optJSONObject("fex")
+            if (fexActive != null && fexActive.optString("protonVersion") == p.version) return
+        }
         val rels = compFiles(p.dir, comp)
         if (rels.isEmpty()) return
-        val current = if (comp == "fex") fexVersion(p.dir) else readVersionFile(File(p.dir, "${COMP_DIR.getValue(comp)}/version"))
+        val current = when (comp) {
+            "fex" -> fexVersion(p.dir)
+            "wowbox64" -> wowbox64Version(p.dir)
+            else -> readVersionFile(File(p.dir, "${COMP_DIR.getValue(comp)}/version"))
+        }
         val profile = JSONObject()
             .put("type", TYPE_OF.getValue(comp))
             .put("versionName", "original-${p.version}")
@@ -408,9 +459,42 @@ object ComponentsManager {
         Log.i(TAG, "saved original $comp of ${p.name} ${p.version}")
     }
 
+    /**
+     * Restores a Proton's built-in ARM64EC DXVK if an obsolete x86_64 DXVK 1.x package (such as
+     * Dxvk-1.7.2-linux.wcp, which lacks VK_EXT_graphics_pipeline_library and stalls under FEX on
+     * PanVK-kbase) was previously activated on an ARM64EC Proton.
+     */
+    fun healIncompatiblePackages(context: Context): List<String> = synchronized(lock) {
+        val state = loadState(context)
+        val active = state.sub("active")
+        val all = protons(context)
+        val healed = mutableListOf<String>()
+        for (pid in active.keys().asSequence().toList()) {
+            val comps = active.optJSONObject(pid) ?: continue
+            val dxvk = comps.optJSONObject("dxvk") ?: continue
+            val file = dxvk.optString("file")
+            if (!file.startsWith("dxvk-1.", ignoreCase = true)) continue
+            val p = all.firstOrNull { it.id == pid } ?: continue
+            if (inUse(context, p)) continue
+            val orig = originalFile(context, p, "dxvk")
+            if (orig.isFile) {
+                runCatching {
+                    applyOriginal(context, p, "dxvk", safeName(p.version), orig, state)
+                    healed += "Restored built-in ARM64EC DXVK on ${p.name} (replaced incompatible $file)"
+                }.onFailure { Log.w(TAG, "heal dxvk on ${p.name}", it) }
+            } else {
+                comps.remove("dxvk")
+                healed += "Cleared incompatible $file on ${p.name}"
+            }
+        }
+        if (healed.isNotEmpty()) saveState(context, state)
+        healed
+    }
+
     /** Saves the originals of every Proton build not seen yet (first open, and after a Steam update). */
     fun snapshotAll(context: Context) = synchronized(lock) {
         migratePlugin(context)
+        runCatching { healIncompatiblePackages(context) }.onFailure { Log.w(TAG, "heal incompatible", it) }
         val state = loadState(context)
         for (p in protons(context)) for (comp in COMPONENTS) {
             runCatching { ensureOriginal(context, p, comp, state) }.onFailure { Log.w(TAG, "original $comp of ${p.name}", it) }
@@ -422,6 +506,7 @@ object ComponentsManager {
 
     fun snapshot(context: Context): Snapshot = synchronized(lock) {
         migratePlugin(context)
+        runCatching { healIncompatiblePackages(context) }.onFailure { Log.w(TAG, "heal incompatible", it) }
         val state = loadState(context)
         val reapplied = HashMap<String, Long>()
         runCatching {
@@ -433,8 +518,16 @@ object ComponentsManager {
         val syncPacks = EsyncPacks.status(root(context))
         val views = protons(context).map { p ->
             val comps = COMPONENTS.associateWith { comp ->
-                val detected = if (comp == "fex") fexVersion(p.dir, context.getString(R.string.cmgr_fex_unnamed)) else readVersionFile(File(p.dir, "${COMP_DIR.getValue(comp)}/version"))
-                val detail = if (comp == "fex") context.getString(if (File(p.dir, FEX_FILES[2]).isFile) R.string.cmgr_fex_linux_helpers else R.string.cmgr_fex_dlls_only) else ""
+                val detected = when (comp) {
+                    "fex" -> fexVersion(p.dir, context.getString(R.string.cmgr_fex_unnamed))
+                    "wowbox64" -> wowbox64Version(p.dir, context.getString(R.string.cmgr_fex_unnamed))
+                    else -> readVersionFile(File(p.dir, "${COMP_DIR.getValue(comp)}/version"))
+                }
+                val detail = when (comp) {
+                    "fex" -> context.getString(if (File(p.dir, FEX_FILES[2]).isFile) R.string.cmgr_fex_linux_helpers else R.string.cmgr_fex_dlls_only)
+                    "wowbox64" -> context.getString(if (File(p.dir, WOWBOX64_FILES[1]).isFile) R.string.cmgr_fex_linux_helpers else R.string.cmgr_fex_dlls_only)
+                    else -> ""
+                }
                 val active = state.sub("active").optJSONObject(p.id)?.optJSONObject(comp)
                 val inUseLabel = when {
                     active == null -> context.getString(R.string.comp_tag_original)
@@ -488,7 +581,8 @@ object ComponentsManager {
         for (pid in active.keys()) {
             val p = all.firstOrNull { it.id == pid } ?: continue
             val comps = active.optJSONObject(pid) ?: continue
-            for (comp in comps.keys()) {
+            val orderedComps = COMPONENTS.filter { comps.has(it) } + comps.keys().asSequence().filter { it !in COMPONENTS }
+            for (comp in orderedComps) {
                 val a = comps.optJSONObject(comp) ?: continue
                 if (a.optString("protonVersion") != p.version) continue
                 val file = a.optString("file")
@@ -669,7 +763,8 @@ object ComponentsManager {
                 val a = assets.getJSONObject(i)
                 val name = a.optString("name")
                 if (!name.endsWith(".wcp")) continue
-                if (tag == "Box64-Nightly" && !name.startsWith("WOWBox64", ignoreCase = true)) continue
+                if (comp == "wowbox64" && !name.startsWith("WOWBox64", ignoreCase = true)) continue
+                if (comp == "dxvk" && name.startsWith("dxvk-1.", ignoreCase = true)) continue
                 // Only packages GitHub has a sha256 for are offered: the download is checked against it.
                 if (!Hashes.isGithubSha256(a.optString("digest"))) continue
                 items.put(JSONObject().put("file", name).put("comp", comp).put("release", tag)
@@ -684,9 +779,12 @@ object ComponentsManager {
 
     private fun parseCatalog(o: JSONObject): Catalog {
         val arr = o.optJSONArray("items") ?: JSONArray()
-        val items = (0 until arr.length()).map { arr.getJSONObject(it) }.map {
-            CatalogItem(it.optString("file"), it.optString("comp"), it.optString("release"), it.optString("url"), it.optLong("size"), it.optString("digest"))
-        }.sortedWith(compareBy({ it.comp }, { it.release }, { it.file }))
+        val releaseRank = RELEASES.keys.withIndex().associate { (i, k) -> k to i }
+        val items = (0 until arr.length()).map { arr.getJSONObject(it) }
+            .filter { !(it.optString("comp") == "dxvk" && it.optString("file").startsWith("dxvk-1.", ignoreCase = true)) }
+            .map {
+                CatalogItem(it.optString("file"), it.optString("comp"), it.optString("release"), it.optString("url"), it.optLong("size"), it.optString("digest"))
+            }.sortedWith(compareBy({ it.comp }, { releaseRank[it.release] ?: Int.MAX_VALUE }, { it.file }))
         return Catalog(items, o.optLong("fetchedAt"))
     }
 
@@ -728,12 +826,16 @@ object ComponentsManager {
      * [forcedPackageWanted] selects. Returns a line for the log, or null when this GPU or these
      * Protons need nothing. A failed fetch throws and the session logs it without stopping.
      */
-    fun ensureForcedPackages(context: Context): String? = ensureForcedPackages(
-        context, GpuInfo.detect(),
-        { file, release -> catalogItem(context, file, release) },
-        { download(context, it) {} },
-        { id, file -> swap(context, id, file) },
-    )
+    fun ensureForcedPackages(context: Context): String? {
+        val healed = runCatching { healIncompatiblePackages(context) }.getOrDefault(emptyList())
+        val forced = ensureForcedPackages(
+            context, GpuInfo.detect(),
+            { file, release -> catalogItem(context, file, release) },
+            { download(context, it) {} },
+            { id, file -> swap(context, id, file) },
+        )
+        return (healed + listOfNotNull(forced)).joinToString("; ").ifEmpty { null }
+    }
 
     internal fun ensureForcedPackages(
         context: Context,

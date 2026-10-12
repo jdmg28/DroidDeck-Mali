@@ -426,6 +426,53 @@ Los builds de Proton ARM64 (`Proton - Experimental`, `GE-Proton`, `proton-cachyo
    - Comprobación de límites en `RtlIsEcCode` (evita cierres por `SIGSEGV` en juegos con Denuvo/DRM bajo ARM64EC).
    - `MAX_FONT_HANDLES` ampliado a 32.768 (evita fallos de carga de fuentes en motores con miles de llamadas a `AddFontMemResourceEx`).
    - Mapeo de ejecutables `.exe`/`.dll` desde almacenamiento con `noexec` (tarjetas SD y carpetas compartidas de Android) y corrección de vídeo FMV DirectShow.
-2. **`WOWBox64` (`Box64-Nightly` en Components → `FEX`):**
-   Disponible en el gestor de **Components (`FEX`)** al pulsar actualizar catálogo. Permite sustituir el backend de 32 bits (`libwow64fex.dll`) de cualquier Proton por **`WOWBox64-*.wcp` (`wowbox64.dll`)**, manteniendo `libarm64ecfex.dll` intacto para los juegos de 64 bits. Se aceptan variables `BOX64_*` (por ejemplo `BOX64_DYNAREC_BIGBLOCK`, `BOX64_DYNAREC_SAFEFLAGS`, `BOX64_DYNAREC_STRONGMEM`) en el entorno del juego.
+2. **`WOWBox64` (pestaña dedicada `WOWBox64` en Components):**
+   Disponible en su propia pestaña **Components (`WOWBox64`)**. Permite sustituir el backend de 32 bits (`libwow64fex.dll`) de cualquier Proton por **`WOWBox64-*.wcp` (`wowbox64.dll`)** de los canales `nightly-latest`, `Wowbox64` y `Box64-Hybrid` de `The412Banner/Nightlies`, manteniendo `libarm64ecfex.dll` intacto para los juegos de 64 bits. Se aceptan variables `BOX64_*` (por ejemplo `BOX64_DYNAREC_BIGBLOCK`, `BOX64_DYNAREC_SAFEFLAGS`, `BOX64_DYNAREC_STRONGMEM`) en el entorno del juego.
+
+---
+
+## Diagnóstico de las sesiones `2026-10-12-22-steam` y `2026-10-12-23-steam` (Build 43) y correcciones en Build 44
+
+En las sesiones `22-steam` y `23-steam` se confirmó que el aislamiento de GPU en `steamwebhelper` funcionó: la interfaz de Steam no volvió a reiniciarse y durante la partida su consumo bajó a **62 MB** (`available: 1.065–1.612 MB`). Sin embargo, `Clicker Heroes` (`363970`) no llegó a dibujar ningún fotograma (`0 frames`) y `WOWBox64` no aparecía en la interfaz de Components.
+
+### 1. Por qué no aparecía `WOWBox64` en Components
+
+1. **No tenía pestaña propia en `ComponentsManager.COMPONENTS` (`FEX`, `DXVK`, `VKD3D-Proton`):**
+   Aunque `TYPES` mapeaba `"WOWBox64"`, la barra de pestañas solo mostraba `GPU Drivers`, `FEX`, `DXVK` y `VKD3D-Proton`.
+2. **El tag `"Box64-Nightly"` devolvía HTTP 404 en `The412Banner/Nightlies`:**
+   En `The412Banner/Nightlies`, los paquetes `.wcp` de `WOWBox64` se publican bajo los tags **`nightly-latest`** (`WOWBox64-0.4.5-a8f622f7a.wcp`, `WOWBox64-0.4.5-Hybrid-0684e4387.wcp`), **`Wowbox64`** (`WOWBox64-0.4.4.wcp` .. `Wowbox64-0.3.4.wcp`) y **`Box64-Hybrid`** (`WOWBox64-0.4.4-Hybrid.wcp`).
+3. **Compresión XZ (`tar -cJf`) frente a Zstd:**
+   Los `.wcp` de `WOWBox64` en `The412Banner/Nightlies` se empaquetan con compresión **XZ** (`FD 37 7A 58 5A 00`), mientras que `readWcp` solo abría flujos Zstd (`ZstdInputStream`).
+
+**Corrección en Build 44:**
+- Se añade la pestaña dedicada **`WOWBox64`** en **Components** (`GPU Drivers | FEX | WOWBox64 | DXVK | VKD3D-Proton`) y en el menú rápido dentro de la sesión.
+- Se consultan los tags reales **`nightly-latest`**, **`Wowbox64`** y **`Box64-Hybrid`**, y la interfaz refresca automáticamente el catálogo si la caché anterior no incluye entradas `wowbox64`.
+- `readWcp` detecta la cabecera mágica de 6 bytes y descomprime indistintamente paquetes **XZ** (`XZInputStream`) y **Zstd** (`ZstdInputStream`). Además, `bl_components` sincroniza `wowbox64.dll` en `pfx/drive_c/windows/system32/libwow64fex.dll` con `WINEDLLOVERRIDES=libwow64fex=n,b`.
+
+### 2. Por qué `Clicker Heroes` (`363970`) dibujó a 25.4 FPS en `19-steam` pero se bloqueó en `23-steam`
+
+Al comparar línea por línea `19-steam` (`GE-Proton11-7-aarch64`) frente a `23-steam` (`DroidDeck-Proton 11-7.5`):
+
+1. **`Dxvk-1.7.2-linux.wcp` (x86_64 de 2020, sin `VK_EXT_graphics_pipeline_library`) activo sobre `DroidDeck-Proton-11-7.5`:**
+   En `23-steam/session.log:32` aparece:
+   `droiddeck-proton: components: checked 10 file(s) in DroidDeck-Proton-11-7.5 for app 363970`
+   y `Clicker Heroes_d3d11.log:1` muestra **`info: Game: Clicker Heroes.exe` / `info: DXVK: v1.7.2`**.
+   El paquete `Dxvk-1.7.2-linux.wcp` es un binario **x86_64 PE de 2020** (emulado bajo FEX) que carece de `VK_EXT_graphics_pipeline_library` (`GPL`) e ignora las opciones modernas de `DXVK_CONFIG`. Mientras que en `19-steam` el DXVK 3.1 ARM64EC nativo precompiló las librerías de shaders con GPL y presentó el primer fotograma `0,31 s` después de cargar Mono (`tzres.dll`), en `23-steam` `DXVK v1.7.2` lanzó 10 hilos `dxvk-shader` emulados por FEX compilando pipelines monolíticos y reservando bloques de `256 MiB` en `/dev/mali0` durante 86 segundos sin presentar un solo fotograma hasta agotar la RAM (`1.421 MB` RSS).
+2. **`dxvk.trackPipelineLifetime=True` destruía las librerías GPL recién compiladas en PanVK:**
+   La caché en memoria `vkPipelineCache` de PanVK usa referencias débiles (`weak_ref = true`). Con `trackPipelineLifetime=True`, DXVK destruye los `VkPipeline` de vértices/fragmentos tras compilarlos en segundo plano, haciendo que PanVK descarte el shader compilado y obligando a recompilarlo de forma síncrona en el hilo de dibujo (`dxvk-cs`) en el primer fotograma.
+3. **`heap_memory_percent` en `libpanvk_backend.so` y bloques de 256 MiB de DXVK:**
+   Por defecto PanVK reporta el 75 % de la RAM del teléfono (`5.489 MiB`) como tamaño de heap Vulkan (`panvk_physical_device.c:528`), lo que hace que `determineMaxChunkSize` en DXVK elija bloques de **`256 MiB`** en `/dev/mali0`. Fijando `heap_memory_percent=0.12` (`~878 MiB`), DXVK reduce automáticamente `maxChunkSize` de **`256 MiB` a `64 MiB` (bloques 4 veces más pequeños)**.
+4. **`explorer.exe` cargaba `mesa zink` (`296 MB` RSS) y `nsiproxy.sys` bloqueaba llamadas netlink en Android:**
+   En `23-steam`, `explorer.exe` consumía `296 MB` porque `win32u` sondeaba OpenGL (`get_opengl_gpus` en `dlls/win32u/sysparams.c:3183`) cargando `zink` + `panvk`, y `nsiproxy.sys` fallaba con `err:nsi:poll_events bind failed, errno 13` en sockets netlink de Android.
+
+**Corrección en Build 44:**
+- **Auto-reparación de DXVK (`healIncompatiblePackages` + sincronización de prefijo):** Si un Proton tiene activo un paquete `Dxvk-1.*` obsoleto, se restaura automáticamente el DXVK ARM64EC original del Proton y `bl_components` actualiza las DLLs copiadas en `compatdata/<appid>/pfx/drive_c/windows/system32/`. Además, el catálogo prioriza `Dxvk-arm64ec-Linux` y excluye paquetes `dxvk-1.*`.
+- **Configuración óptima de PanVK + DXVK para Mali-G615:**
+  - `heap_memory_percent=0.12` (reduce `maxChunkSize` de DXVK de `256 MiB` a `64 MiB`).
+  - `dxvk.trackPipelineLifetime=False`, `dxvk.enableGraphicsPipelineLibrary=True`, `dxvk.enableMemoryDefrag=False`, `d3d11.cachedDynamicResources=a`, `dxvk.maxMemoryBudget=384`.
+  - Caché de shaders en disco de Mesa activada (`MESA_SHADER_CACHE_DIR=/root/.cache/mesa_shader_cache`, `MESA_SHADER_CACHE_DISABLE=false`, `MESA_SHADER_CACHE_MAX_SIZE=512M`) y capa Fossilize desactivada en juegos (`DISABLE_VK_LAYER_VALVE_steam_fossilize_1=1`).
+- **Ahorro de ~296 MB en `explorer.exe` y prevención de bloqueo de red:** Se exportan `WINE_SKIP_OPENGL_GPU_PROBE=1` y `WINEDLLOVERRIDES=...;nsiproxy.sys=d`.
+- **Protección del contenedor frente a `lmkd` (`bl_reaper_oom_score`):** El proceso `reaper` del juego recibe `oom_score_adj = 200` (`PERCEPTIBLE_APP_ADJ`), inmune a los recortes de caché de Android (`900`–`500`) pero por encima de `steam` y `gamescope` (`0`), de modo que si un juego desborda la RAM, Android cierra únicamente el juego sin tumbar la sesión de Steam.
+- **Actualización del paquete de driver a `panvk-kbase-v0.1.0-rc3`:** El flujo `mali-panvk-driver.yml` empaqueta la versión `panvk-kbase-v0.1.0-rc3` (compilación de shaders RA/NIR 3–5× más rápida, caché en disco activa en Android, `robustImageAccess2` y descompresión directa BC1–BC7).
+
 

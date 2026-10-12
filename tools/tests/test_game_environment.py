@@ -169,17 +169,21 @@ class GameEnvironmentTest(unittest.TestCase):
                     text=True, capture_output=True)
                 self.assertEqual((probe.returncode, probe.stdout), (0, ""), probe.stderr)
             for base in (depot, extra):
-                (base / "proton").write_text("#!/usr/bin/python3\nimport json, os\nprint(json.dumps({k: os.environ.get(k) for k in ('DXVK_CONFIG', 'FEX_DISABLEL2CACHE', 'FEX_DYNAMICL1CACHE', 'FEX_SILENTLOG', 'PROTON_FSR4_UPGRADE')}))\n")
+                (base / "proton").write_text("#!/usr/bin/python3\nimport json, os\nprint(json.dumps({k: os.environ.get(k) for k in ('DXVK_CONFIG', 'FEX_DISABLEL2CACHE', 'FEX_DYNAMICL1CACHE', 'FEX_SILENTLOG', 'PROTON_FSR4_UPGRADE', 'WINE_SKIP_OPENGL_GPU_PROBE', 'WINEDLLOVERRIDES', 'heap_memory_percent', 'DISABLE_VK_LAYER_VALVE_steam_fossilize_1')}))\n")
             for wrapper in wrappers:
                 result = subprocess.run([str(wrapper), "waitforexitandrun", "Game.exe"],
                     env={"PATH": os.defpath, "HOME": tmp, "STEAM_COMPAT_DATA_PATH": "/compatdata/42", "STEAM_COMPAT_CLIENT_INSTALL_PATH": str(steam)},
                     text=True, capture_output=True, check=True)
                 seen = json.loads(result.stdout)
                 self.assertEqual(seen["DXVK_CONFIG"],
-                    "dxvk.numCompilerThreads=2;dxvk.enableGraphicsPipelineLibrary=True;dxvk.trackPipelineLifetime=True;"
-                    "dxvk.maxMemoryBudget=512;dxgi.maxDeviceMemory=512;dxgi.maxSharedMemory=512")
+                    "dxvk.numCompilerThreads=2;dxvk.enableGraphicsPipelineLibrary=True;dxvk.trackPipelineLifetime=False;"
+                    "dxvk.enableMemoryDefrag=False;d3d11.cachedDynamicResources=a;"
+                    "dxvk.maxMemoryBudget=384;dxgi.maxDeviceMemory=384;dxgi.maxSharedMemory=384;"
+                    "dxvk.enableAsync=True;dxvk.gplAsyncCache=True")
                 self.assertEqual((seen["FEX_DISABLEL2CACHE"], seen["FEX_DYNAMICL1CACHE"], seen["FEX_SILENTLOG"], seen["PROTON_FSR4_UPGRADE"]),
                     ("1", "1", "1", "0"))
+                self.assertEqual((seen["WINE_SKIP_OPENGL_GPU_PROBE"], seen["WINEDLLOVERRIDES"], seen["heap_memory_percent"], seen["DISABLE_VK_LAYER_VALVE_steam_fossilize_1"]),
+                    ("1", "nsiproxy.sys=d", "0.12", "1"))
 
     def test_default_is_compatible_tool_and_labels_mark_it(self):
         with tempfile.TemporaryDirectory() as tmp:

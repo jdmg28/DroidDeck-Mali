@@ -34,9 +34,9 @@ env:
   # Upstream: zenithblue's PanVK-kbase, glibc build (the Linux runtime is glibc; the Android .so
   # in the same release would not load in the guest at all). Their own reference device for it is
   # a Poco X6 Pro - Mali-G615 MC6, the phone this branch is for. Pinned by checksum.
-  UPSTREAM_TAG: g615-v11-csf-v0.1.0-beta.18-rc1
+  UPSTREAM_TAG: panvk-kbase-v0.1.0-rc3
   UPSTREAM_ASSET: libvulkan_panfrost-glibc-aarch64.so
-  UPSTREAM_SHA256: 4603b00f98e66f673b8c9695dda0ded826a3fad1b43d62c1ae3d5f81fe5d398e
+  UPSTREAM_SHA256: 43d4783f664f21843b2fb2d5a3fdf4646fadb942e42d320ccb0e7449bd8e352f
   # The adapter: DroidDeck's ICD shim, shipped in the kit zip committed in this repo's root.
   KIT_ZIP: DroidDeck-Mali-G615-driver-0.1.0.zip
   ADAPTER_NAME: libvulkan_droiddeck_mali.so
@@ -97,8 +97,8 @@ jobs:
           {
             "schemaVersion": 1,
             "kind": "linux-vulkan-icd",
-            "name": "DroidDeck Mali-G615 PanVK-kbase beta.18-rc1",
-            "driverVersion": "Adapter 0.1.0 / PanVK-kbase beta.18-rc1 / Mesa 26.3.0-devel 5a07217f",
+            "name": "DroidDeck Mali-G615 PanVK-kbase v0.1.0-rc3",
+            "driverVersion": "Adapter 0.1.0 / PanVK-kbase v0.1.0-rc3 / Mesa 26.3.0-devel",
             "minGlibc": "2.38",
             "libc": "glibc",
             "vulkanApiVersion": "1.4.363",

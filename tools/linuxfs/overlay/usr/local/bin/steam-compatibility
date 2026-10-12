@@ -148,31 +148,67 @@ bl_components() {
   # the app id because a non-Steam shortcut launches with app id 0 but still gets a prefix of its own.
   [ "${verb:-}" = waitforexitandrun ] || return 0
   case "${STEAM_COMPAT_DATA_PATH:-}" in ''|*/compatdata/0|*/compatdata/0/|*/compatdata/0-*) return 0 ;; esac
-  [ -f "$cm_list" ] || return 0
   cm_app=${STEAM_COMPAT_DATA_PATH%/}
   cm_app=${cm_app##*/}
   cm_tool=${base##*/}
   cm_build=$(awk 'NR == 1 { print $2 }' "$base/version" 2>/dev/null)
   cm_fixed=0
   cm_checked=0
-  while IFS=$'\\t' read -r t want comp rel sum src; do
-    [ "$t" = "$cm_tool" ] && [ "$want" = "$cm_build" ] || continue
-    cm_checked=$((cm_checked + 1))
-    f="$base/$rel"
-    if [ -f "$f" ] && [ "$(sha256sum "$f" | cut -d' ' -f1)" = "$sum" ]; then continue; fi
-    if [ ! -f "$src" ]; then
-      echo "droiddeck-proton: components: $comp source missing ($src), left as it is" >&2
-      continue
-    fi
-    mkdir -p "$(dirname "$f")"
-    cp -f "$src" "$f.bl-new" && mv -f "$f.bl-new" "$f" || continue
-    case "$rel" in *.so) chmod 755 "$f" ;; *) chmod 644 "$f" ;; esac
-    cm_fixed=$((cm_fixed + 1))
-  done < "$cm_list"
+  if [ -f "$cm_list" ]; then
+    while IFS=$'\\t' read -r t want comp rel sum src; do
+      [ "$t" = "$cm_tool" ] && [ "$want" = "$cm_build" ] || continue
+      case "$comp:$src" in dxvk:*[Dd]xvk-1.*) continue ;; esac
+      cm_checked=$((cm_checked + 1))
+      f="$base/$rel"
+      if [ -f "$f" ] && [ "$(sha256sum "$f" | cut -d' ' -f1)" = "$sum" ]; then continue; fi
+      if [ ! -f "$src" ]; then
+        echo "droiddeck-proton: components: $comp source missing ($src), left as it is" >&2
+        continue
+      fi
+      mkdir -p "$(dirname "$f")"
+      cp -f "$src" "$f.bl-new" && mv -f "$f.bl-new" "$f" || continue
+      case "$rel" in *.so) chmod 755 "$f" ;; *) chmod 644 "$f" ;; esac
+      cm_fixed=$((cm_fixed + 1))
+    done < "$cm_list"
+  fi
   [ "$cm_checked" -gt 0 ] && echo "droiddeck-proton: components: checked $cm_checked file(s) in $cm_tool for app $cm_app" >&2
   if [ "$cm_fixed" -gt 0 ]; then
     echo "droiddeck-proton: components: re-applied $cm_fixed of $cm_checked file(s) in $cm_tool before this launch" >&2
     printf '%s\\t%s\\t%s\\n' "$(date +%s)" "$cm_tool" "$cm_fixed" >> "$cm_dir/reapplied.log"
+  fi
+  # Ensure the game prefix's copied DXVK/VKD3D and WoW64 DLLs match this Proton's active files even
+  # when the prefix version stamp did not change between launches.
+  cm_pfx="${STEAM_COMPAT_DATA_PATH%/}/pfx"
+  if [ -d "$cm_pfx/drive_c/windows/system32" ]; then
+    for cm_pair in aarch64-windows:system32 i386-windows:syswow64; do
+      cm_arch=${cm_pair%%:*}
+      cm_win=${cm_pair#*:}
+      [ -d "$cm_pfx/drive_c/windows/$cm_win" ] || continue
+      for cm_sub in dxvk vkd3d-proton; do
+        for cm_dll in "$base/files/lib/wine/$cm_sub/$cm_arch"/*.dll; do
+          [ -f "$cm_dll" ] || continue
+          cm_dst="$cm_pfx/drive_c/windows/$cm_win/${cm_dll##*/}"
+          if [ -f "$cm_dst" ] && [ ! -L "$cm_dst" ] && ! cmp -s "$cm_dll" "$cm_dst"; then
+            cp -f "$cm_dll" "$cm_dst.bl-new" && mv -f "$cm_dst.bl-new" "$cm_dst" || true
+          fi
+        done
+      done
+    done
+    cm_wow="$base/files/lib/wine/aarch64-windows/libwow64fex.dll"
+    cm_wow_dst="$cm_pfx/drive_c/windows/system32/libwow64fex.dll"
+    if [ -f "$cm_wow" ]; then
+      if ! grep -qa "Wine builtin DLL" "$cm_wow" 2>/dev/null; then
+        if [ ! -f "$cm_wow_dst" ] || ! cmp -s "$cm_wow" "$cm_wow_dst"; then
+          cp -f "$cm_wow" "$cm_wow_dst.bl-new" && mv -f "$cm_wow_dst.bl-new" "$cm_wow_dst" || true
+        fi
+        case ";${WINEDLLOVERRIDES:-};" in
+          *";libwow64fex="* ) ;;
+          * ) export WINEDLLOVERRIDES="${WINEDLLOVERRIDES:+$WINEDLLOVERRIDES;}libwow64fex=n,b" ;;
+        esac
+      elif [ -f "$cm_wow_dst" ] && [ ! -L "$cm_wow_dst" ] && ! grep -qa "Wine placeholder DLL" "$cm_wow_dst" 2>/dev/null && ! grep -qa "Wine builtin DLL" "$cm_wow_dst" 2>/dev/null; then
+        rm -f "$cm_wow_dst"
+      fi
+    fi
   fi
 }
 """
@@ -220,6 +256,27 @@ bl_libpath() {
   # FSR4's amdxcffx64.dll is an x86_64 AMD upscaler that does not exist in ARM64 Proton trees;
   # ProtonFixes otherwise tries to validate and download it on every launch.
   export PROTON_FSR4_UPGRADE=${PROTON_FSR4_UPGRADE:-0}
+  # Skip Wine's post-Vulkan OpenGL GPU probe in win32u (sysparams.c:3183) so explorer.exe does not
+  # load Mesa's zink + panvk (~290 MB of /dev/mali0 prerast/heap mappings) just to read GL strings.
+  export WINE_SKIP_OPENGL_GPU_PROBE=${WINE_SKIP_OPENGL_GPU_PROBE:-1}
+  # On Android, nsiproxy.sys's netlink bind is denied with errno 13, leaving GetAdaptersAddresses /
+  # GetBestRoute blocked when Unity or Steam games probe the network at startup.
+  case ";${WINEDLLOVERRIDES:-};" in
+    *";nsiproxy.sys="* ) ;;
+    * ) export WINEDLLOVERRIDES="${WINEDLLOVERRIDES:+$WINEDLLOVERRIDES;}nsiproxy.sys=d" ;;
+  esac
+  # Disable Steam's Fossilize layer inside games and enable PanVK's persistent disk shader cache so
+  # compiled Mali ISA shaders survive across VkDevice instances and sessions.
+  unset ENABLE_VK_LAYER_VALVE_steam_fossilize_1
+  export DISABLE_VK_LAYER_VALVE_steam_fossilize_1=1
+  mkdir -p "${HOME:-/root}/.cache/mesa_shader_cache" 2>/dev/null || true
+  export MESA_SHADER_CACHE_DIR="${MESA_SHADER_CACHE_DIR:-${HOME:-/root}/.cache/mesa_shader_cache}"
+  export MESA_SHADER_CACHE_DISABLE="${MESA_SHADER_CACHE_DISABLE:-false}"
+  export MESA_SHADER_CACHE_MAX_SIZE="${MESA_SHADER_CACHE_MAX_SIZE:-512M}"
+  # Clamp PanVK-kbase's reported Vulkan heap size (panvk_physical_device.c:528) to 12% of RAM
+  # (~878 MiB on an 8 GB device, < 7 * 128 MiB = 896 MiB), which shrinks DXVK's devicePool
+  # maxChunkSize (determineMaxChunkSize) from 256 MiB down to 64 MiB (4x smaller /dev/mali0 chunks).
+  export heap_memory_percent=${heap_memory_percent:-0.12}
   # Trim FEX's translation caches and silence its debug log across every Proton (Valve, GE, CachyOS)
   # even if the saved preset is COMPATIBILITY; per-game environment entries applied by
   # droiddeck-game-env afterwards still win when set explicitly.
@@ -259,22 +316,24 @@ bl_libpath() {
         ;;
     esac
   fi
-  # DXVK memory and shader-compiler limits for both Valve and adopted Protons (GE-Proton, CachyOS).
-  # Clicker Heroes ran through droiddeck-proton-wrap without DXVK_CONFIG and jumped from 840 MB to
-  # 1,707 MB on its main menu: 8 compiler threads, background optimized-pipeline compilation
-  # (enableGraphicsPipelineLibrary=Auto), and trackPipelineLifetime=Auto (which DXVK disables on
-  # 64-bit aarch64 builds, never freeing pipeline libraries). On Mali-G615 (INTEGRATED_GPU),
-  # dxvk.maxMemoryBudget=512 clamps heap.memoryBudget so freeEmptyChunksInPool evicts unused chunks
-  # above 512 MiB instead of holding 1,605 MB of kbase ALLOC_EX mappings.
+  # DXVK memory and shader-compiler limits for both Valve and adopted Protons (GE-Proton, CachyOS,
+  # DroidDeck-Proton). Notice trackPipelineLifetime=False: PanVK's in-memory vkPipelineCache uses
+  # weak references, so setting trackPipelineLifetime=True destroys compiled VS/FS pipeline
+  # libraries right after background compilation and forces synchronous recompilation on dxvk-cs at
+  # first draw. Combined with heap_memory_percent=0.12 (64 MiB chunks), enableMemoryDefrag=False,
+  # cachedDynamicResources=a, and maxMemoryBudget=384, DXVK keeps memory low while fast-linking GPL.
   case ${DXVK_CONFIG:+set} in
     set) ;;
     *)
       DXVK_CONFIG="dxvk.numCompilerThreads=${BL_DXVK_COMPILER_THREADS:-2}"
       DXVK_CONFIG="$DXVK_CONFIG;dxvk.enableGraphicsPipelineLibrary=${BL_DXVK_GPL:-True}"
-      DXVK_CONFIG="$DXVK_CONFIG;dxvk.trackPipelineLifetime=${BL_DXVK_TRACK_PIPELINES:-True}"
-      DXVK_CONFIG="$DXVK_CONFIG;dxvk.maxMemoryBudget=${BL_DXVK_MEMORY_BUDGET:-512}"
-      DXVK_CONFIG="$DXVK_CONFIG;dxgi.maxDeviceMemory=${BL_DXVK_DEVICE_MEMORY:-512}"
-      DXVK_CONFIG="$DXVK_CONFIG;dxgi.maxSharedMemory=${BL_DXVK_SHARED_MEMORY:-512}"
+      DXVK_CONFIG="$DXVK_CONFIG;dxvk.trackPipelineLifetime=${BL_DXVK_TRACK_PIPELINES:-False}"
+      DXVK_CONFIG="$DXVK_CONFIG;dxvk.enableMemoryDefrag=${BL_DXVK_MEMORY_DEFRAG:-False}"
+      DXVK_CONFIG="$DXVK_CONFIG;d3d11.cachedDynamicResources=${BL_DXVK_CACHED_DYNAMIC:-a}"
+      DXVK_CONFIG="$DXVK_CONFIG;dxvk.maxMemoryBudget=${BL_DXVK_MEMORY_BUDGET:-384}"
+      DXVK_CONFIG="$DXVK_CONFIG;dxgi.maxDeviceMemory=${BL_DXVK_DEVICE_MEMORY:-384}"
+      DXVK_CONFIG="$DXVK_CONFIG;dxgi.maxSharedMemory=${BL_DXVK_SHARED_MEMORY:-384}"
+      DXVK_CONFIG="$DXVK_CONFIG;dxvk.enableAsync=True;dxvk.gplAsyncCache=True"
       if [ -n "${BL_DXVK_CONFIG:-}" ]; then DXVK_CONFIG="$DXVK_CONFIG;$BL_DXVK_CONFIG"; fi
       ;;
   esac

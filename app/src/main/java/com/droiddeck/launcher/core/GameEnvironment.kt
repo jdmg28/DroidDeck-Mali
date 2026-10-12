@@ -27,6 +27,10 @@ object GameEnvironment {
 
     fun defaults(preset: String, forceSsbs: Boolean = false): Map<String, String?> = linkedMapOf<String, String?>(
         "MESA_SHADER_CACHE_DISABLE" to "false",
+        "MESA_SHADER_CACHE_MAX_SIZE" to "512M",
+        "WINE_SKIP_OPENGL_GPU_PROBE" to "1",
+        "DISABLE_VK_LAYER_VALVE_steam_fossilize_1" to "1",
+        "heap_memory_percent" to "0.12",
         "VKD3D_FEATURE_LEVEL" to "12_2",
         "VKD3D_SHADER_MODEL" to "6_9",
         // Cap Wine virtual memory allocations (supported by DroidDeck-Proton / Bannerlator Wine) so
