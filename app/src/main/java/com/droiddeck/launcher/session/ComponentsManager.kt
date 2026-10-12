@@ -15,7 +15,9 @@ import org.apache.commons.compress.archivers.tar.TarArchiveInputStream
 import org.apache.commons.compress.archivers.tar.TarArchiveOutputStream
 import org.json.JSONArray
 import org.json.JSONObject
+import org.tukaani.xz.LZMA2Options
 import org.tukaani.xz.XZInputStream
+import org.tukaani.xz.XZOutputStream
 import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
 import java.io.File
@@ -398,7 +400,12 @@ object ComponentsManager {
 
     private fun writeWcp(dest: File, profile: JSONObject, dir: File, rels: List<String>) {
         val tmp = File(dest.parentFile, dest.name + ".part")
-        TarArchiveOutputStream(ZstdOutputStream(BufferedOutputStream(FileOutputStream(tmp), 1 shl 16), 9)).use { tar ->
+        val compressed = try {
+            ZstdOutputStream(BufferedOutputStream(FileOutputStream(tmp), 1 shl 16), 9)
+        } catch (_: Throwable) {
+            XZOutputStream(BufferedOutputStream(FileOutputStream(tmp), 1 shl 16), LZMA2Options(3))
+        }
+        TarArchiveOutputStream(compressed).use { tar ->
             tar.setLongFileMode(TarArchiveOutputStream.LONGFILE_POSIX)
             val bytes = profile.toString(2).toByteArray()
             tar.putArchiveEntry(TarArchiveEntry("./profile.json").apply { size = bytes.size.toLong() })
