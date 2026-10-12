@@ -27,6 +27,18 @@ if [ -n "${BL_LOG:-}" ] && [ -z "${BL_INSIDE:-}" ]; then
   echo "== uid=$(id -u) size=${BL_WIDTH:-?}x${BL_HEIGHT:-?} fps=${BL_FPS:-0} icd=${VK_ICD_FILENAMES:-none}"
   echo "== gamescope: $(gamescope --version 2>&1 | head -1) at $(command -v gamescope)"
   echo "== rootfs: $(cat /.version 2>/dev/null || echo unversioned)"
+  # Build 40's own log: the GPU stack spent one file descriptor per submission and never
+  # gave it back - 56 a second, from the first half minute, until nine minutes in every
+  # allocation in the session failed with 'Too many open files': no GPU memory, no X
+  # connections, no game. Memory was never what ran out - 1.8 GB was still free when it
+  # went. So a session lasts as long as its ceiling allows, and the ceiling is the one
+  # thing here that can be raised: take every descriptor the OS will hand over and say in
+  # the log how many that was. Raising the soft limit to the hard one needs no privilege.
+  _bl_fd_hard=$(ulimit -Hn 2>/dev/null) || _bl_fd_hard=
+  if [ -n "$_bl_fd_hard" ]; then
+    ulimit -n "$_bl_fd_hard" 2>/dev/null || :
+    echo "== fd limit: soft $(ulimit -Sn 2>/dev/null || echo '?') hard $_bl_fd_hard"
+  fi
 fi
 
 # Until the runtime is stable, Steam's own logs are copied beside the session log at exit so a
@@ -969,6 +981,29 @@ BUSCONF
         # inferred from a bare "available" that has already fallen.
         _bl_web=$(ps -eo rss=,comm= 2>/dev/null | awk '$2 ~ /steamwebhelper/ { n++; s += $1 } END { printf "%d MB en %d", s / 1024, n }')
         echo "== heartbeat $(date +%T): ${_bl_busy:-cpu ?} · load ${_bl_load// /,} · ${_bl_mem:-available ?} · tienda ${_bl_web:-?} · top: ${_bl_top:-?}"
+        # Descriptors, not memory, ended the build 40 session (above). Which process spends
+        # them is the one thing that log could not say, so count them: every third beat is
+        # often enough for a leak this slow and keeps the cost of listing them off the CPU
+        # a game is using. At 80% of the ceiling the session is minutes from dying - say so
+        # while there is still a log to read it from.
+        if [ $(( _i % 3 )) -eq 0 ]; then
+          _bl_fd_soft=$(ulimit -Sn 2>/dev/null) || _bl_fd_soft=0
+          _bl_fd_worst=0
+          _bl_fd_who=
+          for _p in $(ps -eo pid= 2>/dev/null); do
+            [ -d "/proc/$_p/fd" ] || continue
+            _bl_n=$(ls -f "/proc/$_p/fd" 2>/dev/null | wc -l) || continue
+            if [ "${_bl_n:-0}" -gt "$_bl_fd_worst" ]; then
+              _bl_fd_worst=$_bl_n
+              _bl_fd_who="$(cat "/proc/$_p/comm" 2>/dev/null) [$_p]"
+            fi
+          done
+          echo "== fds: $_bl_fd_worst of ${_bl_fd_soft:-?} · worst: ${_bl_fd_who:-?}"
+          if [ "${_bl_fd_soft:-0}" -gt 0 ] &&
+             [ $(( _bl_fd_worst * 100 / _bl_fd_soft )) -ge 80 ]; then
+            echo "== fd warning: ${_bl_fd_who:-?} holds $_bl_fd_worst of $_bl_fd_soft descriptors; at the ceiling nothing in this session can allocate GPU memory"
+          fi
+        fi
         # Below BL_MEM_LOG_MB the three largest are no longer enough to say anything: sessions have
         # been lost with 900 MB free, three processes named, and none of them the one that took it.
         # So from there down every beat names eight, with their arguments, which is what tells a

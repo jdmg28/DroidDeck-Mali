@@ -1,4 +1,4 @@
-# Cómo exprimir DroidDeck en un Poco X6 Pro (modo software)
+# Cómo exprimir DroidDeck en un Poco X6 Pro (software y GPU Mali)
 
 Escrito a partir de lo que los registros de sesión **midieron** en este teléfono, no de lo que suele
 funcionar en un PC. Cada número de aquí viene de un `heartbeat` o de un `dmesg` real de este
@@ -291,8 +291,83 @@ Lo que más quiero ver de cada pegada:
   puede distinguir la memoria del juego de la del navegador, la de FEX y la de los compiladores;
 - las líneas `presenting window:` de alrededor del momento del congelamiento.
 
-**Cómo compartirlo**: el ZIP de sesión no puedo abrirlo desde aquí - el conector de Drive sólo me
-deja leer texto, y un ZIP entraría como binario y se llevaría toda la conversación. Lo que sí puedo
-leer es el **`session.log` suelto** (o cualquier `.txt`/`.log`) que subas a Drive, o las líneas que
-me pegues directamente en el chat. Si puedes abrir el ZIP en el teléfono y subir el archivo de texto
-de dentro, mejor; si no, pega las últimas 60-80 líneas del `heartbeat` y las de `== memory low`.
+**Cómo compartirlo**: lo ideal es la **carpeta de la sesión tal cual** (la que la app deja en Drive,
+con `session.log`, `device.txt`, `wayland.log` y la subcarpeta `steam/`): puedo recorrerla y leer
+los ficheros sueltos, y fue así como se leyó el registro del build 40. Un ZIP comprimido **no**
+puedo abrirlo. Si no queda otra, pega en el chat las últimas 60-80 líneas del `heartbeat`, las de
+`== fds:` y las de `== memory low`.
+
+
+## 6. Lo que dijo el primer registro con la GPU real (build 40)
+
+El 12 de octubre llegó el primer `session.log` de una sesión con el controlador PanVK-kbase, es decir
+con la GPU de verdad. Dos conclusiones, una buena y una que lo explica todo.
+
+### La GPU funciona
+
+- DXVK: `Found device: Mali-G615 MC6 (panvk 26.2.99)`.
+- El propio Steam la lista como `Mali-G615 MC6`, `driver_id: k_EGpuDriverId_MesaPanVK`, 5,7 GB de
+  VRAM.
+- gamescope: `selecting physical device 'Mali-G615 MC6'`, y compone con ella.
+
+No es lavapipe: el trabajo de dibujar ya no lo hace la CPU. Ese camino está abierto.
+
+### Pero la sesión se muere a los nueve minutos, y no es por memoria
+
+El registro acaba así:
+
+```
+MESA: error: kbase: failed to duplicate dma-buf: Too many open files
+MESA: error: zink: couldn't allocate memory: heap=0 size=2818048
+== agent: focus snapshot failed: X connection refused on :0
+```
+
+**Descriptores de archivo agotados**, no memoria: cuando la sesión se vino abajo todavía quedaban
+**1.870 MB libres**. Contando los números que el propio driver imprime (`succeeded for N`, que es el
+descriptor que acaba de abrir) se ve la fuga:
+
+| Momento | Descriptor más alto visto |
+|---|---|
+| 12:26:22 (26 s de sesión) | 1.384 |
+| 12:35:11 (9 min 15 s) | 30.935 |
+| a partir de ahí | `Too many open files` |
+
+**~56 descriptores por segundo, sin devolver ninguno**, durante toda la sesión. El techo de un
+proceso en Android es 32.768, así que 32.768 ÷ 56 ≈ **9,8 minutos de vida**. Calza con el minuto
+exacto en que se cayó.
+
+Eso explica las tres cosas que se vieron a la vez:
+
+1. **Los tirones de FPS**: cada vez más asignaciones fallan y se reintentan.
+2. **Los juegos no arrancan**: el juego (Clicker Heroes, AppID 363970) se lanzó a las 12:35:01,
+   justo cuando el cubo se vaciaba. Sin descriptores no hay memoria de GPU, y sin memoria de GPU no
+   hay juego: se queda en «abriendo juego» para siempre.
+3. **La interfaz se queda colgada**: Xwayland deja de aceptar conexiones
+   (`X connection refused on :0`), y el hilo de la interfaz de Steam se para 6-30 segundos
+   (`SteamUI thread frame stalled`).
+
+### Qué se puede hacer mientras no se arregle la fuga
+
+La fuga está dentro del controlador (viene precompilado de
+`zenithblue-oss/panvk-kbase-android`; aquí no se compila Mesa), así que de momento se trata de
+**gastar menos y de no llegar al techo**:
+
+1. **Lanzar el juego en los primeros dos o tres minutos** de sesión, en cuanto aparezca Steam. Es la
+   prueba más importante: si el juego arranca pronto y a los diez minutos ya no, la diagnosis queda
+   confirmada en el teléfono.
+2. **Bajar el refresco a 60 Hz** (menú rápido de Steam → Rendimiento). Con el limitador a 30 FPS,
+   un panel a 120 Hz no da nada y cuesta el doble de trabajo del compositor, que es quien gasta los
+   descriptores.
+3. **Desactivar la superposición de Steam** (Ajustes → En el juego). En el registro se ve activa
+   (`Adding process 11088 for gameID 363970`).
+4. **Cerrar la tienda antes de jugar**: sigue siendo ~1 GB en 8 procesos.
+5. Para experimentos, en `Download/droiddeck-env`: `BL_XWAYLAND_COUNT=1` (un servidor X en vez de
+   dos) y `BL_REFRESH=60`.
+
+### Lo que añade el build 41 para localizarla
+
+- Al arrancar: `== fd limit: soft N hard M`, y sube el límite blando hasta el duro (eso no necesita
+  permisos; si Android permite más de 32.768, el problema desaparece solo).
+- En el heartbeat, cada 30 s: `== fds: 29412 of 32768 · worst: steamwebhelper [26488]`, que dice
+  **quién** se los está llevando y cuánto techo queda.
+- Al llegar al 80% del techo: `== fd warning: ...`, con el nombre del proceso culpable.
