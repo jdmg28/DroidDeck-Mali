@@ -17,6 +17,8 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-GPL--3.0-orange" alt="License GPL-3.0"></a>
 </p>
 
+
+## Notice ⚠️ This project was made with AI 
 ---
 
 ## 📖 Overview / Descripción General
