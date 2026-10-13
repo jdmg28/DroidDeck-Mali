@@ -32,8 +32,7 @@ Upstream DroidDeck targets Qualcomm Adreno GPUs (`kgsl` + Mesa Turnip) and block
 
 ## 📸 Screenshots / Pruebas en Hardware Real (Mali-G615 MC6)
 
-### 1. In-Game Execution — *Clicker Heroes* (DirectX 11 → DXVK → PanVK-kbase on Mali-G615)
-Running in Steam Gaming Mode at **29 FPS** (`29 fps` counter in top-right corner):
+### 1. In-game execution — *Clicker Heroes* (DirectX 11 → DXVK → PanVK-kbase on Mali-G615) Game menu running in Steam's game mode with errors at **29 FPS** (`29 fps` counter in the top-right corner):
 
 <p align="center">
   <img src="docs/screenshots/Screenshot_2026-10-11-15-54-01-776_com.droiddeck.launcher.mali.g615.jpg" width="90%" alt="Clicker Heroes running at 29 FPS on Mali-G615 in DroidDeck">
