@@ -1,0 +1,149 @@
+name: Publish Experimental Public Release (Mali-G615)
+
+on:
+  push:
+    branches: [ mali-g615-experimental, DroidDeck-mali-experimental, 'arena/**' ]
+    paths:
+      - .github/workflows/publish-experimental-release.yml
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to publish
+        default: v0.3.2-mali-g615-exp1
+        required: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: publish-experimental-release
+  cancel-in-progress: false
+
+env:
+  GH_TOKEN: ${{ github.token }}
+  RELEASE_TAG: ${{ inputs.tag || 'v0.3.2-mali-g615-exp1' }}
+  APK_SOURCE_TAG: software-mode-latest
+  APK_ASSET: DroidDeck-Mali-G615-debug.apk
+  APK_SHA256: 62c1029a3d7f5b404337375120b126cb3f74565be23488fafaeb376309a2af81
+  PANVK_SOURCE_TAG: mali-panvk-latest
+  PANVK_ASSET: DroidDeck-Mali-G615-PanVK-kbase-beta18.zip
+  PANVK_SHA256: d05b9862a962c03c506753a533bd1a2446efc15868d4d3e068ec200e15c45645
+  LAVAPIPE_SOURCE_TAG: software-mode-lavapipe
+  LAVAPIPE_ASSET: DroidDeck-Software-Vulkan-lavapipe.zip
+  LAVAPIPE_SHA256: 73cd4bc115e2e755ab6fe3677791986328bfb86beb12954f007ad201ea9b36e4
+
+jobs:
+  publish:
+    name: Assemble and publish official experimental release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Download and verify APK and standalone driver ZIPs
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/release-assets"
+          rm -rf "$work"
+          mkdir -p "$work"
+
+          echo "Downloading $APK_ASSET from $APK_SOURCE_TAG..."
+          gh release download "$APK_SOURCE_TAG" -R "$GITHUB_REPOSITORY" -p "$APK_ASSET" -D "$work"
+
+          echo "Downloading $PANVK_ASSET from $PANVK_SOURCE_TAG..."
+          gh release download "$PANVK_SOURCE_TAG" -R "$GITHUB_REPOSITORY" -p "$PANVK_ASSET" -D "$work"
+
+          echo "Downloading $LAVAPIPE_ASSET from $LAVAPIPE_SOURCE_TAG..."
+          gh release download "$LAVAPIPE_SOURCE_TAG" -R "$GITHUB_REPOSITORY" -p "$LAVAPIPE_ASSET" -D "$work"
+
+          cd "$work"
+          cat > expected.sha256 <<EOF
+          $APK_SHA256  $APK_ASSET
+          $PANVK_SHA256  $PANVK_ASSET
+          $LAVAPIPE_SHA256  $LAVAPIPE_ASSET
+          EOF
+          sed -i 's/^ *//' expected.sha256
+          sha256sum -c expected.sha256
+          sha256sum "$APK_ASSET" "$PANVK_ASSET" "$LAVAPIPE_ASSET" > SHA256SUMS.txt
+          rm -f expected.sha256
+          cat SHA256SUMS.txt
+
+      - name: Create or update public experimental release
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/release-assets"
+          title="DroidDeck Mali-G615 v0.3.2-exp1 (Build 44) — Experimental Public Release"
+
+          cat > "$RUNNER_TEMP/release-notes.md" <<'EOF'
+          ## DroidDeck Mali-G615 — First Official Experimental Public Release (`v0.3.2-mali-g615-exp1`, Build 44)
+
+          This is the first public experimental release of the **DroidDeck-Mali** fork, bringing **SteamOS Gaming Mode (Gamescope + Big Picture)**, **KDE Plasma Desktop Mode**, and **Proton / FEX / WOWBox64 / DXVK** Windows game execution to **ARM Mali-G615 (Valhall v10)** Android devices (tested on **POCO X6 Pro / Dimensity 8300-Ultra, Mali-G615 MC6**).
+
+          ---
+
+          ### ⚠️ IMPORTANT: How to Download & Import the GPU Drivers / IMPORTANTE: Cómo descargar e importar los drivers GPU
+
+          > **DO NOT extract the driver `.zip` files and DO NOT pack them inside another `.zip`.**
+          > Each driver `.zip` attached below is already formatted as an individual DroidDeck driver package (`manifest.json` + `icd.json` + `.so`). Download the `.zip` file you want and select that `.zip` **directly** inside the DroidDeck app:
+          > **`Components` → `GPU drivers` → `Import`** (or `Components` → `GPU drivers` → `Advanced` → `Runtime driver` → `Import`).
+          >
+          > **NO descomprimas los archivos `.zip` de los drivers ni los metas dentro de otro `.zip`.**
+          > Cada archivo `.zip` adjunto abajo se importa **directamente tal cual** desde la aplicación DroidDeck en:
+          > **`Components` → `GPU drivers` → `Import`**.
+
+          ---
+
+          ### 📦 Included Downloads / Archivos incluidos
+
+          | File / Archivo | Type / Tipo | Description / Descripción |
+          |---|---|---|
+          | **`DroidDeck-Mali-G615-debug.apk`** | Android APK (`versionCode 44`, `0.3.2`) | Main DroidDeck Mali-G615 application (`com.droiddeck.launcher.mali.g615`). Install this APK on your Android device. |
+          | **`DroidDeck-Mali-G615-PanVK-kbase-beta18.zip`** | **Mali-G615 Hardware Vulkan Driver** (`.zip`) | **Recommended for Mali-G615 / Valhall v10 GPUs.** Standalone `PanVK-kbase` (`panvk-kbase-v0.1.0-rc3` by `zenithblue-oss`) paired with DroidDeck's `/dev/mali0` DRM primary-node ICD shim (`libvulkan_mali_g615_stub.so`). Import this `.zip` directly in DroidDeck and enable **Experimental direct GPU (`/dev/mali0`)** when launching a session. |
+          | **`DroidDeck-Software-Vulkan-lavapipe.zip`** | **CPU Software Vulkan Driver** (`.zip`) | **Safe Fallback / Diagnostic Driver.** Standalone Mesa 25.0.7 `lavapipe` (LLVM 19) CPU Vulkan rasterizer for the glibc ARM64 runtime. Import this `.zip` directly in DroidDeck if you want to run Steam/Desktop without touching `/dev/mali0`. |
+          | **`SHA256SUMS.txt`** | Checksums | SHA-256 hashes for verifying downloaded files. |
+
+          ---
+
+          ### ✨ Highlights in Build 44 (`v0.3.2-mali-g615-exp1`)
+
+          1. **Hardware Vulkan on Mali-G615 (`/dev/mali0`) via PanVK-kbase `v0.1.0-rc3` + DroidDeck ICD Adapter:**
+             - Bridges `gamescope`'s `VK_EXT_physical_device_drm` requirement to `mali_kbase` (`/dev/mali0`) without crashing the host compositor.
+             - Upgrades the backend to `panvk-kbase-v0.1.0-rc3` (3–5× faster shader compilation, persistent Android/Linux Mesa shader disk cache, and 12-bpp AFRC shadow format fix).
+          2. **UMA Memory & Pipeline Stability for DXVK on 12 GB Android Devices:**
+             - Tunes `heap_memory_percent=0.12` so `PanVK` reports an `878 MiB` Vulkan heap (`< 896 MiB`), reducing DXVK's `devicePool.maxChunkSize` from `256 MiB` to `64 MiB` and preventing `VK_ERROR_OUT_OF_DEVICE_MEMORY` on Mali kbase.
+             - Sets `dxvk.trackPipelineLifetime=False`, `dxvk.maxMemoryBudget=384`, `dxvk.enableMemoryDefrag=False`, `d3d11.cachedDynamicResources=a`, and persistent `MESA_SHADER_CACHE_DIR`.
+          3. **Drastic Steam / `steamwebhelper` RAM Reduction (~1 GB Saved) & Zero CEF GPU Restarts:**
+             - Runs `steamwebhelper` with `--use-gl=disabled` (`VK_ICD_FILENAMES=/dev/null`) so CEF never loads `panvk` or allocates `mali0` buffers, keeping all GPU memory available for Gamescope and your game.
+             - Protects the session container against Android `lmkd` kills by setting `oom_score_adj=200` on the game `reaper` process via raw `SYS_openat` in `libblsession.so`.
+          4. **Full `Components` Manager (`FEX` | `WOWBox64` | `DXVK` | `VKD3D-Proton`):**
+             - Adds the **`WOWBox64`** tab to the in-app Components screen, supporting both `.wcp` XZ and Zstd archives from `The412Banner/Nightlies` (`nightly-latest`, `Wowbox64`, `Box64-Hybrid`).
+             - Automatically stages active `wowbox64.dll` as `libwow64fex.dll` in `pfx/drive_c/windows/system32/` for 32-bit Windows games (`wow64`) on ARM64EC Proton.
+             - Automatically heals incompatible x86_64 `dxvk-1.x` packages and syncs ARM64EC `DXVK` / `VKD3D-Proton` DLLs into existing wineprefixes while preserving custom per-game `CompatToolMapping` selections.
+          5. **Fast Game Startup on Android Proot:**
+             - Disables `nsiproxy.sys` (`WINEDLLOVERRIDES="...;nsiproxy.sys=d"`) to eliminate netlink `errno 13` (`EACCES`) hangs during game network initialization.
+             - Sets `WINE_SKIP_OPENGL_GPU_PROBE=1` so `explorer.exe` does not load `mesa zink` (`~296 MB` RSS saved per wineprefix).
+          EOF
+          sed -i 's/^          //' "$RUNNER_TEMP/release-notes.md"
+
+          if ! gh release view "$RELEASE_TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$RELEASE_TAG" -R "$GITHUB_REPOSITORY" \
+              "$work/$APK_ASSET" \
+              "$work/$PANVK_ASSET" \
+              "$work/$LAVAPIPE_ASSET" \
+              "$work/SHA256SUMS.txt" \
+              --title "$title" \
+              --notes-file "$RUNNER_TEMP/release-notes.md" \
+              --latest
+          else
+            gh release upload "$RELEASE_TAG" -R "$GITHUB_REPOSITORY" --clobber \
+              "$work/$APK_ASSET" \
+              "$work/$PANVK_ASSET" \
+              "$work/$LAVAPIPE_ASSET" \
+              "$work/SHA256SUMS.txt"
+            gh release edit "$RELEASE_TAG" -R "$GITHUB_REPOSITORY" \
+              --title "$title" \
+              --notes-file "$RUNNER_TEMP/release-notes.md" \
+              --latest
+          fi

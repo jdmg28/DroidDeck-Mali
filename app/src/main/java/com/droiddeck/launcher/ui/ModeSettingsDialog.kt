@@ -93,6 +93,8 @@ class ModeSettings(
     val steamRepairQueued: Boolean = false,
     /** Steam, Deck mode: the QAM's performance overlay (mangoapp) is started. */
     val mangoapp: Boolean = true,
+    /** Steam only: the client's browser runs on the GPU instead of the CPU (SessionPrefs.steamUiOnGpu). */
+    val steamUiOnGpu: Boolean = false,
     /** Steam only: what the pad is to the client (SessionPrefs.CONTROLLER_*); null outside Steam. */
     val steamController: String? = null,
     /** Steam only: start a Steam session when DroidDeck opens. */
@@ -150,6 +152,7 @@ class ModeSettingsActions(
     val onSteamRepair: () -> Unit = {},
     val onSteamDeckMode: (Boolean) -> Unit = {},
     val onMangoapp: (Boolean) -> Unit = {},
+    val onSteamUiOnGpu: (Boolean) -> Unit = {},
     val onSteamController: (String) -> Unit = {},
     val onRunSteamAtStartup: (Boolean) -> Unit = {},
     val onWifiDiscovery: (Boolean) -> Unit = {},
@@ -394,6 +397,11 @@ fun ModeSettingsPage(s: ModeSettings, a: ModeSettingsActions) {
                 host, "mangoapp", stringResource(R.string.mode_mangoapp),
                 stringResource(R.string.mode_mangoapp_hint),
                 s.mangoapp, onChange = a.onMangoapp,
+            )
+            ToggleRow(
+                host, "steamUiGpu", stringResource(R.string.mode_steam_ui_gpu),
+                stringResource(R.string.mode_steam_ui_gpu_hint),
+                s.steamUiOnGpu, onChange = a.onSteamUiOnGpu,
             )
             // Deck mode fixes the branch (SessionPrefs.steamChannel); the choice is for Deck mode off.
             if (s.steamDeckMode) SettingsRow(stringResource(R.string.mode_branch), stringResource(R.string.mode_branch_deck)) {}

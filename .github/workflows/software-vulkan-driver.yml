@@ -1,0 +1,638 @@
+name: Software Vulkan driver package (lavapipe)
+
+# Mesa's lavapipe as a zip the app's Linux driver importer accepts: a Vulkan driver that renders
+# on the CPU, so a session can be brought up with the device's own GPU nowhere in the picture.
+# It is a separate release asset, never part of the APK.
+#
+# The glibc of the runtime this has to load in is measured first, and the job stops dead if it is
+# below what the driver needs: a package that cannot be loaded is worse than no package.
+on:
+  push:
+    branches: [ mali-g615-experimental, 'arena/**' ]
+    paths:
+      - .github/workflows/software-vulkan-driver.yml
+      - tools/software-driver/**
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: software-vulkan-driver
+  cancel-in-progress: true
+
+env:
+  GH_TOKEN: ${{ github.token }}
+  # Debian trixie, arm64. Both are pinned by checksum and both are what the mesa 25.0.7 in trixie
+  # was built against, so the driver and its LLVM come from one release.
+  MESA_DEB_URL: https://deb.debian.org/debian/pool/main/m/mesa/mesa-vulkan-drivers_25.0.7-2+deb13u1_arm64.deb
+  MESA_DEB_SHA256: b73e1b64f26d55c981339533f3eb64397fda4a8e86dd5593ed15e1c48711141d
+  LLVM_DEB_URL: https://deb.debian.org/debian/pool/main/l/llvm-toolchain-19/libllvm19_19.1.7-3+b1_arm64.deb
+  LLVM_DEB_SHA256: 8a48e1a49f7fcc3be74e697767d72902f4b03041401d1529bcfad1849df39148
+  # Debian's libLLVM links libedit, which links libbsd and libtinfo. The runtime is an Arch
+  # rootfs and measurement showed it carries none of the three, so they travel with the driver.
+  LIBEDIT_DEB_URL: https://deb.debian.org/debian/pool/main/libe/libedit/libedit2_3.1-20250104-1_arm64.deb
+  LIBEDIT_DEB_SHA256: 496c31df89fac9cb7e98102fcc21daf887376dcd9914f6322c86dd5bd4360ff1
+  LIBTINFO_DEB_URL: https://deb.debian.org/debian/pool/main/n/ncurses/libtinfo6_6.5+20250216-2_arm64.deb
+  LIBTINFO_DEB_SHA256: 2a747f7fff3c2347c357387a7133df997410f07ba1b1df1a1461a97bd7fbc2fc
+  LIBBSD_DEB_URL: https://deb.debian.org/debian/pool/main/libb/libbsd/libbsd0_0.12.2-2_arm64.deb
+  LIBBSD_DEB_SHA256: 6827c1b3ad8dcbf3478803f9150359433e3376a3bde01c4503888a22eb3924e3
+  LIBMD_DEB_URL: https://deb.debian.org/debian/pool/main/libm/libmd/libmd0_1.1.0-2+b1_arm64.deb
+  LIBMD_DEB_SHA256: 772e86842fd3fa1816a0cfee4833a73996aaa550461491543b886b9c8f999052
+  LIBZ3_DEB_URL: https://deb.debian.org/debian/pool/main/z/z3/libz3-4_4.13.3-1_arm64.deb
+  LIBZ3_DEB_SHA256: 29a7b924a5a38c9ac4e2a64aa11586a9c54f26b579b18e4f75adf8f7c1106e45
+  LIBXML2_DEB_URL: https://deb.debian.org/debian/pool/main/libx/libxml2/libxml2_2.12.7+dfsg+really2.9.14-2.1+deb13u3_arm64.deb
+  LIBXML2_DEB_SHA256: a66b9c960acef8ed9653223cbd00b155a92ebb758ea13a788c41609246c23bc7
+  # Where the app installs the runtime from, and the file inside it whose glibc decides whether
+  # anything built for 2.38 can load at all.
+  RUNTIME_CATALOG: https://raw.githubusercontent.com/The412Banner/winlator-contents/main/linuxfs.json
+  RELEASE_TAG: software-mode-lavapipe
+  RELEASE_ASSET: DroidDeck-Software-Vulkan-lavapipe.zip
+
+jobs:
+  package:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Start the report
+        run: |
+          set -euo pipefail
+          {
+            echo "## Software Vulkan driver (lavapipe) - build report"
+            echo
+            echo "Read by [this run]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID) from \`$GITHUB_SHA\`."
+            echo
+            echo "| | |"
+            echo "|---|---|"
+          } > report.md
+
+      - name: Tools
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends zstd patchelf binutils jq qemu-user-static \
+            gcc-aarch64-linux-gnu libc6-dev-arm64-cross
+          patchelf --version | head -1
+
+      - name: Download the Linux runtime the app installs
+        id: runtime
+        run: |
+          set -euo pipefail
+          catalog=$(curl -fsSL --retry 3 "$RUNTIME_CATALOG")
+          version=$(jq -r .version <<<"$catalog")
+          url=$(jq -r .url <<<"$catalog")
+          sha=$(jq -r .sha256 <<<"$catalog")
+          for v in version url sha; do [ -n "${!v}" ] && [ "${!v}" != null ] || { echo "::error::catalog has no $v"; exit 1; }; done
+          echo "runtime $version: $url"
+          curl -fsSL --retry 5 --retry-all-errors -o linuxfs.tar.zst "$url"
+          echo "$sha  linuxfs.tar.zst" | sha256sum -c -
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+          echo "sha256=$sha" >> "$GITHUB_OUTPUT"
+
+      # One pass over the archive: everything under usr/lib, which is what the driver's own
+      # dependencies are resolved against below, and where libc.so.6 lives.
+      - name: Unpack the runtime's libraries
+        run: |
+          set -euo pipefail
+          mkdir -p rootfs/usr/lib
+          # --no-anchored: the archive names its members usr/lib/... or ./usr/lib/... depending on
+          # how it was made, and one pass over 2.5 GB is not something to do twice to find out.
+          time tar --zstd -xf linuxfs.tar.zst -C rootfs --wildcards --no-anchored 'usr/lib/*' \
+            --no-same-owner --no-same-permissions
+          du -sh rootfs
+          find rootfs -name 'libc.so.6' -o -name 'ld-linux-aarch64.so.1' | head
+          # Nothing extracted is a failure, not a warning: everything below reads these files.
+          libc=$(find rootfs -name 'libc.so.6' | head -1)
+          if [ -z "$libc" ]; then
+            echo "::error::no libc.so.6 under usr/lib in the runtime archive; here is what it has:"
+            tar --zstd -tf linuxfs.tar.zst 2>/dev/null | head -20
+            exit 1
+          fi
+          echo "libc=$libc" >> "$GITHUB_ENV"
+          # The runtime is Arch: /lib is a symlink to usr/lib, and qemu looks for the interpreter
+          # at /lib/ld-linux-aarch64.so.1 inside the sysroot, which is not there unless we say so.
+          if [ ! -e rootfs/lib ] && [ -d rootfs/usr/lib ]; then ln -s usr/lib rootfs/lib; fi
+          ls -ld rootfs/lib rootfs/usr/lib || true
+
+      - name: Measure the runtime's glibc
+        id: glibc
+        run: |
+          set -euo pipefail
+          libc=rootfs/usr/lib/libc.so.6
+          [ -f "$libc" ] || { echo "::error::the runtime carries no usr/lib/libc.so.6"; exit 1; }
+          banner=$(strings -n 8 "$libc" | grep -m1 "GNU C Library" || true)
+          [ -n "$banner" ] || { echo "::error::no 'GNU C Library' line in the runtime's libc.so.6"; exit 1; }
+          version=$(sed -n 's/.*stable release version \([0-9][0-9.]*\)[^0-9.]*$/\1/p' <<<"$banner" | sed 's/\.$//')
+          [ -n "$version" ] || { echo "::error::cannot read a version out of '$banner'"; exit 1; }
+          # The highest GLIBC_2.x this libc itself defines: the ceiling every driver in the
+          # runtime must stay under.
+          defines=$(strings -n 6 "$libc" | grep -oE '^GLIBC_2\.[0-9]+$' | sort -uV | tail -1)
+          echo "$banner"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "defines=$defines" >> "$GITHUB_OUTPUT"
+          echo "banner=$banner" >> "$GITHUB_OUTPUT"
+          {
+            echo "| runtime | \`${{ steps.runtime.outputs.version }}\`, ${size:-?} |"
+            echo "| its libc says | \`$banner\` |"
+            echo "| glibc | **$version** ($defines) |"
+          } >> report.md
+
+      - name: Get the driver and the libraries it loads
+        id: mesa
+        run: |
+          set -euo pipefail
+          mkdir -p pkg stage
+          : > packages.tsv
+          # A soname this workflow knows how to get, with the package it comes from and the
+          # checksum the download has to match. Nothing here is fetched unless the driver needs it
+          # and the runtime does not already have it, and a soname that is not listed here stops
+          # the job with its name in the report rather than being quietly left out.
+          source_for() { # soname -> "url sha256 package"
+            case "$1" in
+              libvulkan_lvp.so) echo "$MESA_DEB_URL $MESA_DEB_SHA256 mesa-vulkan-drivers" ;;
+              libLLVM.so.19.1) echo "$LLVM_DEB_URL $LLVM_DEB_SHA256 libllvm19" ;;
+              libedit.so.2) echo "$LIBEDIT_DEB_URL $LIBEDIT_DEB_SHA256 libedit2" ;;
+              libtinfo.so.6) echo "$LIBTINFO_DEB_URL $LIBTINFO_DEB_SHA256 libtinfo6" ;;
+              libbsd.so.0) echo "$LIBBSD_DEB_URL $LIBBSD_DEB_SHA256 libbsd0" ;;
+              libmd.so.0) echo "$LIBMD_DEB_URL $LIBMD_DEB_SHA256 libmd0" ;;
+              libz3.so.4) echo "$LIBZ3_DEB_URL $LIBZ3_DEB_SHA256 libz3-4" ;;
+              libxml2.so.2) echo "$LIBXML2_DEB_URL $LIBXML2_DEB_SHA256 libxml2" ;;
+              *) return 1 ;;
+            esac
+          }
+          # Every failure below says what it got: the run's log is not the only place a refusal can
+          # be read, and a checksum mismatch or a renamed .so has to be visible outside it.
+          complain() { # title ...lines
+            { echo; echo "### $1"; echo '```'; shift; printf '%s\n' "$@"; echo '```'; } >> report.md
+          }
+          fetch_soname() { # soname
+            local so=$1 url sha pkgname deb out found
+            if ! read -r url sha pkgname < <(source_for "$so" 2>/dev/null); then
+              complain "nothing here can supply $so" \
+                "Debian trixie arm64 is the source of every library in this package. Add it to" \
+                "source_for in this workflow, with the URL and sha256 of the .deb it comes from."
+              return 1
+            fi
+            deb="pkg/$pkgname.deb"
+            if [ ! -f "$deb" ]; then
+              if ! out=$(curl -fsSL --retry 3 -o "$deb" "$url" 2>&1); then
+                complain "fetching $pkgname failed" "$url" "$out"
+                return 1
+              fi
+              if ! out=$(echo "$sha  $deb" | sha256sum -c - 2>&1); then
+                complain "$pkgname's checksum is not the one this workflow pins" "$out"
+                return 1
+              fi
+              dpkg-deb -x "$deb" "pkg/$pkgname"
+            fi
+            # -L: Debian ships libedit.so.2 and libtinfo.so.6 as symlinks to the versioned file,
+            # and find does not call a symlink to a regular file a regular file.
+            found=$(find -L "pkg/$pkgname" -name "$so" -type f | head -1)
+            if [ -z "$found" ]; then
+              complain "$so is not in $pkgname" "$(find pkg/"$pkgname" -name '*.so*' | head -20)"
+              return 1
+            fi
+            cp -L "$found" "stage/$so"
+            printf '%s\t%s\t%s\t%s\t%s\n' "$so" "$pkgname" "$(dpkg-deb -f "$deb" Version)" \
+              "$url" "$sha" >> packages.tsv
+          }
+          fetch_soname libvulkan_lvp.so
+          # Then the closure: what the driver and every library beside it ask for, minus what the
+          # runtime already carries. Measured, not assumed - libLLVM turned out to want libedit,
+          # which wants libbsd and libtinfo, which want libmd, and libLLVM also wants libz3.
+          for round in 1 2 3 4 5 6; do
+            needed=$(for so in stage/*.so*; do objdump -p "$so"; done | awk '/NEEDED/{print $2}' | sort -u)
+            missing=""
+            for n in $needed; do
+              if [ -e "stage/$n" ]; then continue; fi
+              if [ -e "rootfs/usr/lib/$n" ]; then continue; fi
+              missing="$missing $n"
+            done
+            if [ -z "$missing" ]; then break; fi
+            echo "round $round: the runtime has none of:$missing"
+            for n in $missing; do
+              if ! fetch_soname "$n"; then
+                complain "$n is needed by this driver and is not in the runtime" \
+                  "needed:$needed" \
+                  "the runtime has: $(cd rootfs/usr/lib && ls)"
+                echo "::error::$n cannot be supplied (see the report)"
+                exit 1
+              fi
+            done
+          done
+          {
+            echo
+            echo "| library | bytes | comes from |"
+            echo "|---|---|---|"
+          } >> report.md
+          while IFS=$'\t' read -r so pkgname ver url sha; do
+            echo "| \`$so\` | $(stat -c %s "stage/$so") | \`$pkgname $ver\` (debian trixie arm64) |" >> report.md
+          done < packages.tsv
+          {
+            echo
+            echo "The runtime carries the rest of what this set needs: $(for n in $needed; do
+              if [ -e "rootfs/usr/lib/$n" ]; then printf '%s ' "$n"; fi; done)"
+          } >> report.md
+          ls -l stage
+          cat packages.tsv
+          # What the whole set asks of the C library, which is the number the gate is about.
+          needs=$(objdump -T stage/*.so* | grep -oE 'GLIBC_2\.[0-9]+' | sort -uV | tail -1 || true)
+          if [ -z "$needs" ]; then
+            echo "::error::no GLIBC_x.y version found in the libraries; the gate would be meaningless"
+            exit 1
+          fi
+          version=$(dpkg-deb -f pkg/mesa-vulkan-drivers.deb Version)
+          echo "driver: mesa $version, needs $needs"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "needs=$needs" >> "$GITHUB_OUTPUT"
+
+      # THE GATE. Nothing is packaged until this passes: a driver whose glibc requirement the
+      # runtime cannot meet is one that gamescope reports as a missing physical device, half an
+      # hour into a session, with nothing in the log to say why.
+      - name: The runtime's glibc is new enough
+        env:
+          RUNTIME_VERSION: ${{ steps.runtime.outputs.version }}
+          RUNTIME_GLIBC: ${{ steps.glibc.outputs.version }}
+          RUNTIME_DEFINES: ${{ steps.glibc.outputs.defines }}
+          DRIVER_NEEDS: ${{ steps.mesa.outputs.needs }}
+          DRIVER_VERSION: ${{ steps.mesa.outputs.version }}
+        run: |
+          set -euo pipefail
+          need=${DRIVER_NEEDS#GLIBC_}
+          have=$RUNTIME_GLIBC
+          echo "the driver (mesa $DRIVER_VERSION) needs GLIBC_$need; runtime $RUNTIME_VERSION has glibc $have ($RUNTIME_DEFINES)"
+          if [ "$(printf '%s\n%s\n' "$need" "$have" | sort -V | head -1)" != "$need" ]; then
+            {
+              echo "::error::the runtime's glibc ($have) is older than the driver needs (GLIBC_$need): a package made here would not load"
+              echo
+              echo "### Stopped before packaging anything"
+              echo
+              echo "The Linux runtime the app installs ($RUNTIME_VERSION) carries glibc $have"
+              echo "(\`$RUNTIME_DEFINES\`), and Mesa's lavapipe from Debian trixie asks for GLIBC_$need."
+              echo "A driver that asks for more than the runtime's libc defines is refused by its loader,"
+              echo "so there is no point shipping it. What is left:"
+              echo
+              echo "1. **Take lavapipe from an older Debian** - bookworm (glibc 2.36) needs less, and its"
+              echo "   mesa 22.3 lavapipe is a Vulkan 1.3 driver, which is all this needs."
+              echo "2. **Build lavapipe against the runtime** - build Mesa inside this rootfs"
+              echo "   (\`tools/linuxfs\`), so it links the glibc it will run on. Slowest, and the only one"
+              echo "   that cannot drift out from under the runtime again."
+              echo "3. **Ship it anyway, clearly marked** - only if the phone's runtime is to be replaced"
+              echo "   with one new enough first."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::stopping here; see the summary for the options"
+            exit 1
+          fi
+          echo "ok: glibc $have >= $need" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Make every library find its neighbours beside itself
+        run: |
+          set -euo pipefail
+          # The importer flattens a zip into one directory and renames the driver, so an absolute
+          # RPATH is worthless; $ORIGIN is that directory wherever it ends up, which is where the
+          # importer puts every library of the set as well. Nothing in the session needs
+          # LD_LIBRARY_PATH.
+          #
+          # On every one of them, not just the driver: DT_RUNPATH of a library is not inherited by
+          # the libraries IT loads, so libLLVM needs its own $ORIGIN to find its libedit.
+          for so in stage/*.so*; do patchelf --set-rpath '$ORIGIN' "$so"; done
+          for so in stage/*.so*; do
+            readelf -d "$so" | grep -E '\(RUNPATH\)|\(RPATH\)'
+            readelf -d "$so" | grep -qF '$ORIGIN' ||
+              { echo "::error::$so has no \$ORIGIN runpath"; exit 1; }
+          done
+          for so in stage/*.so*; do
+            printf '%s: %s\n' "$so" "$(readelf -h "$so" | sed -n 's/.*Machine: *//p' | head -1)"
+            readelf -h "$so" | grep -q 'AArch64' || { echo "::error::$so is not AArch64"; exit 1; }
+          done
+
+      # The runtime's own loader, on the runtime's own libraries, through qemu: every NEEDED of the
+      # driver and of its LLVM either resolves there or it does not, and this is the same question
+      # the guest asks at session start.
+      - name: Its dependencies resolve in the runtime
+        run: |
+          set -uo pipefail
+          lib=rootfs/usr/lib
+          fail=0
+          for so in stage/*.so*; do
+            if ! out=$(qemu-aarch64-static -L rootfs "$lib/ld-linux-aarch64.so.1" \
+                        --library-path "$lib" --list "$so" 2>&1); then
+              {
+                echo
+                echo "### $so did not resolve"
+                echo '```'
+                echo "$out"
+                echo '```'
+              } >> report.md
+              echo "::error::$so did not resolve in the runtime (see the report)"
+              fail=1
+              continue
+            fi
+            {
+              echo
+              echo "<details><summary>$so: every NEEDED resolves in the runtime</summary>"
+              echo
+              echo '```'
+              echo "$out"
+              echo '```'
+              echo
+              echo "</details>"
+            } >> report.md
+            echo "$out" | sed 's/^/   /'
+          done
+          exit $fail
+
+      # The same, one step further: load the ICD through the runtime's Vulkan loader and ask it
+      # what it is. This is the check that says the package works, not merely that it links.
+      #
+      # It is also where the manifest's api_version is measured rather than assumed: a loader will
+      # not offer a driver whose manifest declares less than the instance asks for, so a lavapipe
+      # advertised as 1.1 is invisible to anything asking for 1.3, and the package would import
+      # and then do nothing.
+      - name: It enumerates a device in the runtime
+        id: probe
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/probe.sh" <<'EOS'
+          set -euo pipefail
+          lib=rootfs/usr/lib
+          complain() { # title ...lines
+            { echo; echo "### $1"; echo '```'; shift; printf '%s\n' "$@"; echo '```'; } >> report.md
+          }
+          if [ ! -e "$lib/libvulkan.so.1" ]; then
+            complain "the runtime has no Vulkan loader at \$lib/libvulkan.so.1" \
+              "the runtime's /usr/lib has: $(ls "$lib" | grep -i vulkan || echo 'nothing named vulkan')" \
+              "$(find rootfs -name 'libvulkan.so*' | head -5)"
+            exit 1
+          fi
+          ls -l "$lib"/libvulkan.so.1*
+          mkdir -p probe
+          if ! out=$(aarch64-linux-gnu-gcc -O1 -o probe/probe tools/software-driver/probe.c -ldl 2>&1); then
+            complain "the probe did not compile" "$out"
+            exit 1
+          fi
+          ls -l probe/probe
+          # The manifest the driver is tried under, newest api first. Named as Mesa names it, so
+          # VK_LOADER_DRIVERS_SELECT below matches it - the loader filters on the manifest's name.
+          manifest=probe/lvp_icd.aarch64.json
+          for manifest_api in 1.4.0 1.3.0 1.2.0 1.1.0; do
+            jq -n --arg path "$PWD/stage/libvulkan_lvp.so" --arg api "$manifest_api" \
+              '{file_format_version:"1.0.0", ICD:{library_path:$path, api_version:$api}}' > "$manifest"
+            set +e
+            out=$(VK_DRIVER_FILES="$PWD/$manifest" VK_ICD_FILENAMES="$PWD/$manifest" \
+              VK_LOADER_DRIVERS_SELECT='*lvp*' \
+              timeout 600 qemu-aarch64-static -L rootfs -E LD_LIBRARY_PATH="$lib" \
+                probe/probe "$lib/libvulkan.so.1" "$PWD/$manifest" "$manifest_api" 2>&1)
+            result=$?
+            set -e
+            echo "--- manifest api $manifest_api: exit $result"
+            echo "$out"
+            {
+              echo
+              echo "<details><summary>manifest api $manifest_api: the ICD loaded through the"
+              echo "runtime's own loader (exit $result)</summary>"
+              echo
+              echo '```'
+              echo "$out"
+              echo '```'
+              echo
+              echo "</details>"
+            } >> report.md
+            if [ "$result" = 0 ]; then
+              instance_api=$(sed -n 's/^probe: ok instance=\([0-9][0-9.]*\)$/\1/p' <<<"$out" | head -1)
+              echo "manifest_api=$manifest_api" >> "$GITHUB_OUTPUT"
+              echo "instance_api=${instance_api:-$manifest_api}" >> "$GITHUB_OUTPUT"
+              break
+            fi
+          done
+          if ! grep -q '^manifest_api=' "$GITHUB_OUTPUT" 2>/dev/null; then
+            echo "::error::no api version in the manifest let this driver be loaded (see the report)"
+            exit 1
+          fi
+          cat "$GITHUB_OUTPUT"
+          EOS
+          bash tools/ci/with-report.sh "It enumerates a device in the runtime" "$RUNNER_TEMP/probe.sh"
+
+      - name: Write the package
+        id: zip
+        env:
+          DRIVER_VERSION: ${{ steps.mesa.outputs.version }}
+          DRIVER_NEEDS: ${{ steps.mesa.outputs.needs }}
+          RUNTIME_VERSION: ${{ steps.runtime.outputs.version }}
+          RUNTIME_GLIBC: ${{ steps.glibc.outputs.version }}
+          RUNTIME_URL: ${{ steps.runtime.outputs.url }}
+          RUNTIME_SHA256: ${{ steps.runtime.outputs.sha256 }}
+          MANIFEST_API: ${{ steps.probe.outputs.manifest_api }}
+          INSTANCE_API: ${{ steps.probe.outputs.instance_api }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/package.sh" <<'EOS'
+          set -euo pipefail
+          driver=stage/libvulkan_lvp.so
+          # Every library in the package except the driver itself: what the importer has to copy
+          # beside it, and what its policy has to recognise.
+          libs=$(cd stage && ls *.so* | grep -v '^libvulkan_lvp.so$' | jq -R . | jq -sc .)
+          echo "runtime libraries: $libs"
+          # What the importer reads: name, driverVersion, minGlibc, gpuVendor, vulkanApiVersion.
+          # gpuVendor "software" is what GpuSafety looks for to know this driver draws on the CPU.
+          jq -n \
+            --arg version "$DRIVER_VERSION" \
+            --arg minGlibc "${DRIVER_NEEDS#GLIBC_}" \
+            --arg runtime "$RUNTIME_VERSION" \
+            --arg runtimeGlibc "$RUNTIME_GLIBC" \
+            --arg manifestApi "$MANIFEST_API" --arg instanceApi "$INSTANCE_API" \
+            --argjson runtimeLibraries "$libs" \
+            --argjson source "$(jq -Rn '[inputs | split("\t") | {key: .[0], value: {package: .[1], version: .[2], arch: "arm64", suite: "debian trixie", url: .[3], sha256: .[4]}}] | from_entries' < packages.tsv)" \
+            --arg builtAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg run "$RUN_URL" '
+            {
+              schemaVersion: 1,
+              kind: "linux-vulkan-icd",
+              name: "lavapipe (software)",
+              driverVersion: ("mesa " + $version),
+              minGlibc: $minGlibc,
+              gpuVendor: "software",
+              sourceLibraryName: "libvulkan_lvp.so",
+              vulkanApiVersion: $manifestApi,
+              # What the probe measured: the manifest advertises $manifestApi and the driver
+              # took an instance at $instanceApi through the loader of the runtime itself.
+              # No apostrophes in here: the program is inside single quotes for the shell.
+              measuredApiVersion: $instanceApi,
+              runtimeLibraries: $runtimeLibraries,
+              notes: "Mesa lavapipe: a Vulkan driver that rasterises on the CPU. Imported as the runtime driver, it lets a session start with the device GPU kept out of the guest entirely. Far too slow to play on.",
+              packagedAt: $builtAt,
+              builtBy: $run,
+              measured: {runtime: $runtime, runtimeGlibc: $runtimeGlibc},
+              source: $source
+            }' > stage/meta.json
+          cat stage/meta.json
+          # Provenance, generated from what was actually fetched: the driver is Mesa's
+          # (MIT/Apache-2.0, src/mesa/drivers/llvmpipe) and each library carries its own licence.
+          {
+            echo "DroidDeck software Vulkan driver package"
+            echo "========================================"
+            echo
+            while IFS=$'\t' read -r so pkgname ver url sha; do
+              printf '%-18s %s %s, Debian trixie arm64\n' "$so" "$pkgname" "$ver"
+              printf '%-18s %s\n' "" "$url"
+            done < packages.tsv
+            echo
+            echo "libvulkan_lvp.so is Mesa's lavapipe: Mesa is licensed under the MIT / Apache-2.0"
+            echo "licences (https://docs.mesa3d.org/license.html). libLLVM.so.19.1 is LLVM, under"
+            echo "the Apache License 2.0 with LLVM exceptions; the rest are the libraries those two"
+            echo "load, each under its own licence, shipped because the runtime this imports into"
+            echo "carries none of them."
+            echo
+            echo "Every library carries DT_RUNPATH \$ORIGIN, so each finds its neighbours beside"
+            echo "itself in the directory the app's importer puts them all in. Nothing is added to"
+            echo "the runtime and nothing in it is modified."
+            echo
+            echo "Built by $RUN_URL"
+            echo "Measured against runtime \`$RUNTIME_VERSION\` (glibc $RUNTIME_GLIBC) before it was"
+            echo "packaged; this driver asks for \`$DRIVER_NEEDS\`."
+          } > stage/NOTICE.txt
+          cat stage/NOTICE.txt
+          rm -f "$RELEASE_ASSET"
+          ( cd stage && zip -X -9 -j "../$RELEASE_ASSET" *.so* meta.json NOTICE.txt )
+          unzip -l "$RELEASE_ASSET"
+          for so in stage/*.so*; do ls -l "$so"; done
+          {
+            echo "driver_bytes=$(stat -c %s "$driver")"
+            echo "zip_bytes=$(stat -c %s "$RELEASE_ASSET")"
+            echo "contents=$(cd stage && ls *.so* | jq -R . | jq -sc .)"
+          } >> "$GITHUB_OUTPUT"
+          EOS
+          bash tools/ci/with-report.sh "Write the package" "$RUNNER_TEMP/package.sh"
+
+      - name: Summary
+        env:
+          RUNTIME_VERSION: ${{ steps.runtime.outputs.version }}
+          RUNTIME_GLIBC: ${{ steps.glibc.outputs.version }}
+          RUNTIME_BANNER: ${{ steps.glibc.outputs.banner }}
+          DRIVER_VERSION: ${{ steps.mesa.outputs.version }}
+          DRIVER_NEEDS: ${{ steps.mesa.outputs.needs }}
+          DRIVER_BYTES: ${{ steps.zip.outputs.driver_bytes }}
+          CONTENTS: ${{ steps.zip.outputs.contents }}
+          ZIP_BYTES: ${{ steps.zip.outputs.zip_bytes }}
+        run: |
+          set -euo pipefail
+          {
+            echo "## Software Vulkan driver (lavapipe)"
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| driver | Mesa $DRIVER_VERSION, from Debian trixie arm64 \`mesa-vulkan-drivers\` |"
+            echo "| asks for | \`GLIBC_${DRIVER_NEEDS#GLIBC_}\` |"
+            echo "| runtime it must load in | \`$RUNTIME_VERSION\`, glibc **$RUNTIME_GLIBC** |"
+            echo "| the runtime's libc says | \`$RUNTIME_BANNER\` |"
+            echo "| \`libvulkan_lvp.so\` | $DRIVER_BYTES bytes |"
+            echo "| with it | $(jq -r 'join(", ")' <<<"$CONTENTS") |"
+            echo "| zip | $ZIP_BYTES bytes |"
+            echo
+            echo "The runtime's glibc was measured before anything was packaged, and the job stops"
+            echo "without a zip if it is older than what the driver asks for. Every \`NEEDED\` of every"
+            echo "library was then resolved by the runtime's own loader, under qemu, against the"
+            echo "runtime's own \`/usr/lib\`; the step after that loads the ICD and enumerates a device."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publish the zip
+        env:
+          TAG: ${{ env.RELEASE_TAG }}
+          ASSET: ${{ env.RELEASE_ASSET }}
+          DRIVER_VERSION: ${{ steps.mesa.outputs.version }}
+          DRIVER_NEEDS: ${{ steps.mesa.outputs.needs }}
+          RUNTIME_VERSION: ${{ steps.runtime.outputs.version }}
+          RUNTIME_GLIBC: ${{ steps.glibc.outputs.version }}
+          ZIP_BYTES: ${{ steps.zip.outputs.zip_bytes }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          work=$RUNNER_TEMP/publish
+          mkdir -p "$work"
+          cp "$ASSET" "$work/$ASSET"
+          ( cd "$work" && sha256sum -- "$ASSET" > "$ASSET.sha256" )
+          cat "$work/$ASSET.sha256"
+          if ! gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$TAG" -R "$GITHUB_REPOSITORY" --prerelease \
+              --title "DroidDeck software Vulkan driver (lavapipe)" --notes "Replaced by every build."
+          fi
+          # Retried, and then read back: the PanVK package's release went missing after a job that
+          # reported success in every step, so the GPU path had nothing to import and nothing in the
+          # repository said so. A build that publishes something proves it is there before it calls
+          # itself done.
+          uploaded=0
+          for attempt in 1 2 3; do
+            if gh release upload "$TAG" "$work"/* -R "$GITHUB_REPOSITORY" --clobber; then
+              uploaded=1
+              break
+            fi
+            echo "the upload to $TAG failed (attempt $attempt of 3); trying again"
+            sleep 10
+          done
+          if [ "$uploaded" != 1 ]; then
+            echo "::error::$ASSET was built but could not be uploaded to $TAG"
+            exit 1
+          fi
+          # One zip, the one just built: an asset left by an older build of this is removed, so the
+          # release never offers two things to import. One already gone answers 404, and a 404 on a
+          # delete is the outcome wanted, not a reason to fail the build.
+          keep=$(cd "$work" && ls | jq -R . | jq -sc .)
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" |
+            jq -r --argjson keep "$keep" '.assets[] | select(.name as $n | $keep | index($n) | not) | .id' |
+            while IFS= read -r id; do
+              gh api --method DELETE "repos/$GITHUB_REPOSITORY/releases/assets/$id" >/dev/null || true
+            done
+          if ! gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json assets \
+                 --jq '.assets[].name' | grep -qx "$ASSET"; then
+            echo "::error::$TAG does not offer $ASSET after publishing it"
+            exit 1
+          fi
+          {
+            echo "## DroidDeck software Vulkan driver - Mesa lavapipe $DRIVER_VERSION"
+            echo
+            echo "A Vulkan driver that rasterises on the CPU, to bring up a session with the Mali GPU"
+            echo "kept out of the guest entirely. Not for playing: a frame takes seconds."
+            echo
+            echo "- [$ASSET]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/download/$TAG/$ASSET)"
+            echo "- [$ASSET.sha256](https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/$ASSET.sha256)"
+            echo
+            echo "**To use it:** install the APK from"
+            echo "[software-mode-latest](https://github.com/$GITHUB_REPOSITORY/releases/tag/software-mode-latest),"
+            echo "then Components -> GPU drivers -> Advanced -> Runtime driver -> Import, and pick the zip."
+            echo "GPU safety is Auto, which is software on a Mali device, so there is nothing else to set."
+            echo
+            echo "Measured before it was packaged: the runtime (\`$RUNTIME_VERSION\`) carries glibc"
+            echo "$RUNTIME_GLIBC, and this driver asks for \`$DRIVER_NEEDS\`. The zip's"
+            echo "\`meta.json\` records both, with the checksum of every Debian package the zip is made of."
+            echo
+            echo "Built by [this run]($RUN_URL) from \`${{ github.sha }}\`."
+          } > "$RUNNER_TEMP/notes.md"
+          gh release edit "$TAG" -R "$GITHUB_REPOSITORY" --notes-file "$RUNNER_TEMP/notes.md"
+
+      - name: Upload the zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: DroidDeck-Software-Vulkan-lavapipe
+          path: '*.zip'
+          if-no-files-found: error
+
+      - name: Report
+        if: always()
+        run: |
+          set -euo pipefail
+          {
+            echo
+            echo "Published as \`${{ env.RELEASE_TAG }}\` when it got that far."
+          } >> report.md
+          cat report.md >> "$GITHUB_STEP_SUMMARY"
+          if ! gh release view ci-report-lavapipe -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create ci-report-lavapipe -R "$GITHUB_REPOSITORY" --prerelease \
+              --title "CI report: software Vulkan driver" --notes-file report.md
+          else
+            gh release edit ci-report-lavapipe -R "$GITHUB_REPOSITORY" --notes-file report.md
+          fi

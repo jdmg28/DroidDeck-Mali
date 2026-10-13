@@ -62,6 +62,23 @@ static int is_trace_marker(const char *path) {
           || strcmp(path, "/sys/kernel/debug/tracing/trace_marker") == 0);
 }
 
+/* steam-launch-wrapper passes --oom-score-adjust 900 before exec'ing reaper. On Linux 6.1 writing
+ * 900 raises signal->oom_score_adj_min to 900 permanently, and on Android 900 is CACHED_APP_MIN_ADJ,
+ * which makes lmkd SIGKILL the foreground game whenever free RAM dips below ~700 MB. Redirecting
+ * writes to /dev/null lets steam-launch-wrapper succeed while keeping the game at foreground priority. */
+static int is_oom_score_adj(const char *path) {
+  if (path == NULL || strncmp(path, "/proc/", 6) != 0) return 0;
+  const char *p = path + 6;
+  if (strncmp(p, "self/", 5) == 0) p += 5;
+  else if (strncmp(p, "thread-self/", 12) == 0) p += 12;
+  else {
+    while (*p >= '0' && *p <= '9') p++;
+    if (p == path + 6 || *p != '/') return 0;
+    p++;
+  }
+  return strcmp(p, "oom_score_adj") == 0;
+}
+
 int open(const char *path, int flags, ...) {
   va_list ap;
   mode_t mode;
@@ -74,6 +91,7 @@ int open(const char *path, int flags, ...) {
     errno = EACCES;
     return -1;
   }
+  if ((flags & O_ACCMODE) != O_RDONLY && is_oom_score_adj(path)) path = "/dev/null";
   if ((fd = bl_status_without_tracer(path, flags)) >= 0) return fd;
   if ((fd = bl_ntsync_open(path, flags)) != -2) return fd;
   if (real_open == NULL) real_open = dlsym(RTLD_NEXT, "open");
@@ -100,6 +118,7 @@ int openat(int dirfd, const char *path, int flags, ...) {
     errno = EACCES;
     return -1;
   }
+  if ((flags & O_ACCMODE) != O_RDONLY && is_oom_score_adj(path)) path = "/dev/null";
   if ((fd = bl_status_without_tracer(path, flags)) >= 0) return fd;
   if ((fd = bl_ntsync_open(path, flags)) != -2) return fd;
   if (real_openat == NULL) real_openat = dlsym(RTLD_NEXT, "openat");

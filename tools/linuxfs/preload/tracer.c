@@ -20,6 +20,7 @@
 #include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/syscall.h>
@@ -52,6 +53,21 @@ static int is_web_helper(void) {
   return strcmp(program_invocation_short_name, "steamwebhelper") == 0;
 }
 
+/* Keep steamwebhelper (browser and --type=gpu-process) off the hardware Vulkan ICD (panvk on
+ * Mali-G615) and Gamescope WSI layer unless BL_CEF_GPU=1 is explicitly enabled. Even with
+ * -cef-disable-gpu, inheriting VK_ICD_FILENAMES and MESA_LOADER_DRIVER_OVERRIDE=zink caused CEF's
+ * browser and gpu-process to initialize four panvk instances and ~220 MB of kbase DMA-BUFs. */
+__attribute__((constructor)) static void bl_webhelper_isolate_gpu(void) {
+  if (!is_web_helper()) return;
+  const char *cef_gpu = getenv("BL_CEF_GPU");
+  if (cef_gpu != NULL && strcmp(cef_gpu, "1") == 0) return;
+  setenv("VK_ICD_FILENAMES", "/dev/null", 1);
+  setenv("VK_DRIVER_FILES", "/dev/null", 1);
+  setenv("LIBGL_ALWAYS_SOFTWARE", "1", 1);
+  unsetenv("MESA_LOADER_DRIVER_OVERRIDE");
+  unsetenv("ENABLE_GAMESCOPE_WSI");
+}
+
 static int write_all(int fd, const char *data, size_t len) {
   while (len > 0) {
     ssize_t n = write(fd, data, len);
@@ -61,6 +77,19 @@ static int write_all(int fd, const char *data, size_t len) {
     len -= (size_t)n;
   }
   return 0;
+}
+
+/* Give Steam's game reaper (and the game subtree it spawns) oom_score_adj 200 (Android
+ * PERCEPTIBLE_APP_ADJ) via raw SYS_openat while opens.c redirects steam-launch-wrapper's 900
+ * (CACHED_APP_MIN_ADJ) to /dev/null. That keeps games immune to normal cached-app lmkd kills while
+ * ensuring a runaway game is killed before the foreground launcher, proot, gamescope, and Steam (0). */
+__attribute__((constructor)) static void bl_reaper_oom_score(void) {
+  if (strcmp(program_invocation_short_name, "reaper") != 0) return;
+  int fd = (int)syscall(SYS_openat, AT_FDCWD, "/proc/self/oom_score_adj", O_WRONLY | O_CLOEXEC);
+  if (fd >= 0) {
+    (void)write_all(fd, "200", 3);
+    close(fd);
+  }
 }
 
 /* The descriptor to hand back for a read-only open of a status file, or -1 with errno untouched

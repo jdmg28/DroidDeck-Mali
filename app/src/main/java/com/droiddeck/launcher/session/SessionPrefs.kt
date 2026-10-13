@@ -188,6 +188,27 @@ object SessionPrefs {
     }
 
     /**
+     * How far a session keeps the device's own GPU out of the guest. One of [GPU_SAFETY_AUTO]
+     * (the default, and the safest: software on a Mali device, nothing changes on an Adreno one),
+     * [GPU_SAFETY_SOFTWARE] (always draw on the CPU and never hand the GPU to the guest) and
+     * [GPU_SAFETY_MALI] (the experimental Mali driver may be used, and the GPU with it). Read
+     * through GpuSafety, which is the only thing that interprets it.
+     *
+     * A device that has never been given a value is Auto, so an update that adds this switch
+     * leaves every existing install on the safest setting rather than on the one it had before.
+     */
+    const val GPU_SAFETY_AUTO = "auto"
+    const val GPU_SAFETY_SOFTWARE = "software"
+    const val GPU_SAFETY_MALI = "mali"
+
+    fun gpuSafety(context: Context): String =
+        prefs(context).getString("gpuSafety", GPU_SAFETY_AUTO) ?: GPU_SAFETY_AUTO
+
+    fun setGpuSafety(context: Context, value: String) {
+        prefs(context).edit().putString("gpuSafety", value).apply()
+    }
+
+    /**
      * Auto arrived after people had picked drivers by hand: an install that chose either driver
      * keeps its choice (Manual), everyone else is Auto. Decided once, at process start.
      */
@@ -459,6 +480,15 @@ object SessionPrefs {
      */
     fun mangoapp(context: Context): Boolean = prefs(context).getBoolean("mangoapp", true)
     fun setMangoapp(context: Context, on: Boolean) { prefs(context).edit().putBoolean("mangoapp", on).apply() }
+
+    /**
+     * The client's own browser (CEF) on the GPU instead of on the CPU. Off by default, and off is
+     * the safe side: a session on a Mali-G615 had gamescope compositing on the real GPU and both
+     * Xwaylands answering, and the device restarted seconds after the client's browser asked that
+     * GPU for Vulkan. Games use the GPU either way - this is the store and the library only.
+     */
+    fun steamUiOnGpu(context: Context): Boolean = prefs(context).getBoolean("steamUiGpu", false)
+    fun setSteamUiOnGpu(context: Context, on: Boolean) { prefs(context).edit().putBoolean("steamUiGpu", on).apply() }
 
     /**
      * Zink's lazy descriptor mode (ZINK_DESCRIPTORS=lazy) with its compact set layout

@@ -14,6 +14,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import com.droiddeck.launcher.gpu.DriverBundle
 import com.droiddeck.launcher.gpu.DriverPairs
 import com.droiddeck.launcher.gpu.GpuInfo
+import com.droiddeck.launcher.gpu.GpuSafety
 import com.droiddeck.launcher.gpu.LinuxVulkanDriver
 import com.droiddeck.launcher.gpu.LinuxVulkanDriverManager
 import com.droiddeck.launcher.gpu.TurnipDriver
@@ -65,6 +66,8 @@ internal class DriverMenus(private val activity: Activity, private val ui: Handl
         linuxRows = linuxRows, linuxSelected = linuxSelected, androidRows = androidRows, androidSelected = androidSelected,
         linuxDownloads = linuxDownloads, androidDownloads = androidDownloads, canRestoreBundled = canRestoreBundled,
         activeBundle = activeBundle,
+        mali = com.droiddeck.launcher.core.DeviceSupport.mali(),
+        gpuSafety = GpuSafety.profile(activity),
     )
     var androidRows by mutableStateOf<List<DriverRow>>(emptyList())
     var androidSelected by mutableStateOf("")
@@ -87,7 +90,9 @@ internal class DriverMenus(private val activity: Activity, private val ui: Handl
                 true, origin(id),
             )
         }
-        linuxSelected = SessionPrefs.linuxDriver(activity)
+        // What a session actually draws with: in software mode that is the software driver, and
+        // showing the stored one would say a Mali driver is in use when it is not.
+        linuxSelected = GpuSafety.linuxDriver(activity)
         mode = SessionPrefs.gpuDriverMode(activity)
         val td = TurnipDriver(activity)
         val auto = td.autoId()
@@ -346,10 +351,28 @@ internal class DriverMenus(private val activity: Activity, private val ui: Handl
         val bundle = DriverBundle.containing(activity, id, linux)
         when {
             bundle != null -> useBundle(bundle)
-            linux -> SessionPrefs.setLinuxDriver(activity, id)
+            linux -> {
+                SessionPrefs.setLinuxDriver(activity, id)
+                // An experimental Mali driver is only ever used when it is picked by name: that
+                // choice is what turns the GPU safety switch over to the Mali setting, and it is
+                // the only way it ever leaves software on this device.
+                if (LinuxVulkanDriverManager(activity).isMaliRuntimeDriver(id)) {
+                    GpuSafety.setProfile(activity, GpuSafety.MALI)
+                    android.widget.Toast.makeText(
+                        activity, activity.getString(R.string.gpu_safety_mali_picked),
+                        android.widget.Toast.LENGTH_LONG,
+                    ).show()
+                }
+            }
             else -> SessionPrefs.setAndroidDriver(activity, id)
         }
         setMode(false)
+        refreshDrivers()
+    }
+
+    /** The GPU safety setting (GpuSafety): auto, software, or the experimental Mali driver. */
+    fun setGpuSafety(value: String) {
+        GpuSafety.setProfile(activity, value)
         refreshDrivers()
     }
 

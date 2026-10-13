@@ -29,6 +29,7 @@ object ProtonExtras {
     val tools = listOf(
         Tool("ge", "GE-Proton", "GE-Proton", "GloriousEggroll/proton-ge-custom", Regex("aarch64\\.tar\\.(gz|xz)$")),
         Tool("cachyos", "proton-cachyos", "proton-cachyos", "CachyOS/proton-cachyos", Regex("arm64\\.tar\\.(gz|xz)$")),
+        Tool("droiddeck", "DroidDeck-Proton", "DroidDeck-Proton", "The412Banner/DroidDeck-Proton", Regex("aarch64\\.tar\\.(gz|xz)$")),
     )
 
     private fun home(context: Context) = File(LinuxRuntime.rootDir(context), "root")
@@ -180,7 +181,7 @@ object ProtonExtras {
             val array = JSONArray(releases)
             for (i in 0 until array.length()) {
                 val release = array.getJSONObject(i)
-                if (release.optBoolean("draft", false)) continue
+                if (release.optBoolean("draft", false) || release.optBoolean("prerelease", false)) continue
                 val assets = release.optJSONArray("assets") ?: continue
                 val entries = (0 until assets.length()).map { assets.getJSONObject(it) }
                 val archive = entries.sortedBy { it.optString("name") }.firstOrNull { tool.assetPattern.containsMatchIn(it.optString("name")) } ?: continue

@@ -4,4 +4,16 @@
     <string name="mali_display_driver">Vulkan del sistema (Mali)</string>
     <string name="mali_driver_needed">Mali: falta el controlador Vulkan Linux importado. Importa el paquete experimental PanVK en Controladores GPU → Avanzado → Controlador del entorno Linux y selecciónalo.</string>
     <string name="mali_integration_hint">Mali-G615 experimental: importa y selecciona PanVK como controlador del entorno Linux. Para la pantalla se usa Vulkan del sistema. Empieza a 1280×720; desactiva HDR y generación de fotogramas. Los juegos no están validados.</string>
+
+    <!-- El interruptor de seguridad de GPU: hasta dónde mantiene la sesión fuera del invitado la GPU del dispositivo. -->
+    <string name="gpu_safety_title">Seguridad de GPU</string>
+    <string name="gpu_safety_label">Renderizado</string>
+    <string name="gpu_safety_hint">El modo software deja la GPU Mali completamente fuera de la sesión: sin /dev/mali0, sin nodo de renderizado y sin sondeos. Es lento: sirve para validar el stack, no para jugar.</string>
+    <string name="gpu_safety_auto">Auto (software aquí)</string>
+    <string name="gpu_safety_auto_detail">Software en esta GPU Mali; en Adreno no cambia nada</string>
+    <string name="gpu_safety_software">Software (lavapipe)</string>
+    <string name="gpu_safety_software_detail">Solo CPU; el nodo de GPU nunca se entrega a la sesión</string>
+    <string name="gpu_safety_mali">Controlador Mali (experimental)</string>
+    <string name="gpu_safety_mali_detail">Entrega /dev/mali0 a la sesión como nodo de renderizado; ya ha reiniciado este teléfono antes</string>
+    <string name="gpu_safety_mali_picked">Controlador Mali seleccionado: la seguridad de GPU pasa al modo Mali experimental. Auto y Software mantienen la GPU fuera de la sesión.</string>
 </resources>

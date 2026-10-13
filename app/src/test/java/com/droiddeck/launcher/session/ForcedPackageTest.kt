@@ -3,6 +3,8 @@ package com.droiddeck.launcher.session
 import android.content.Context
 import com.droiddeck.launcher.gpu.GpuInfo
 import com.droiddeck.launcher.runtime.LinuxRuntime
+import org.apache.commons.compress.archivers.tar.TarArchiveEntry
+import org.apache.commons.compress.archivers.tar.TarArchiveOutputStream
 import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.*
@@ -12,7 +14,10 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
+import org.tukaani.xz.LZMA2Options
+import org.tukaani.xz.XZOutputStream
 import java.io.File
+import java.io.FileOutputStream
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [28], manifest = Config.NONE)
@@ -235,4 +240,57 @@ class ForcedPackageTest {
     private fun item(file: String, release: String) = ComponentsManager.CatalogItem(
         file, "dxvk", release, "https://github.com/The412Banner/Nightlies/releases/download/$release/$file", 4, "sha256:" + "ab".repeat(32),
     )
+
+    @Test fun wowbox64XzPackageSwapsAndRestoresOriginalWow64Fex() {
+        assertTrue("wowbox64" in ComponentsManager.COMPONENTS)
+        proton("proton-exp")
+        val pDir = File(LinuxRuntime.rootDir(context), "root/.local/share/Steam/steamapps/common/proton-exp")
+        val winDir = File(pDir, "files/lib/wine/aarch64-windows").apply { mkdirs() }
+        val unixDir = File(pDir, "files/lib/wine/aarch64-unix").apply { mkdirs() }
+        File(winDir, "libwow64fex.dll").writeText("Wine builtin DLL FEX-2603")
+        File(unixDir, "libwow64fex.so").writeText("fex-unix-so")
+
+        val xzWcp = File(context.cacheDir, "WOWBox64-0.4.5-a8f622f7a.wcp")
+        TarArchiveOutputStream(XZOutputStream(FileOutputStream(xzWcp), LZMA2Options(1))).use { tar ->
+            val profile = JSONObject()
+                .put("type", "WOWBox64")
+                .put("versionName", "0.4.5-a8f622f7a")
+                .put("versionCode", 1)
+                .put("description", "WOWBox64 nightly build")
+                .toString().toByteArray()
+            tar.putArchiveEntry(TarArchiveEntry("profile.json").apply { size = profile.size.toLong() })
+            tar.write(profile)
+            tar.closeArchiveEntry()
+            val dll = "WOWBox64-0.4.5-pe-dll".toByteArray()
+            tar.putArchiveEntry(TarArchiveEntry("system32/wowbox64.dll").apply { size = dll.size.toLong() })
+            tar.write(dll)
+            tar.closeArchiveEntry()
+        }
+
+        val imported = ComponentsManager.importPackage(context, xzWcp, xzWcp.name)
+        assertEquals("wowbox64", imported.comp)
+        ComponentsManager.swap(context, "proton-exp", imported.file)
+        assertEquals("WOWBox64-0.4.5-pe-dll", File(winDir, "libwow64fex.dll").readText())
+        assertFalse(File(unixDir, "libwow64fex.so").exists())
+
+        ComponentsManager.restore(context, "proton-exp", "wowbox64", "experimental-11")
+        assertEquals("Wine builtin DLL FEX-2603", File(winDir, "libwow64fex.dll").readText())
+        assertEquals("fex-unix-so", File(unixDir, "libwow64fex.so").readText())
+    }
+
+    @Test fun healIncompatiblePackagesRestoresOriginalDxvkWhenDxvk1IsActive() {
+        proton("DroidDeck-Proton-11-7.5", "1775647024")
+        val pDir = File(LinuxRuntime.rootDir(context), "root/.local/share/Steam/steamapps/common/DroidDeck-Proton-11-7.5")
+        val dxvkDir = File(pDir, "files/lib/wine/dxvk/aarch64-windows").apply { mkdirs() }
+        File(pDir, "files/lib/wine/dxvk/version").writeText("dxvk (v3.1-arm64ec)\n")
+        File(dxvkDir, "d3d11.dll").writeText("arm64ec-d3d11")
+        ComponentsManager.snapshotAll(context)
+
+        File(dxvkDir, "d3d11.dll").writeText("x86_64-dxvk-1.7.2")
+        writeState("DroidDeck-Proton-11-7.5", "Dxvk-1.7.2-linux.wcp", "1775647024")
+
+        val healed = ComponentsManager.healIncompatiblePackages(context)
+        assertEquals(1, healed.size)
+        assertEquals("arm64ec-d3d11", File(dxvkDir, "d3d11.dll").readText())
+    }
 }

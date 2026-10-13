@@ -4,4 +4,16 @@
     <string name="mali_display_driver">System Vulkan (Mali)</string>
     <string name="mali_driver_needed">Mali: no imported Linux Vulkan driver. Import the experimental PanVK package under GPU drivers → Advanced → Runtime driver, then select it.</string>
     <string name="mali_integration_hint">Experimental Mali-G615: import and select PanVK as the Runtime driver. The Display driver uses system Vulkan. Start at 1280×720; keep HDR and frame generation off. Games are not validated.</string>
+
+    <!-- The GPU safety switch: how far the session keeps this device's own GPU out of the guest. -->
+    <string name="gpu_safety_title">GPU safety</string>
+    <string name="gpu_safety_label">Rendering</string>
+    <string name="gpu_safety_hint">Software keeps the Mali GPU out of the session entirely: no /dev/mali0, no render node, no probe. It is slow - it exists to check the stack, not to play.</string>
+    <string name="gpu_safety_auto">Auto (software here)</string>
+    <string name="gpu_safety_auto_detail">Software on this Mali GPU; nothing changes on an Adreno</string>
+    <string name="gpu_safety_software">Software (lavapipe)</string>
+    <string name="gpu_safety_software_detail">CPU only; the GPU node is never handed to the session</string>
+    <string name="gpu_safety_mali">Mali driver (experimental)</string>
+    <string name="gpu_safety_mali_detail">Hands /dev/mali0 to the session as a render node; it has restarted this phone before</string>
+    <string name="gpu_safety_mali_picked">Mali driver selected: GPU safety is now the experimental Mali setting. Auto and Software keep the GPU out of the session.</string>
 </resources>

@@ -7,6 +7,7 @@ import android.system.Os;
 import android.system.StructStat;
 import android.system.StructUtsname;
 import com.droiddeck.launcher.session.SessionPrefs;
+import com.droiddeck.launcher.gpu.GpuSafety;
 
 
 import java.io.File;
@@ -211,6 +212,10 @@ public final class LinuxRuntime {
         shm.mkdirs();
         bind(cmd, shm.getPath() + ":/dev/shm");
         bindSystemFonts(cmd, root);
+        // Software mode (GpuSafety): the device's own GPU is kept out of the guest entirely - see
+        // hideGpuNodes and the guard on bindGpuNode below.
+        boolean software = GpuSafety.INSTANCE.software(context);
+        if (software) hideGpuNodes(context, cmd);
 
         // Android denies apps these; glibc, Steam and libcap read them at startup.
         File fakeProc = new File(root, "etc/droiddeck/proc");
@@ -268,7 +273,9 @@ public final class LinuxRuntime {
                 bind(cmd, fake.getPath() + ":" + entry[1]);
             }
         }
-        bindGpuNode(context, cmd);
+        // bindGpuNode is what hands the guest a GPU: on a Mali device it puts /dev/mali0 in the
+        // guest as a render node. In software mode there is no GPU node and no /dev/dri at all.
+        if (!software) bindGpuNode(context, cmd);
         bindAdrenoStats(cmd, extraBinds);
         bindCpuTemps(cmd, root);
         if (extraBinds != null) {
@@ -277,6 +284,77 @@ public final class LinuxRuntime {
         List<String> specs = new ArrayList<>();
         for (int i = 0; i + 1 < cmd.size(); i += 2) specs.add(cmd.get(i + 1));
         return specs;
+    }
+
+    /**
+     * The GPU device nodes a software session must not see. Listing {@code /dev} is the honest
+     * answer to "which are there", but a device can refuse an app the listing while a stat of one
+     * node still works - which is how the rest of the app finds the GPU - so the names a Mali or
+     * Panfrost node is known by are tried too when the listing comes back empty. A session log
+     * that reports zero hid nodes and a {@code /dev/mali0} that is still a character device is
+     * the evidence this fallback was needed for.
+     */
+    private static File[] gpuNodes() {
+        File[] listed = new File("/dev").listFiles((dir, name) -> name.startsWith("mali") || name.startsWith("panfrost"));
+        if (listed != null && listed.length > 0) {
+            java.util.Arrays.sort(listed);
+            return listed;
+        }
+        List<File> found = new ArrayList<>();
+        for (String name : new String[]{"mali0", "mali1", "panfrost0", "panfrost1"}) {
+            File node = new File("/dev", name);
+            try {
+                Os.stat(node.getPath());
+                found.add(node);
+            } catch (ErrnoException notThisOne) {
+                // Not a node this device has.
+            }
+        }
+        return found.toArray(new File[0]);
+    }
+
+    /** How many GPU device nodes software mode covers up in the guest; see {@link #hideGpuNodes}. */
+    public static int gpuNodesHidden(Context context) {
+        return gpuNodes().length;
+    }
+
+    /**
+     * Cover every GPU device node the guest would otherwise reach through the {@code /dev} bind
+     * with an empty regular file, so the session has no way to open the GPU: a driver that tries
+     * gets a zero-length file, every ioctl on it fails with ENOTTY, and {@code test -c /dev/mali0}
+     * is false inside the session.
+     *
+     * <p>proot answers a path with the deepest binding that names it, and with the last one when
+     * two name the same path ({@code insort_binding}, src/path/binding.c of the proot this app
+     * builds), so this stands in front of the {@code /dev} bind above exactly as the
+     * {@code /dev/urandom:/dev/random} bind already does. An empty file rather than {@code /dev/null}
+     * so a driver that reads it gets EOF instead of a character device that answers ioctls.
+     */
+    private static void hideGpuNodes(Context context, List<String> cmd) {
+        // The app's cache directory, not a path inside the rootfs: proot drops a binding whose
+        // host side it cannot resolve (new_binding, src/path/binding.c), and a stand-in that is
+        // never created hides nothing - which is what a session on a Mali phone reported:
+        // "gpu safety: SOFTWARE, but /dev/mali0 IS still a character device in the guest".
+        File empty = new File(context.getCacheDir(), "empty-gpu-node");
+        try {
+            if (empty.getParentFile() != null) empty.getParentFile().mkdirs();
+            if (empty.exists() && !empty.isFile() && !empty.delete()) {
+                throw new IOException("not a file: " + empty);
+            }
+            if (!empty.isFile() && !empty.createNewFile()) throw new IOException("cannot create " + empty);
+        } catch (IOException e) {
+            android.util.Log.w("LinuxRuntime", "gpu: cannot stand in for the GPU nodes: " + e);
+            return;
+        }
+        File[] nodes = gpuNodes();
+        if (nodes.length == 0) {
+            android.util.Log.i("LinuxRuntime", "gpu: no /dev/mali* node to hide");
+            return;
+        }
+        for (File node : nodes) {
+            bind(cmd, empty.getPath() + ":" + node.getPath());
+            android.util.Log.i("LinuxRuntime", "gpu: " + node.getPath() + " is hidden in this session");
+        }
     }
 
     /**

@@ -1,47 +1,449 @@
-name: Mali-G615 experimental APK (unvalidated)
+name: Mali-G615 branch APK
+run-name: "Mali-G615 branch APK (${{ github.ref_name }} ${{ github.sha }}: software mode)"
 
+# This branch's own app: the same application id every build of it has
+# (com.droiddeck.launcher.mali.g615) and a version code that only ever goes up, so it installs as
+# an update of the one already on the phone and keeps the ~5 GB of runtime and Steam with it.
 on:
+  push:
+    branches: [ mali-g615-experimental, 'arena/**' ]
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+      - '.github/workflows/publish-experimental-release.yml'
+      - 'LICENSE'
+      - '.gitignore'
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
+
+concurrency:
+  group: mali-g615-apk-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GH_TOKEN: ${{ github.token }}
+  # Where this branch's APK is published...
+  RELEASE_TAG: software-mode-latest
+  RELEASE_ASSET: DroidDeck-Mali-G615-debug.apk
+  # ...and the release the APK on the phone came from, which is what every build is checked
+  # against: an update has to match its package and its signer, and raise its version code.
+  # It has to be the tag this branch actually publishes to - pointed at a tag nobody publishes to
+  # any more, the baseline job found no APK, and all three checks were skipped for looking like
+  # nothing was published, which is how builds 33 to 35 came out green without ever comparing
+  # themselves against the APK already installed.
+  BASELINE_TAG: software-mode-latest
 
 jobs:
-  build:
+  # What is on the phone today, read before anything is built: the numbers the build below has to
+  # match. It also leaves them in the notes of the ci-report-latest release, so a failure here can
+  # be read without opening the run's log.
+  baseline:
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    timeout-minutes: 15
+    outputs:
+      found: ${{ steps.published.outputs.found }}
+      name: ${{ steps.published.outputs.name }}
+      package: ${{ steps.published.outputs.package }}
+      version_code: ${{ steps.published.outputs.version_code }}
+      cert_sha256: ${{ steps.published.outputs.cert_sha256 }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+
+      - name: Android build tools
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends gh jq
+          sdkmanager 'build-tools;34.0.0'
+
+      - name: Start the report
+        run: |
+          set -euo pipefail
+          echo "## Baseline: what is published as $BASELINE_TAG" > report.md
+          echo >> report.md
+
+      - name: Read the published APK
+        id: published
+        env:
+          TAG: ${{ env.BASELINE_TAG }}
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/read-published.sh" <<'EOS'
+          set -euo pipefail
+          work=$RUNNER_TEMP/baseline
+          mkdir -p "$work"
+          # Another branch's workflow publishes to this tag, and the release is briefly gone, or
+          # briefly empty, while it does. Waiting costs a minute; a false "nothing is published"
+          # would be taken for a signature change and would stop the build for no reason.
+          names=""
+          err=""
+          for attempt in 1 2 3 4 5 6; do
+            if out=$(gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json assets \
+                       --jq '.assets[].name | select(test("\\.apk$"))' 2>&1); then
+              names=$out
+              err=""
+            else
+              err=$out
+              names=""
+            fi
+            if [ -n "$names" ]; then break; fi
+            echo "no apk on $TAG yet (attempt $attempt): ${err:-no apk asset}"
+            sleep 20
+          done
+          if [ -z "$names" ]; then
+            # A release that is not there at all means nothing has been published yet, which is
+            # fine and is the first build's case. A release that IS there but has no apk is not
+            # fine: it is what a build that got half way through publishing leaves behind, and
+            # building on from it used to mean the three checks below were quietly skipped -
+            # exactly the failure they exist to catch. Say so, and stop.
+            if [ -n "$err" ]; then
+              echo "No release on $TAG yet (${err}); this build is the first one published there"
+              echo "found=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "::error::$TAG exists but carries no .apk after $(( attempt )) attempts - refusing to build without knowing what is on the phone"
+            exit 1
+          fi
+          name=$(printf '%s\n' "$names" | head -1)
+          gh release download "$TAG" -R "$GITHUB_REPOSITORY" -p "$name" -D "$work"
+          # Not swallowed: if the apk's identity cannot be read, the build below must not be told
+          # it has nothing to match, and the report says what went wrong instead of an empty cell.
+          if ! identity=$(bash tools/release/apk-identity.sh "$work/$name" 2>&1); then
+            echo "::error::cannot read the identity of $name: $identity"
+            exit 1
+          fi
+          read -r package code cert <<<"$identity"
+          echo "Published $TAG ($name): $package, versionCode $code, signer $cert"
+          {
+            echo "found=true"
+            echo "name=$name"
+            echo "package=$package"
+            echo "version_code=$code"
+            echo "cert_sha256=$cert"
+          } >> "$GITHUB_OUTPUT"
+          EOS
+          bash tools/ci/with-report.sh "Read the published APK" "$RUNNER_TEMP/read-published.sh"
+
+      - name: Report
+        if: always()
+        env:
+          FOUND: ${{ steps.published.outputs.found }}
+          OLD_NAME: ${{ steps.published.outputs.name }}
+          OLD_PACKAGE: ${{ steps.published.outputs.package }}
+          OLD_CODE: ${{ steps.published.outputs.version_code }}
+          OLD_CERT: ${{ steps.published.outputs.cert_sha256 }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          {
+            if [ "$FOUND" = true ]; then
+              echo "| | |"
+              echo "|---|---|"
+              echo "| asset | \`$OLD_NAME\` |"
+              echo "| applicationId | \`$OLD_PACKAGE\` |"
+              echo "| versionCode | **$OLD_CODE** |"
+              echo "| signing certificate SHA-256 | \`$OLD_CERT\` |"
+            else
+              echo "Nothing published as \`$BASELINE_TAG\` could be read. See above for why."
+            fi
+            echo
+            echo "Read by [this run]($RUN_URL)."
+          } >> report.md
+          cat report.md >> "$GITHUB_STEP_SUMMARY"
+          if ! gh release view ci-report-latest -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create ci-report-latest -R "$GITHUB_REPOSITORY" --prerelease \
+              --title "CI report (last build)" --notes-file report.md
+          else
+            gh release edit ci-report-latest -R "$GITHUB_REPOSITORY" --notes-file report.md
+          fi
+
+  build:
+    needs: baseline
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
     env:
       GH_TOKEN: ${{ github.token }}
-      DROIDDECK_GITHUB_REPOSITORY: Droid-Deck/DroidDeck
+      DROIDDECK_GITHUB_REPOSITORY: jdmg28/DroidDeck-Mali-G615
+      # The debug build: its application id carries the .mali.g615 suffix, which is the id of the
+      # app already installed from this repo's releases.
       DROIDDECK_BUILD_VARIANT: debug
       DROIDDECK_NDK_VERSION: 27.3.13750724
-      # Steam client is the target. Skip optional GOG/Epic/Amazon Rust engines for the first build.
+      # Steam client is the target. Skip optional GOG/Epic/Amazon Rust engines for this branch.
       DROIDDECK_SKIP_RUST: 1
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
+
       - uses: android-actions/setup-android@v3
         with:
-          packages: platform-tools  
+          packages: platform-tools
+
       - name: Install build prerequisites
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends zstd pkg-config gh
           sdkmanager 'platform-tools' 'platforms;android-34' 'build-tools;34.0.0' 'cmake;3.22.1' 'ndk;27.3.13750724'
-      - name: Build the patched app and guest preloads
+
+      - name: Build the app and the guest preloads
         run: |
-          test -f app/src/main/java/com/droiddeck/launcher/gpu/DriverArchivePolicy.java
-          test -f tools/linuxfs/overlay/usr/local/bin/droiddeck-mali-check
+          set -euo pipefail
+          # Through with-report.sh, as the unit tests below already go: a broken build is a wall
+          # of compiler output that otherwise exists only in this job's log, which cannot be
+          # fetched from outside the runner - so a failure here used to be unreadable. On
+          # failure the tail of it is published as this run's report instead.
+          cat > "$RUNNER_TEMP/build.sh" <<'EOS'
+          set -uo pipefail
+          test -f app/src/main/java/com/droiddeck/launcher/gpu/GpuSafety.kt
+          test -f tools/release/apk-identity.sh
           bash tools/build_local.sh
-      - name: Upload experimental isolated debug APK
+          EOS
+          bash tools/ci/with-report.sh "Build the app and the guest preloads" "$RUNNER_TEMP/build.sh"
+
+      # build_local.sh assembles the apk and nothing else, so the tests it does not run are run
+      # here: GpuSafetyTest says what a device with no stored setting does, which is the whole of
+      # "the safest value is the default" and the only part of this branch that is provable on a
+      # machine with no phone attached.
+      - name: Run the unit tests
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/tests.sh" <<'EOS'
+          set -uo pipefail
+          # Wherever the sdk is: setup-android points ANDROID_HOME at it, and the runner image has
+          # one of its own.
+          export ANDROID_HOME="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          ./gradlew testDebugUnitTest --console=plain \
+            -PndkVersion="$DROIDDECK_NDK_VERSION" -PskipRust=true
+          result=$?
+          # Which tests, and what they said: a tick is not the point, the words are. (No heredoc
+          # inside the heredoc this script was written from - the terminator would be indented and
+          # bash would read the rest of the script as the heredoc's body.)
+          if [ -d app/build/test-results/testDebugUnitTest ]; then
+            echo "--- what the failing tests said:"
+            grep -h -B 2 -A 8 '<failure\|<error' \
+              app/build/test-results/testDebugUnitTest/*.xml 2>/dev/null | head -60
+            echo "--- tests that ran:"
+            grep -ho 'testcase name="[^"]*" classname="[^"]*"' \
+              app/build/test-results/testDebugUnitTest/*.xml 2>/dev/null | head -40
+          fi
+          exit $result
+          EOS
+          bash tools/ci/with-report.sh "Run the unit tests" "$RUNNER_TEMP/tests.sh"
+
+      - name: What this build is
+        id: identity
+        run: |
+          set -euo pipefail
+          apk=app/build/outputs/apk/debug/app-debug.apk
+          test -f "$apk"
+          if ! identity=$(bash tools/release/apk-identity.sh "$apk" 2>&1); then
+            echo "::error::cannot read the identity of the apk this build made: $identity"
+            {
+              echo "## This build"
+              echo
+              echo '```'
+              echo "$identity"
+              echo '```'
+            } > report.md
+            exit 1
+          fi
+          read -r package code cert <<<"$identity"
+          echo "This build: $package, versionCode $code, signer $cert"
+          {
+            echo "package=$package"
+            echo "version_code=$code"
+            echo "cert_sha256=$cert"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: It installs over the published build
+        env:
+          THIS_PACKAGE: ${{ steps.identity.outputs.package }}
+          THIS_CODE: ${{ steps.identity.outputs.version_code }}
+          THIS_CERT: ${{ steps.identity.outputs.cert_sha256 }}
+          FOUND: ${{ needs.baseline.outputs.found }}
+          OLD_NAME: ${{ needs.baseline.outputs.name }}
+          OLD_PACKAGE: ${{ needs.baseline.outputs.package }}
+          OLD_CODE: ${{ needs.baseline.outputs.version_code }}
+          OLD_CERT: ${{ needs.baseline.outputs.cert_sha256 }}
+        run: |
+          set -euo pipefail
+          fail=0
+          # Android installs an update only for the same package, signed with the same key, with a
+          # higher version code. All three, or the phone asks for an uninstall and the runtime goes.
+          if [ "$FOUND" = true ] && [ "$THIS_PACKAGE" != "$OLD_PACKAGE" ]; then
+            echo "::error::application id changed: this build is $THIS_PACKAGE, $OLD_NAME is $OLD_PACKAGE"
+            fail=1
+          fi
+          if [ "$FOUND" = true ] && [ "$THIS_CERT" != "$OLD_CERT" ]; then
+            echo "::error::signing certificate changed: this build is $THIS_CERT, $OLD_NAME is $OLD_CERT - the phone would refuse it and keep nothing"
+            fail=1
+          fi
+          if [ "$FOUND" = true ] && [ "$THIS_CODE" -lt "$OLD_CODE" ]; then
+            echo "::error::versionCode $THIS_CODE is lower than the published $OLD_CODE"
+            fail=1
+          fi
+          # The AOSP testkey is publicly known, which is fine for a fork's test builds and is the
+          # key every build of this branch has used; what must never change is which key it is.
+          if [ "$THIS_CERT" != a40da80a59d170caa950cf15c18c454d47a39b26989d8b640ecd745ba71bf5dc ]; then
+            echo "::error::this build is not signed with the key this branch builds with (AOSP testkey)"
+            fail=1
+          fi
+          exit $fail
+
+      - name: Summary
+        env:
+          THIS_PACKAGE: ${{ steps.identity.outputs.package }}
+          THIS_CODE: ${{ steps.identity.outputs.version_code }}
+          THIS_CERT: ${{ steps.identity.outputs.cert_sha256 }}
+          FOUND: ${{ needs.baseline.outputs.found }}
+          OLD_NAME: ${{ needs.baseline.outputs.name }}
+          OLD_PACKAGE: ${{ needs.baseline.outputs.package }}
+          OLD_CODE: ${{ needs.baseline.outputs.version_code }}
+          OLD_CERT: ${{ needs.baseline.outputs.cert_sha256 }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          {
+            echo "## APK identity"
+            echo
+            echo "| | applicationId | versionCode | signing certificate (SHA-256) |"
+            echo "|---|---|---|---|"
+            echo "| this build | \`$THIS_PACKAGE\` | $THIS_CODE | \`$THIS_CERT\` |"
+            if [ "$FOUND" = true ]; then
+              echo "| published \`$BASELINE_TAG\` ($OLD_NAME) | \`$OLD_PACKAGE\` | $OLD_CODE | \`$OLD_CERT\` |"
+            else
+              echo "| published \`$BASELINE_TAG\` | - | - | - (nothing published yet) |"
+            fi
+            echo
+            echo "Built by [this run]($RUN_URL) from \`${{ github.sha }}\`."
+            echo
+            echo "Installs over the published build: same applicationId, same signing certificate,"
+            echo "higher versionCode - all three were checked, and the job fails if any of them is not true."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publish the APK
+        if: github.ref == 'refs/heads/mali-g615-experimental' || startsWith(github.ref, 'refs/heads/arena/')
+        env:
+          TAG: ${{ env.RELEASE_TAG }}
+          ASSET: ${{ env.RELEASE_ASSET }}
+          THIS_PACKAGE: ${{ steps.identity.outputs.package }}
+          THIS_CODE: ${{ steps.identity.outputs.version_code }}
+          THIS_CERT: ${{ steps.identity.outputs.cert_sha256 }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          apk=app/build/outputs/apk/debug/app-debug.apk
+          work=$RUNNER_TEMP/publish
+          mkdir -p "$work"
+          cp "$apk" "$work/$ASSET"
+          ( cd "$work" && sha256sum -- "$ASSET" > "$ASSET.sha256" )
+          if ! gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$TAG" -R "$GITHUB_REPOSITORY" --prerelease \
+              --title "DroidDeck Mali-G615 branch APK" --notes "Replaced by every build of this branch."
+          fi
+          # Only the files this build made: an apk published under an older name is not left beside
+          # it, so the release never offers two builds of the same app.
+          keep=$(cd "$work" && ls | jq -R . | jq -sc .)
+          # Retried: an upload of 45 MB across a runner's network is not a thing that always
+          # succeeds, and a build that made a perfectly good apk should not be thrown away for a
+          # connection that died half way through putting it where it can be installed.
+          uploaded=0
+          for attempt in 1 2 3; do
+            if gh release upload "$TAG" "$work"/* -R "$GITHUB_REPOSITORY" --clobber; then
+              uploaded=1
+              break
+            fi
+            echo "the upload to $TAG failed (attempt $attempt of 3); trying again"
+            sleep 10
+          done
+          if [ "$uploaded" != 1 ]; then
+            echo "::error::the apk was built and signed but could not be uploaded to $TAG"
+            exit 1
+          fi
+          # An asset already gone - deleted by an earlier run that got as far as this - answers 404
+          # here, and a 404 on a delete is the outcome wanted, not a reason to fail the build.
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" |
+            jq -r --argjson keep "$keep" '.assets[] | select(.name as $n | $keep | index($n) | not) | .id' |
+            while IFS= read -r id; do
+              gh api --method DELETE "repos/$GITHUB_REPOSITORY/releases/assets/$id" >/dev/null || true
+            done
+          {
+            echo "## DroidDeck Mali-G615 - branch APK, $(date -u +%Y-%m-%d' '%H:%M) UTC"
+            echo
+            echo "Installs over the build already on the phone and keeps the runtime and Steam:"
+            echo "applicationId \`$THIS_PACKAGE\`, versionCode **$THIS_CODE**, signing certificate"
+            echo "SHA-256 \`$THIS_CERT\`."
+            echo
+            echo "- [$ASSET]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/download/$TAG/$ASSET)"
+            echo
+            echo "What is in it: the software (lavapipe) safety mode - on a Mali device the session is"
+            echo "given no GPU node at all and draws on the CPU. Without the imported driver the session"
+            echo "starts with the runtime's own and still touches no GPU node; to draw on the CPU import"
+            echo "[DroidDeck-Software-Vulkan-lavapipe.zip](https://github.com/$GITHUB_REPOSITORY/releases/tag/software-mode-lavapipe)"
+            echo "under Components -> GPU drivers -> Advanced -> Runtime driver -> Import. That zip is"
+            echo "built by the other workflow on this branch, which measures the runtime's glibc, checks"
+            echo "every library it ships resolves in that runtime, and loads the ICD through the runtime's"
+            echo "own loader before it publishes anything."
+            echo
+            echo "Built by [this run]($RUN_URL) from \`${{ github.sha }}\`."
+          } > "$RUNNER_TEMP/notes.md"
+          gh release edit "$TAG" -R "$GITHUB_REPOSITORY" --notes-file "$RUNNER_TEMP/notes.md"
+          echo "Release: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/tag/$TAG" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the APK
         uses: actions/upload-artifact@v4
         with:
-          name: DroidDeck-Mali-G615-experimental-APK
+          name: DroidDeck-Mali-G615-APK
           path: app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
 
-# This workflow has not been executed by the kit author. It builds code, not proof of phone support.
-# Debug application ID: com.droiddeck.launcher.mali.g615, so it can coexist with the official app.
+      - name: Report
+        if: always()
+        env:
+          THIS_PACKAGE: ${{ steps.identity.outputs.package }}
+          THIS_CODE: ${{ steps.identity.outputs.version_code }}
+          THIS_CERT: ${{ steps.identity.outputs.cert_sha256 }}
+          FOUND: ${{ needs.baseline.outputs.found }}
+          OLD_NAME: ${{ needs.baseline.outputs.name }}
+          OLD_PACKAGE: ${{ needs.baseline.outputs.package }}
+          OLD_CODE: ${{ needs.baseline.outputs.version_code }}
+          OLD_CERT: ${{ needs.baseline.outputs.cert_sha256 }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          [ -f report.md ] || echo "## This build" > report.md
+          {
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| this build's applicationId | \`$THIS_PACKAGE\` |"
+            echo "| this build's versionCode | **$THIS_CODE** |"
+            echo "| this build's signer | \`$THIS_CERT\` |"
+            echo "| published asset | \`$OLD_NAME\` |"
+            echo "| published applicationId | \`$OLD_PACKAGE\` |"
+            echo "| published versionCode | **$OLD_CODE** |"
+            echo "| published signer | \`$OLD_CERT\` |"
+            echo
+            echo "Read by [this run]($RUN_URL) from \`${{ github.sha }}\`. The AOSP testkey's"
+            echo "certificate is \`a40da80a59d170caa950cf15c18c454d47a39b26989d8b640ecd745ba71bf5dc\`."
+          } >> report.md
+          cat report.md >> "$GITHUB_STEP_SUMMARY"
+          if ! gh release view ci-report-latest -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create ci-report-latest -R "$GITHUB_REPOSITORY" --prerelease \
+              --title "CI report (last build)" --notes-file report.md
+          else
+            gh release edit ci-report-latest -R "$GITHUB_REPOSITORY" --notes-file report.md
+          fi

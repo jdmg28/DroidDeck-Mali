@@ -319,7 +319,13 @@ class SessionService : Service() {
             return
         }
 
-        if (com.droiddeck.launcher.core.DeviceSupport.mali() &&
+        // Software mode (GpuSafety) is exempt from this gate: it asks for the one driver the
+        // session is deliberately not going to use, and it stopped a software session dead before
+        // proot had even started - a guest that exits in 80 ms with status -1 and a toast telling
+        // you to import PanVK, while the driver you did import is the CPU one. Outside software
+        // mode nothing changes: on Mali a session still needs the imported PanVK package.
+        if (!com.droiddeck.launcher.gpu.GpuSafety.software(this) &&
+            com.droiddeck.launcher.core.DeviceSupport.mali() &&
             (android.os.Build.VERSION.SDK_INT < 35 ||
              LinuxVulkanDriver.resolveIcdPath(this, SessionPrefs.linuxDriver(this)) == null ||
              !LinuxVulkanDriverManager(this).isMaliRuntimeDriver(SessionPrefs.linuxDriver(this)))) {
@@ -599,24 +605,51 @@ class SessionService : Service() {
         guest.add("WAYLAND_DISPLAY=wayland-0")
         guest.add("BL_ANDROID_CLIPBOARD=" + File(filesDir, "session/android-clipboard").path)
         guest.add("GAMESCOPE_FORCE_GENERAL_QUEUE=1")
-        // Steam's CEF needs GL and the rootfs ships no native GL driver: route it through Zink.
-        guest.add("MESA_LOADER_DRIVER_OVERRIDE=zink")
-        guest.add("GALLIUM_DRIVER=zink")
-        guest.add("LIBGL_KOPPER_DRI2=true")
         val mali = com.droiddeck.launcher.core.DeviceSupport.mali()
+        // GpuSafety: in software mode the guest is given no GPU node at all (LinuxRuntime) and
+        // draws with an imported CPU driver. The switch is handed to the session script, which
+        // drops the Mali driver's own requirements and its probe for it.
+        val software = com.droiddeck.launcher.gpu.GpuSafety.software(this)
+        // Steam's CEF needs GL and the rootfs ships no native GL driver: route it through Zink,
+        // over whatever Vulkan driver the session is drawing with. Not in software mode, where
+        // there is no GPU to put under Zink and forcing it costs more than it gives: Mesa loads
+        // zink for every GL client then, its own software fallback included
+        // ("failed to load driver: zink" after "glx: failed to create drisw screen"), GLX is left
+        // with no visual at all, and the client's vgui2 surfaces abort on glXChooseVisual - which
+        // is how a software session ended, with the update window on screen and nothing after it.
+        // Mesa's own software GL is asked for instead; it is the renderer the client's own system
+        // report already prints for this runtime (llvmpipe).
+        if (software) {
+            guest.add("GALLIUM_DRIVER=llvmpipe")
+            guest.add("MESA_LOADER_DRIVER_OVERRIDE=llvmpipe")
+            guest.add("LIBGL_ALWAYS_SOFTWARE=1")
+        } else {
+            guest.add("MESA_LOADER_DRIVER_OVERRIDE=zink")
+            guest.add("GALLIUM_DRIVER=zink")
+            guest.add("LIBGL_KOPPER_DRI2=true")
+        }
+        guest.add("BL_GPU_SAFETY=" + if (software) "software" else "device")
+        if (software) {
+            // How many device nodes the app covered up, for the session log to print beside what
+            // the guest itself finds there: the two only agree when the hide really took.
+            guest.add("BL_GPU_HIDDEN=" + LinuxRuntime.gpuNodesHidden(this))
+            Log.i(TAG, "gpu safety: software - no GPU node in the guest, drawing on the CPU")
+        }
         if (!mali) LinuxRuntime.vulkanIcd(this)?.let { guest.add("VK_ICD_FILENAMES=" + it.path) }
         if (mali) {
             guest.add("BL_GPU_FAMILY=mali")
-            // Hardware rendering, initially presented by CPU/SHM WSI for compatibility.
-            guest.add("PANVK_KBASE_DRI3=0")
-            guest.add("LIBGL_KOPPER_DISABLE=false")
+            if (!software) {
+                // Hardware rendering, initially presented by CPU/SHM WSI for compatibility.
+                guest.add("PANVK_KBASE_DRI3=0")
+                guest.add("LIBGL_KOPPER_DISABLE=false")
+            }
         }
         // An imported glibc Turnip, when one is set (by the user, or by Auto): the session script
         // checks the manifest and its library from inside and points the loader at it with
         // VK_DRIVER_FILES, so the runtime's own driver above stays untouched and is what a bad
         // import falls back to. One driver for every session: the driver's shader cache is keyed on
         // its build, and with one per mode every emulator compiled its shaders twice.
-        val linuxDriverId = SessionPrefs.linuxDriver(this)
+        val linuxDriverId = com.droiddeck.launcher.gpu.GpuSafety.linuxDriver(this)
         LinuxVulkanDriver.resolveIcdPath(this, linuxDriverId)
             ?.let { guest.add(LinuxVulkanDriver.ENV + "=" + it) }
         // Turnip's own debug switches, for the runtime's driver and everything on it. The file in
@@ -649,6 +682,9 @@ class SessionService : Service() {
         guest.add("GLIBC_TUNABLES=glibc.pthread.rseq=0:glibc.malloc.top_pad=16777216")
         if (SessionState.mode == MODE_STEAM) guest.add("BL_STEAMDECK=" + (if (SessionPrefs.steamDeckMode(this)) "1" else "0"))
         if (SessionState.mode == MODE_STEAM) guest.add("BL_MANGOAPP=" + (if (!mali && SessionPrefs.mangoapp(this)) "1" else "0"))
+        // The client's browser (CEF) on the GPU; off unless asked, so a browser that panics the
+        // GPU driver does not take the phone with it (droiddeck-session reads BL_CEF_GPU).
+        if (SessionState.mode == MODE_STEAM) guest.add("BL_CEF_GPU=" + (if (SessionPrefs.steamUiOnGpu(this)) "1" else "0"))
         if (steamHere) guest.add("BL_STEAM_CHANNEL=" + SessionPrefs.steamChannel(this))
         if (SessionState.mode == MODE_STEAM) {
             guest.add("BL_GAMESCOPE_STRETCH_16X9=" + (if (SessionPrefs.stretch16x9(this)) "1" else "0"))

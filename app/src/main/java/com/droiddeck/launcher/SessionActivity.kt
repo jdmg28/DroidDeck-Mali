@@ -397,8 +397,15 @@ class SessionActivity : ComponentActivity(), SurfaceHolder.Callback {
                 com.droiddeck.launcher.runtime.DesktopCatalog.protonSeedNeeded(this)
             if (needRuntime || needDesktop || needProton) installThenStart(needRuntime, needDesktop, needProton)
         }
-        hud = PerfHud(this)
+        // The HUD says the session's own output, which the game is drawing at and the panel is
+        // showing at its own rate: "960x720 · 120 Hz" next to 27 fps is what tells a reader that
+        // the resolution is the cost, or the refresh, or neither.
+        hud = PerfHud(this, outputSize())
         hud.onPresentingWindowChanged = {
+            // Logged on every change, not every frame: when a session's picture stops, whether the
+            // window still presenting frames is the game's or Steam's says whether the game stopped
+            // committing buffers at all or something else was put in front of it.
+            Log.i(TAG, "presenting window: ${hud.presentingWindow ?: "none"}")
             if (FrameGen.engine(this) != FrameGen.ENGINE_OFF) CompositorHost.rearmFrameGen { applyFrameGen() }
         }
         // A session that has already drawn is past its milestones; do not cover its picture.

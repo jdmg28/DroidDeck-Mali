@@ -121,17 +121,26 @@ class SessionLogShareTest {
         assertTrue(zip(folder).values.none { it.contains(leaked) })
     }
 
-    @Test fun steamLogsPastTheSizeLimitStayOut() {
+    @Test fun steamLogsPastTheSizeLimitGoInAsTheirTail() {
         val folder = tmp.newFolder("2026-10-06-07-steam")
         File(folder, "session.log").writeText("ok\n")
         File(folder, "steam").mkdirs()
         File(folder, "steam/console_log.txt").writeText("ok\n")
-        File(folder, "steam/cef_log.previous.txt").outputStream().use { out ->
-            val line = ByteArray(1024) { 'x'.code.toByte() }.also { it[it.size - 1] = '\n'.code.toByte() }
-            repeat(9 * 1024) { out.write(line) }
-        }
-        val names = zip(folder).keys
-        assertTrue("steam/console_log.txt" in names)
-        assertFalse("steam/cef_log.previous.txt" in names)
+        val big = File(folder, "steam/cef_log.previous.txt")
+        // Lines that read like a log: a wall of one letter is 1024 opaque characters, and the
+        // redactor, rightly, turns a run that long into <redacted:token>.
+        val text = "proton: [pid 1234] loaded /usr/lib/x86_64-linux-gnu/libfoo.so for appid 363970"
+        val line = (text.padEnd(1024, ' ') + "\n").toByteArray()
+        big.outputStream().use { out -> repeat(9 * 1024) { out.write(line) } }
+        val out = zip(folder)
+        // A log under the limit is still whole.
+        assertEquals("ok\n", out.getValue("steam/console_log.txt"))
+        // One over it is in, as its end: cut on a line, and saying what was left out. The last line
+        // is the one that says why a game stopped, which is the point of keeping it.
+        val tail = out["steam/cef_log.previous.txt"] ?: error("the log past the limit was left out")
+        val over = big.length() - 8L * 1024 * 1024
+        assertTrue(tail.endsWith("... (this log was trimmed: its first ${over / 1024} KB were left out)\n"))
+        assertEquals(1024, tail.substringBefore('\n').length)
+        assertTrue(tail.length <= 8L * 1024 * 1024 + 100)
     }
 }
