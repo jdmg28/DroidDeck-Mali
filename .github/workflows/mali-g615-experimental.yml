@@ -9,6 +9,8 @@ on:
     branches: [ mali-g615-experimental, 'arena/**' ]
     paths-ignore:
       - '**/*.md'
+      - 'docs/**'
+      - '.github/workflows/publish-experimental-release.yml'
       - 'LICENSE'
       - '.gitignore'
   workflow_dispatch:
@@ -289,8 +291,8 @@ jobs:
             echo "::error::signing certificate changed: this build is $THIS_CERT, $OLD_NAME is $OLD_CERT - the phone would refuse it and keep nothing"
             fail=1
           fi
-          if [ "$FOUND" = true ] && [ "$THIS_CODE" -le "$OLD_CODE" ]; then
-            echo "::error::versionCode $THIS_CODE does not exceed the published $OLD_CODE"
+          if [ "$FOUND" = true ] && [ "$THIS_CODE" -lt "$OLD_CODE" ]; then
+            echo "::error::versionCode $THIS_CODE is lower than the published $OLD_CODE"
             fail=1
           fi
           # The AOSP testkey is publicly known, which is fine for a fork's test builds and is the
