@@ -33,7 +33,7 @@ Upstream DroidDeck targets Qualcomm Adreno GPUs (`kgsl` + Mesa Turnip) and block
 ## 📸 Screenshots / Pruebas en Hardware Real (Mali-G615 MC6)
 
 ### 1. In-Game Execution — *Clicker Heroes* (DirectX 11 → DXVK → PanVK-kbase on Mali-G615)
-Running in Steam Gaming Mode at **29 FPS (`35.2 ms`)** with the MangoHud overlay active:
+Running in Steam Gaming Mode at **29 FPS** (`29 fps` counter in top-right corner):
 
 <p align="center">
   <img src="docs/screenshots/Screenshot_2026-10-12-19-33-36-765_com.droiddeck.launcher.mali.g615.jpg" width="90%" alt="Clicker Heroes running at 29 FPS on Mali-G615 in DroidDeck">
@@ -47,17 +47,17 @@ Full SteamOS Big Picture interface running inside `gamescope` on the phone:
 </p>
 
 ### 3. KDE Plasma 6.7.5 Desktop Mode (`Mali-G615 MC6` Detected)
-Full Arch Linux ARM64 KDE Plasma 6.7.5 desktop session detecting **`Mali-G615 MC6`** as the graphics processor:
+Full Arch Linux ARM64 KDE Plasma 6.7.5 Wayland desktop session detecting **`Mali-G615 MC6 (Integrated)`** as the graphics processor:
 
 <p align="center">
-  <img src="docs/screenshots/Screenshot_2026-10-11-15-54-01-776_com.droiddeck.launcher.mali.g615.jpg" width="90%" alt="KDE Plasma 6.7.5 Desktop Mode showing Mali-G615 MC6">
+  <img src="docs/screenshots/Screenshot_2026-10-12-18-06-39-734_com.droiddeck.launcher.mali.g615.jpg" width="90%" alt="KDE Plasma 6.7.5 Desktop Mode showing Mali-G615 MC6 Integrated">
 </p>
 
-### 4. In-App Windows Components Manager (`FEX` | `WOWBox64` | `DXVK` | `VKD3D-Proton`)
-Per-Proton component management supporting `.wcp` (`XZ` and `Zstd`) packages from `The412Banner/Nightlies`:
+### 4. In-App GPU Drivers &amp; Components Manager (`Controladores de GPU`)
+Selecting the **`Controlador Mali (experimental)`** mode and the imported **`DroidDeck Mali-G615 PanVK-kbase`** runtime driver alongside the native Android **`Vulkan del sistema (Mali)`** display presenter:
 
 <p align="center">
-  <img src="docs/screenshots/Screenshot_2026-10-12-18-06-39-734_com.droiddeck.launcher.mali.g615.jpg" width="90%" alt="DroidDeck Components Manager showing FEX, WOWBox64, DXVK, and VKD3D-Proton">
+  <img src="docs/screenshots/Screenshot_2026-10-11-15-54-01-776_com.droiddeck.launcher.mali.g615.jpg" width="90%" alt="DroidDeck GPU Drivers screen showing Mali experimental mode and PanVK-kbase driver">
 </p>
 
 ---
