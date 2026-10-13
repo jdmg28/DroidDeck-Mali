@@ -21,7 +21,7 @@
 
 ## 📖 Overview / Descripción General
 
-**DroidDeck-Mali** is an experimental fork of [DroidDeck](https://github.com/Droid-Deck/DroidDeck) engineered to run **Valve's Steam client (Gaming Mode & Desktop Mode)** and **Windows games via ARM64EC Proton (`DroidDeck-Proton` / `GE-Proton`), `FEX-Emu`, `WOWBox64`, and `DXVK`** on **ARM Mali-G615 (Valhall v10)** Android devices without root (developed and tested on **POCO X6 Pro / MediaTek Dimensity 8300-Ultra — Mali-G615 MC6, 12 GB RAM**).
+**DroidDeck-Mali** is an experimental fork of [DroidDeck](https://github.com/Droid-Deck/DroidDeck) engineered to run **Valve's Steam client (Gaming Mode & Desktop Mode)** and **Windows games via ARM64EC Proton (`DroidDeck-Proton` / `GE-Proton`), `FEX-Emu`, `WOWBox64`, and `DXVK`** on **ARM Mali-G615 (Valhall v10)** Android devices without root (developed and tested on **POCO X6 Pro / MediaTek Dimensity 8300-Ultra — Mali-G615 MC6, 8 GB RAM**).
 
 Upstream DroidDeck targets Qualcomm Adreno GPUs (`kgsl` + Mesa Turnip) and blocks Mali GPUs. This fork introduces:
 - **Direct `/dev/mali0` (`mali_kbase`) Hardware Vulkan Support** using [`panvk-kbase-android`](https://github.com/zenithblue-oss/panvk-kbase-android) (`v0.1.0-rc3`) paired with DroidDeck's custom **ICD DRM primary-node shim** (`libvulkan_mali_g615_stub.so`) so `gamescope` and `DXVK` can initialize hardware Vulkan without a kernel DRM render node.
