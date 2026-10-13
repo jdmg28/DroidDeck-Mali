@@ -1,4 +1,4 @@
-<p align="center">
+1<p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="artwork/droiddeck-banner-dark.svg">
     <img alt="DroidDeck" src="artwork/droiddeck-banner-light.svg" width="100%">
@@ -57,7 +57,7 @@ Full Arch Linux ARM64 KDE Plasma 6.7.5 Wayland desktop session detecting **`Mali
 Selecting the **`Controlador Mali (experimental)`** mode and the imported **`DroidDeck Mali-G615 PanVK-kbase`** runtime driver alongside the native Android **`Vulkan del sistema (Mali)`** display presenter:
 
 <p align="center">
-  <img src="docs/screenshots/Screenshot_2026-10-11-15-54-01-776_com.droiddeck.launcher.mali.g615.jpg" width="90%" alt="DroidDeck GPU Drivers screen showing Mali experimental mode and PanVK-kbase driver">
+  <img src="docs/screenshots/Screenshot_2026-10-12-19-33-36-765_com.droiddeck.launcher.mali.g615.jpg" width="90%" alt="DroidDeck GPU Drivers screen showing Mali experimental mode and PanVK-kbase driver">
 </p>
 
 ---
