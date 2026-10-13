@@ -36,7 +36,7 @@ Upstream DroidDeck targets Qualcomm Adreno GPUs (`kgsl` + Mesa Turnip) and block
 Running in Steam Gaming Mode at **29 FPS** (`29 fps` counter in top-right corner):
 
 <p align="center">
-  <img src="docs/screenshots/Screenshot_2026-10-12-19-33-36-765_com.droiddeck.launcher.mali.g615.jpg" width="90%" alt="Clicker Heroes running at 29 FPS on Mali-G615 in DroidDeck">
+  <img src="docs/screenshots/Screenshot_2026-10-11-15-54-01-776_com.droiddeck.launcher.mali.g615.jpg" width="90%" alt="Clicker Heroes running at 29 FPS on Mali-G615 in DroidDeck">
 </p>
 
 ### 2. Steam Gaming Mode (Big Picture / Deck UI on Gamescope)
