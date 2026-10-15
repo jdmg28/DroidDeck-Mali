@@ -174,6 +174,24 @@ fi
 if [ "$software" != yes ] && [ "${BL_GPU_FAMILY:-}" = mali ] && [ -z "${BL_INSIDE:-}" ]; then
   /usr/local/bin/droiddeck-mali-check || exit 78
 fi
+# What the driver's WSI was told to be: 1 = dma-buf + AFBC (the fast path), 0 = CPU/SHM linear
+# copies. Wrong here reads straight off the fps - worth one line beside the driver's own.
+if [ "$software" != yes ] && [ "${BL_GPU_FAMILY:-}" = mali ]; then
+  echo "== mali wsi: PANVK_KBASE_DRI3=${PANVK_KBASE_DRI3:-unset} (1 = dma-buf/AFBC, 0 = shm copies)"
+  echo "== mali sema-waits: PANVK_KBASE_GPU_SEMAPHORE_WAITS=${PANVK_KBASE_GPU_SEMAPHORE_WAITS:-unset} (1 = waits inside the submit ring; Download/droiddeck-mali-semawaits=0 undoes it)"
+  # Games' present path. The gamescope WSI layer (the XWayland-bypass swapchain) hung after the
+  # first frame on both 2026-10-12 and 2026-10-14 sessions: swapchain created, no error back,
+  # audio and input alive, picture frozen at the game's logo. It never reads PANVK_KBASE_DRI3,
+  # which is why the dma-buf store fix left games untouched. With the layer bypassed a game
+  # presents through panvk's own X11 DRI3 - the transport the client and gamescope's output
+  # already use - and the app sends BL_MALI_GAMESCOPE_WSI=0 for that (1 = the layer, for a
+  # controlled experiment; unset here defaults to the bypass too).
+  case "${BL_MALI_GAMESCOPE_WSI:-0}" in
+    1) echo "== mali games: gamescope WSI layer ON (Download/droiddeck-mali-gamescope-wsi)" ;;
+    *) export DISABLE_GAMESCOPE_WSI=1
+       echo "== mali games: gamescope WSI layer bypassed - games present via X11 DRI3 (Download/droiddeck-mali-gamescope-wsi=1 puts it back)" ;;
+  esac
+fi
 # The app's gamescope build (tools/gamescope) asks for realtime-priority Vulkan queues on this
 # switch instead of on CAP_SYS_NICE, which proot never has; it falls back to normal priority
 # where the driver refuses, and the runtime's own build ignores it. On KGSL Turnip (Mesa 26.2) it
@@ -299,6 +317,12 @@ if [ -z "${BL_INSIDE:-}" ]; then
   # limiter wins when it is on (it is a deliberate cap); otherwise use the panel's own rate.
   if [ "${BL_FPS:-0}" -gt 0 ]; then
     args+=(-r "$BL_FPS")
+    # The 2026-10-14 X6 Pro session ran with the limiter at 30 and its game read a 30 Hz display
+    # (DXVK: "Reported refresh rate: 30.0 Hz"), which reads as a broken display when the complaint
+    # is speed. Say it once, beside everything else.
+    if [ "$mode" = steam ] && [ "${BL_FPS}" -lt 45 ]; then
+      echo "== note: the app's FPS limiter is ${BL_FPS} - games see a ${BL_FPS} Hz display and cannot exceed it"
+    fi
   elif [ "${BL_REFRESH:-0}" -gt 0 ]; then
     args+=(-r "$BL_REFRESH")
   fi
@@ -966,13 +990,14 @@ BUSCONF
         done
       ) &
     fi
-    # The client's browser (CEF) is kept off the GPU unless BL_CEF_GPU=1 asks for it: on a
-    # Mali-G615 the session came all the way up - gamescope compositing on the real GPU, both
-    # Xwaylands answering, the client past its own checks - and the device restarted seconds
-    # after the browser asked that GPU for Vulkan. Passing -cef-use-gl=angle -cef-use-angle=vulkan
-    # alongside -cef-disable-gpu still caused CEF's browser and gpu-process to initialize ANGLE
-    # and Mesa Zink on panvk (537 MB RSS + ~220 MB kbase DMA-BUFs), so ANGLE/Vulkan flags are
-    # passed only when BL_CEF_GPU=1 is explicitly enabled.
+    # The client's browser (CEF) is kept off the GPU: on a Mali-G615 the session came all the way
+    # up - gamescope compositing on the real GPU, both Xwaylands answering, the client past its own
+    # checks - and the device restarted seconds after the browser asked that GPU for Vulkan (RC2 on
+    # a G720-class phone, then again on RC3 + dma-buf WSI on a G615 POCO X6 Pro with 1f4abb3; the
+    # store had already opened, so the WSI was fine and the fault is in CEF's own ANGLE-Vulkan
+    # path). That restart is a device reset no app can survive, so on Mali the GPU browser is not
+    # offered at all: BL_CEF_GPU=1 is answered with a line and the CPU-drawn client, which since
+    # the R5 dma-buf WSI is no longer the slow path it was. Non-Mali keeps the old behavior.
     _bl_cef=(-no-cef-sandbox -cef-ozone-platform=x11)
     # Anything the session wants to add to the client itself, one word list, never evaluated:
     # BL_STEAM_ARGS="-cef-single-process" runs the whole browser in one process, which is the
@@ -982,9 +1007,12 @@ BUSCONF
     if [ -n "${BL_STEAM_ARGS:-}" ]; then
       read -r -a _bl_extra_args <<<"$BL_STEAM_ARGS"
     fi
-    if [ "$software" != yes ] && [ "${BL_CEF_GPU:-0}" = 1 ]; then
+    if [ "$software" != yes ] && [ "${BL_CEF_GPU:-0}" = 1 ] && [ "${BL_GPU_FAMILY:-}" != mali ]; then
       _bl_cef+=(-cef-use-gl=angle -cef-use-angle=vulkan -cef-force-gpu)
     else
+      if [ "${BL_CEF_GPU:-0}" = 1 ] && [ "${BL_GPU_FAMILY:-}" = mali ] && [ "$software" != yes ]; then
+        echo "== ui-on-gpu: not on Mali - ANGLE/Vulkan restarted the device (RC2 and RC3); the dma-buf WSI already carries the client at speed"
+      fi
       _bl_cef+=(-cef-disable-gpu -cef-disable-gpu-compositing)
     fi
     echo "== steam args: ${_bl_ui[*]} ${_bl_cdp[*]} ${_bl_lang[*]} -clientbeta $steam_channel ${_bl_cef[*]} ${_bl_extra_args[*]:-} $*"
@@ -1052,6 +1080,13 @@ BUSCONF
           _bl_who=$(ps -eo rss=,pid=,args= --sort=-rss 2>/dev/null | head -8 |
             awk '{ cmd = substr($0, index($0, $3), 44); printf "%d MB [%s] %s · ", $1 / 1024, $2, cmd }')
           echo "== memory low ($(( _bl_free / 1024 )) MB): ${_bl_who% · }"
+        fi
+        # The R7 killer named: Clicker Heroes grew to 3.1 GB resident and Android's low-memory
+        # killer took the whole session - no crash, no error, just gone. When a game itself holds
+        # more than 2.5 GB, say so while it is still alive, so "it closed" arrives with the reason.
+        _bl_game_rss=$(ps -eo rss=,args= --sort=-rss 2>/dev/null | awk '$2 ~ /steamapps/ && $0 ~ /steamapps.common/ { print $1; exit }')
+        if [ -n "${_bl_game_rss:-}" ] && [ "$_bl_game_rss" -gt 2560000 ]; then
+          echo "== game memory: the game holds $(( _bl_game_rss / 1024 )) MB resident - near what Android tolerates on this device; close background apps and expect a kill above this"
         fi
         # A game running, read off /proc rather than guessed: the client launches one with the
         # game's own path (Linux slashes or Wine backslashes) or reaper's SteamLaunch AppId= in

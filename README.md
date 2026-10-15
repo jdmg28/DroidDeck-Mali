@@ -29,6 +29,7 @@ Upstream DroidDeck targets Qualcomm Adreno GPUs (`kgsl` + Mesa Turnip) and block
 - **Direct `/dev/mali0` (`mali_kbase`) Hardware Vulkan Support** using [`panvk-kbase-android`](https://github.com/zenithblue-oss/panvk-kbase-android) (`v0.1.0-rc3`) paired with DroidDeck's custom **ICD DRM primary-node shim** (`libvulkan_mali_g615_stub.so`) so `gamescope` and `DXVK` can initialize hardware Vulkan without a kernel DRM render node.
 - **CPU Software Vulkan Safety Mode (`lavapipe`)** so sessions can also boot with `/dev/mali0` completely isolated from the container.
 - **Unified Memory Architecture (UMA) & RAM Optimizations** tailored for 8–12 GB Android devices running Steam + Gamescope + Wine/Proton simultaneously.
+- **Universal Mali CSF adapter (0.2.0)**: the DRM-node shim and the session probe accept every ARM Mali the driver reports (CSF v9–v13: G57/G610/G710/G615/G715/G620/G720/G925), not only the `Mali-G615` this fork was validated on — a name-only gate left other Malis (e.g. the Immortalis-G925 in a Redmi Turbo 5 Max / POCO X8 Pro Max) a black session that died before `gamescope`. See [`docs/diagnostico-turbo5max-pantalla-negra.md`](docs/diagnostico-turbo5max-pantalla-negra.md) and [`tools/mali-driver/`](tools/mali-driver/).
 
 ---
 
@@ -71,7 +72,7 @@ Download the latest release from **[Releases](https://github.com/jdmg28/DroidDec
 
 > ⚠️ **IMPORTANT / IMPORTANTE:**
 > Each GPU driver is published as its own **separate `.zip` file** on the release page:
-> - **`DroidDeck-Mali-G615-PanVK-kbase-beta18.zip`** *(Hardware GPU driver for Mali-G615)*
+> - **`DroidDeck-Mali-CSF-PanVK-kbase-universal.zip`** *(Hardware GPU driver for Mali CSF GPUs — validated on Mali-G615, others experimental)*
 > - **`DroidDeck-Software-Vulkan-lavapipe.zip`** *(CPU software Vulkan fallback driver)*
 >
 > **Do NOT extract these `.zip` files and do NOT bundle them inside another `.zip`.**

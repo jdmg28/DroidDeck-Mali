@@ -68,6 +68,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.material3.LocalTextStyle
+import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
@@ -80,18 +82,21 @@ import androidx.compose.ui.text.style.TextOverflow
 
 @Composable
 fun HudText(text: String) {
-    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.TopEnd) {
-        Text(
-            text,
-            fontFamily = FontFamily.Monospace,
-            fontSize = 12.sp,
-            color = Color.White,
-            modifier = Modifier
-                .padding(12.dp)
-                .background(Color(0x8C000000))
-                .padding(horizontal = 8.dp, vertical = 3.dp),
-        )
-    }
+    // Clean, as the fork asks: the figures over the picture, no box behind them - a soft shadow
+    // keeps every line readable on bright scenes without putting a rectangle on the game.
+    Text(
+        text,
+        fontFamily = FontFamily.Monospace,
+        fontSize = 13.sp,
+        lineHeight = 19.sp,
+        fontWeight = FontWeight.SemiBold,
+        color = Color.White,
+        style = LocalTextStyle.current.copy(
+            shadow = Shadow(color = Color(0xE6000000), offset = Offset(0f, 1f), blurRadius = 8f),
+        ),
+        modifier = Modifier
+            .padding(12.dp),
+    )
 }
 
 /** One line of the loading screen's checklist; [detail] is what it says while it is the one running. */

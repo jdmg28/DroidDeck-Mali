@@ -42,3 +42,7 @@ app/src/main/assets/directaudio/
 
 # Session logs and other files pulled down by the Google Drive connector
 google_drive/
+
+# Driver kits built locally by tools/mali-driver/make-universal-zip.sh; CI (mali-panvk-driver.yml)
+# rebuilds and publishes the universal package on every run, so the local artifact stays out.
+DroidDeck-Mali-CSF-universal-*.zip

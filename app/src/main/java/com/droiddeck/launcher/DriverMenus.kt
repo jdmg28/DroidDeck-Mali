@@ -416,6 +416,23 @@ internal class DriverMenus(private val activity: Activity, private val ui: Handl
 
     /** The download entries and the refresh line, from what the last check found. */
     fun refreshReleaseRows() {
+        if (com.droiddeck.launcher.core.DeviceSupport.mali()) {
+            // This fork's own packages, offered in place of the Adreno (Turnip) release lists a
+            // Mali phone has no use for. The list is static - both zips are always published by
+            // this repository's workflows - so the refresh only rechecks what is installed.
+            val done = SessionPrefs.maliDownloaded(activity)
+            linuxDownloads = com.droiddeck.launcher.gpu.MaliReleases.all()
+                .filter { it.name !in done }
+                .map { e ->
+                    com.droiddeck.launcher.ui.DownloadRow(
+                        e.name, e.label, activity.getString(e.detail), releaseProgress[e.name],
+                    )
+                }
+            androidDownloads = emptyList()
+            releaseStatus = if (!releaseChecking)
+                activity.getString(R.string.drivers_mali_source) else releaseStatus
+            return
+        }
         val check = TurnipReleases.cached(activity)
         fun rows(linux: Boolean) = check?.assets.orEmpty()
             .filter { it.bundle || it.linux == linux }
@@ -448,6 +465,12 @@ internal class DriverMenus(private val activity: Activity, private val ui: Handl
 
     /** Only when the user taps refresh: nothing goes online on its own. */
     fun checkLatestTurnip() {
+        if (com.droiddeck.launcher.core.DeviceSupport.mali()) {
+            // No Turnip repo to ask on a Mali device: the packages come from this repository.
+            refreshReleaseRows()
+            refreshPairs()
+            return
+        }
         if (releaseChecking) return
         releaseChecking = true
         releaseStatus = activity.getString(R.string.drivers_checking_sources)
@@ -466,6 +489,10 @@ internal class DriverMenus(private val activity: Activity, private val ui: Handl
 
     /** Download one release driver and import it through the same importer a picked zip uses. */
     fun downloadReleaseDriver(assetName: String) {
+        if (com.droiddeck.launcher.gpu.MaliReleases.isOurs(assetName)) {
+            downloadMaliDriver(com.droiddeck.launcher.gpu.MaliReleases.byName(assetName)!!)
+            return
+        }
         val asset = TurnipReleases.cached(activity)?.assets?.firstOrNull { it.name == assetName } ?: return
         if (releaseProgress.containsKey(assetName)) return
         releaseProgress[assetName] = 0
@@ -493,6 +520,47 @@ internal class DriverMenus(private val activity: Activity, private val ui: Handl
                 refreshDrivers()
             }
         }, "download-turnip").start()
+    }
+
+    /**
+     * One of this fork's own packages, downloaded from this repository's releases and installed
+     * through the same importer an imported zip goes through - then selected, the way a Mali
+     * import is: the driver becomes the runtime driver and the Mali GPU-safety setting follows.
+     */
+    private fun downloadMaliDriver(entry: com.droiddeck.launcher.gpu.MaliReleases.Entry) {
+        if (releaseProgress.containsKey(entry.name)) return
+        releaseProgress[entry.name] = 0
+        refreshReleaseRows()
+        Thread({
+            var file: File? = null
+            val problem = try {
+                file = com.droiddeck.launcher.gpu.MaliReleases.download(activity, entry) { pct ->
+                    ui.post { releaseProgress[entry.name] = pct; refreshReleaseRows() }
+                }
+                val id = LinuxVulkanDriverManager(activity).installDriver(Uri.fromFile(file), entry.name)
+                SessionPrefs.setMaliDownloaded(activity, SessionPrefs.maliDownloaded(activity) + entry.name)
+                ui.post {
+                    SessionPrefs.setLinuxDriver(activity, id)
+                    GpuSafety.setProfile(activity, GpuSafety.MALI)
+                }
+                null
+            } catch (e: IllegalArgumentException) {
+                e.message
+            } catch (e: Exception) {
+                Log.w(TAG, "mali driver download", e)
+                activity.getString(R.string.comp_download_failed, e.message)
+            } finally {
+                file?.let { com.droiddeck.launcher.core.FileUtils.delete(it) }
+            }
+            ui.post {
+                releaseProgress.remove(entry.name)
+                android.widget.Toast.makeText(
+                    activity, problem ?: activity.getString(R.string.drivers_installed_pick, entry.name.removeSuffix(".zip")),
+                    android.widget.Toast.LENGTH_LONG,
+                ).show()
+                refreshDrivers()
+            }
+        }, "download-mali").start()
     }
 
     private companion object {

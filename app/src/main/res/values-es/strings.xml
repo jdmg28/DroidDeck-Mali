@@ -42,6 +42,13 @@
     <string name="hud_fg_needs_lossless">%1$s: requiere Lossless Scaling</string>
     <string name="hud_fg_starting">%1$s  %2$s · iniciando</string>
     <string name="hud_rate">%1$s · %2$d ms</string>
+    <!-- El HUD limpio de seis líneas: una cifra por línea, una línea en blanco entre cada una. -->
+    <string name="hud_ram_pct">Ram: %1$d%%</string>
+    <string name="hud_cpu_pct">Cpu: %1$d%%</string>
+    <string name="hud_gpu_pct">Gpu: %1$d%%</string>
+    <string name="hud_temp">C°: %1$d°</string>
+    <string name="hud_device">Device: %1$s</string>
+    <string name="hud_fps">Fps: %1$d</string>
     <string name="hud_ram">RAM %1$s libres de %2$s · mata a %3$d MB</string>
     <string name="hud_low_memory">¡memoria baja!</string>
     <string name="hud_game_rss">juego %1$s</string>
@@ -308,7 +315,7 @@
     <string name="mode_mangoapp">Superposición de rendimiento</string>
     <string name="mode_mangoapp_hint">Desactívalo si los juegos fallan o se quedan en negro en modo Deck. Se aplica en la próxima sesión.</string>
     <string name="mode_steam_ui_gpu">Interfaz de Steam en la GPU (experimental)</string>
-    <string name="mode_steam_ui_gpu_hint">Apagado: la tienda y la biblioteca se dibujan con la CPU mientras los juegos siguen usando la GPU. Prendelo solo para probar; hay un teléfono que se reinició por esto. Se aplica en la próxima sesión.</string>
+    <string name="mode_steam_ui_gpu_hint">La tienda y la biblioteca las dibuja la CPU; desde el WSI dma-buf (build 1f4abb3) esa vía es lo bastante rápida y no hace falta un navegador en GPU. En Mali este interruptor se mantiene apagado a propósito: la vía ANGLE/Vulkan de CEF reinició el equipo incluso en RC3 (POCO X6 Pro, 14-10-2026), y ese reinicio no es algo que una app pueda sobrevivir. Se aplica en la próxima sesión.</string>
     <string name="mode_branch">Rama del cliente</string>
     <string name="mode_branch_deck">Beta pública de Steam Deck (requerida por el modo Deck).</string>
     <string name="mode_branch_hint">Se aplica en la próxima sesión. Steam puede actualizarse una vez.</string>
@@ -323,6 +330,11 @@
     <string name="mode_added_none">no hay carpetas de juegos con un .exe</string>
     <string name="mode_games_folder">Carpeta de juegos</string>
     <string name="mode_games_folder_another">Otra carpeta de juegos</string>
+    <string name="mode_added_import_zip">Importar juego (.zip)</string>
+    <string name="mode_added_import_zip_hint">Un zip de juego descargado se extrae en tu carpeta de juegos y aparece en Steam listo para jugar - Proton y FEX se encargan del resto. Si arranca el .exe equivocado, elige el correcto abajo.</string>
+    <string name="mode_added_importing">Importando %1$s…</string>
+    <string name="mode_added_import_working">Trabajando</string>
+    <string name="main_added_zip_imported">Importado: %1$s</string>
     <string name="mode_added_art">Imágenes de Steam</string>
     <string name="mode_added_art_hint">Completa las imágenes que faltan según el nombre de la carpeta. Tus propios cover.jpg, hero.jpg, logo.png o icon.png en la carpeta del juego tienen prioridad.</string>
     <string name="mode_added_launches">Inicia %1$s</string>
@@ -399,7 +411,7 @@
     <string name="comp_import_turnip">Importar zip de Turnip…</string>
     <string name="comp_display_driver">Controlador de pantalla</string>
     <string name="comp_display_driver_hint">Dibuja los fotogramas en pantalla en ambos modos. Reinicia la app para aplicarlo.</string>
-    <string name="comp_import_adrenotools">Importar un zip de AdrenoTools…</string>
+    <string name="comp_import_adrenotools">Importar un zip de controlador de pantalla…</string>
     <string name="comp_never">nunca</string>
     <string name="comp_nightlies_checked">Última comprobación de Nightlies: %1$s</string>
     <string name="comp_title">Componentes</string>
@@ -475,10 +487,10 @@
     <string name="perf_gsrealtime_hint">Da prioridad al trabajo de GPU del compositor. Puede suavizar el ritmo de fotogramas a costa de algo de rendimiento en los juegos.</string>
     <string name="perf_gpu">GPU</string>
     <string name="perf_gpuclock">Mantener la GPU a su reloj máximo</string>
-    <string name="perf_gpuclock_hint">Solo Adreno. Menos tirones, más consumo de batería y calor.</string>
+    <string name="perf_gpuclock_hint">Menos tirones, más gasto de batería y calor.</string>
     <string name="perf_fixes">Correcciones de sesión</string>
     <string name="perf_sysmem">Turnip: renderizado sysmem</string>
-    <string name="perf_sysmem_hint">Más rápido para Steam y la mayoría de juegos. Obligatorio en Adreno 710/720/722.</string>
+    <string name="perf_sysmem_hint">Más rápido para Steam y la mayoría de los juegos. Necesario en algunas GPU.</string>
     <string name="perf_xalia">Omitir el asistente xalia de Steam</string>
     <string name="perf_fastsync">droiddeck-ntsync (experimental)</string>
     <string name="perf_fastsync_hint">Un sustituto en espacio de usuario del controlador ntsync de Linux, para pruebas. Mientras está activado, Proton lo usa en lugar de droiddeck-esync y droiddeck-fsync. Funciona con Proton Experimental ARM64, GE-Proton y proton-cachyos. Se aplica en la próxima sesión.</string>
@@ -595,7 +607,7 @@
     <string name="setup_gpu_unsupported">GPU no compatible</string>
     <string name="setup_gpu_detail">%1$s · %2$s</string>
     <string name="setup_gpu_untested_detail">%1$s: %2$s</string>
-    <string name="setup_gpu_unsupported_detail">Steam necesita un controlador Adreno; %1$s puede mostrar una pantalla negra</string>
+    <string name="setup_gpu_unsupported_detail">DroidDeck-Mali necesita una GPU Mali (CSF); %1$s puede mostrar una pantalla negra</string>
     <string name="setup_runtime">Runtime de Linux</string>
     <string name="setup_runtime_progress">%1$s · %2$d%%</string>
     <string name="setup_runtime_missing">No instalado · unos 3 GB, se instala al jugar por primera vez</string>
@@ -910,6 +922,9 @@
     <string name="content_linux_desktop_hint">KDE Plasma, Firefox y tus emuladores</string>
     <string name="games_empty">Los juegos que instales en Steam aparecen aquí después de la sesión.</string>
     <string name="games_play_steam">Jugar en Steam</string>
+    <string name="games_play_epic">Jugar Epic Games</string>
+    <string name="main_epic_pick_appimage">Elige la AppImage de Linux de Epic (EpicGamesLauncher-x86_64.AppImage, de launcher.epicgames.com)</string>
+    <string name="main_epic_staged">Epic listo: %1$s</string>
     <string name="games_launch_settings">Ajustes de inicio</string>
     <string name="games_launch">Iniciar</string>
     <string name="games_files">Archivos del juego</string>
@@ -1115,10 +1130,10 @@
     <string name="main_wadb_unavailable">La Depuración inalámbrica no está disponible</string>
     <string name="main_adb_copied">Comando ADB copiado</string>
     <string name="main_pick_roms">Elige la carpeta de ROMs</string>
-    <string name="main_non_adreno_title">La GPU no es Adreno</string>
+    <string name="main_non_adreno_title">GPU no compatible</string>
 
     <!-- %1$s is the GPU's name, %2$.0f the download size in MB -->
-    <string name="main_non_adreno_text">Turnip es compatible con GPU Adreno. En %1$s, Steam puede mostrar una pantalla negra. Descarga: %2$.0f MB.</string>
+    <string name="main_non_adreno_text">DroidDeck-Mali dibuja con una GPU Mali (CSF). En %1$s, Steam puede mostrar una pantalla negra. Descarga: %2$.0f MB.</string>
     <string name="main_install_anyway">Instalar de todos modos</string>
     <string name="main_remove_runtime_title">Eliminar el runtime de Linux</string>
     <string name="main_remove_runtime_text">Esto elimina el runtime, el cliente de Steam que contiene y todos los juegos instalados en él.</string>
@@ -1151,7 +1166,7 @@
     <string name="comp_stored">%1$s guardado</string>
     <string name="comp_download_failed">La descarga falló: %1$s</string>
     <string name="drivers_pick_linux">Elige un controlador de runtime de Linux (zip -Linux o paquete Android + Linux)</string>
-    <string name="drivers_pick_android">Elige un controlador de pantalla (zip de AdrenoTools o paquete Android + Linux)</string>
+    <string name="drivers_pick_android">Elige un controlador de pantalla</string>
     <string name="drivers_pick_any">Elige un zip de controlador o un paquete Android + Linux</string>
 
     <!-- %1$s is a desktop app's name, %2$s what went wrong -->
@@ -1217,7 +1232,7 @@
     <string name="drivers_switched_to_restart">Cambiado a %1$s %2$s. El controlador de pantalla se aplica al reiniciar DroidDeck.</string>
     <string name="drivers_using">Usando %1$s %2$s.</string>
     <string name="drivers_using_restart">Usando %1$s %2$s. El controlador de pantalla se aplica al reiniciar DroidDeck.</string>
-    <string name="drivers_not_a_driver">No es un zip de controlador: no es un controlador de AdrenoTools, ni un Turnip -Linux, ni un paquete Android + Linux</string>
+    <string name="drivers_not_a_driver">No es un zip de controlador</string>
     <string name="drivers_import_failed">La importación falló: %1$s</string>
     <string name="drivers_imported_unnamed">Controlador importado</string>
     <string name="drivers_using_bundle">Usando %1$s como controlador de runtime y de pantalla.</string>
@@ -1305,6 +1320,7 @@
 
     <!-- %1$d is the exit status, %2$s the log file's path -->
     <string name="session_ended_detail">Código de salida %1$d · %2$s</string>
+    <string name="session_end_present_fault">La sesión no pudo dibujar nada: %1$s. Todo lo demás siguió funcionando; esta pantalla reemplaza a la negra para que no se pierda el motivo.</string>
     <string name="session_ended_no_log">sin registro</string>
 
     <!-- %1$d errors; %2$s, %3$s and %4$s are the Performance page and its two settings -->
@@ -1357,6 +1373,8 @@
     <string name="content_rom_folder">carpeta</string>
 
     <!-- Launcher themes -->
+    <string name="theme_steam_purple">Steam Morado</string>
+    <string name="theme_steam_purple_detail">Relleno negro con el logotipo en morado brillante: cada borde, anillo y selección brilla en morado sobre negro.</string>
     <string name="theme_graphite">Grafito</string>
     <string name="theme_graphite_detail">Superficies grafito, con el azul del orbe del logotipo para todo lo seleccionado, enfocado o pulsado.</string>
     <string name="theme_paper">Papel sobre negro</string>
@@ -1939,11 +1957,11 @@
     <string name="look_anime_edge_desc">Contornos toon más nitidez.</string>
 
     <!-- GPU support line -->
-    <string name="gpuinfo_not_adreno">La GPU no es Adreno</string>
+    <string name="gpuinfo_not_adreno">GPU no compatible</string>
     <string name="gpuinfo_supported">Compatible</string>
     <string name="gpuinfo_experimental">Experimental: sus controladores son versiones de prueba</string>
-    <string name="gpuinfo_below_tested">Por debajo del hardware probado (Adreno 725 y posteriores): puede que no funcione</string>
-    <string name="gpuinfo_unsupported">No compatible: DroidDeck necesita una GPU Adreno (Snapdragon)</string>
+    <string name="gpuinfo_below_tested">Fuera del hardware probado: puede no funcionar</string>
+    <string name="gpuinfo_unsupported">No compatible: DroidDeck-Mali necesita una GPU Mali (CSF)</string>
 
     <!-- Driver downloads and imports -->
     <string name="turnip_rate_limited">Se alcanzó el límite de solicitudes de GitHub - inténtalo más tarde</string>
@@ -1953,18 +1971,18 @@
     <string name="turnip_checksum_mismatch">La suma de verificación no coincide - se descartó la descarga</string>
 
     <!-- %1$s is one of the turnip_reject_* reasons -->
-    <string name="turnip_not_adrenotools">No es un controlador de AdrenoTools: %1$s</string>
+    <string name="turnip_not_adrenotools">No es un zip de controlador de pantalla: %1$s</string>
     <string name="turnip_reject_no_meta">no hay meta.json</string>
     <string name="turnip_reject_meta_unreadable">no se puede leer meta.json (%1$s)</string>
     <string name="turnip_reject_linux_driver">es un controlador de runtime de Linux (impórtalo en \"Controlador de runtime\")</string>
     <string name="turnip_reject_wayland">es un controlador de juegos para Wayland, que esta app no usa</string>
-    <string name="turnip_reject_no_library_name">meta.json no indica ningún libraryName, así que no se pudo pasar nada a AdrenoTools</string>
+    <string name="turnip_reject_no_library_name">meta.json no indica libraryName: no se pudo configurar el controlador de pantalla</string>
 
     <!-- %1$s is a library file name -->
     <string name="turnip_reject_library_missing">meta.json indica %1$s, que no está en el zip</string>
     <string name="turnip_reject_not_aarch64">%1$s no es una biblioteca compartida ELF AArch64 de 64 bits</string>
     <string name="turnip_reject_glibc">%1$s enlaza glibc - es un Turnip \"-Linux\", que va en \"Controlador de runtime\"</string>
-    <string name="lvd_no_library">No hay ningún libvulkan_freedreno*.so en este zip. Un zip de Turnip para Android (AdrenoTools) o -Wayland no es un controlador de runtime de Linux.</string>
+    <string name="lvd_no_library">No hay controlador Vulkan Linux en este zip. Un zip de controlador de pantalla no es un controlador del entorno.</string>
     <string name="lvd_not_aarch64">%1$s no es una biblioteca compartida ELF AArch64 de 64 bits.</string>
     <string name="lvd_not_glibc">%1$s no es un controlador glibc: enlaza la libc de Android. El runtime de Linux necesita un zip \"-Linux\"; el cliente de Steam no puede cargar en absoluto un Turnip normal o \"-Wayland\".</string>
     <string name="bundle_no_manifest">No es un paquete de controladores: no hay un manifest.json que indique un controlador android y uno linux</string>

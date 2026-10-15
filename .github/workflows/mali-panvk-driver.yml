@@ -1,4 +1,4 @@
-name: Mali PanVK-kbase driver package (G615)
+name: Mali PanVK-kbase driver package (universal Mali CSF)
 
 # A package the app's Linux driver importer accepts that draws on the Mali GPU: zenithblue's
 # standalone Mesa PanVK (talking straight to mali_kbase) with DroidDeck's own ICD adapter in front
@@ -6,10 +6,16 @@ name: Mali PanVK-kbase driver package (G615)
 #
 # Why the adapter: gamescope refuses a physical device with no DRM primary node ("physical device
 # has no primary node"), and a driver that reaches the GPU through mali_kbase rather than through
-# DRM has none to report. The adapter is a 67 KB ICD shim - source in the kit zip in this repo's
-# root, MIT - that answers gamescope's question for it: it forwards everything to the backend and
-# fills VK_EXT_physical_device_drm with the real device numbers of /dev/mali0. It never opens the
-# GPU itself. Imported raw, without the shim, the driver loads, names the GPU and then stops there.
+# DRM has none to report. The adapter is a small ICD shim - source at
+# tools/mali-driver/src/droiddeck_mali_icd.c, MIT - that answers gamescope's question for it: it
+# forwards everything to the backend and fills VK_EXT_physical_device_drm with the real device
+# numbers of /dev/mali0. It never opens the GPU itself. Imported raw, without the shim, the driver
+# loads, names the GPU and then stops there.
+#
+# Adapter 0.2.0 applies that facade to every ARM Mali the backend reports, not only the
+# Mali-G615 this fork was validated on: a name-only gate used to leave other Malis (an
+# Immortalis-G925 Turbo 5 Max / POCO X8 Pro Max) a session that died before gamescope.
+# docs/diagnostico-turbo5max-pantalla-negra.md tells that story.
 #
 # This package is the GPU path, not the safe one: installing and selecting it means a session
 # issues real work to the GPU. The software (lavapipe) package from the other workflow is the one
@@ -19,6 +25,7 @@ on:
     branches: [ mali-g615-experimental, 'arena/**' ]
     paths:
       - .github/workflows/mali-panvk-driver.yml
+      - tools/mali-driver/**
       - DroidDeck-Mali-G615-driver-0.1.0.zip
   workflow_dispatch:
 
@@ -33,16 +40,21 @@ env:
   GH_TOKEN: ${{ github.token }}
   # Upstream: zenithblue's PanVK-kbase, glibc build (the Linux runtime is glibc; the Android .so
   # in the same release would not load in the guest at all). Their own reference device for it is
-  # a Poco X6 Pro - Mali-G615 MC6, the phone this branch is for. Pinned by checksum.
-  UPSTREAM_TAG: panvk-kbase-v0.1.0-rc3
+  # a Poco X6 Pro - Mali-G615 MC6, the phone this branch started on; RC3-lowmem is RC3 plus
+  # csf-v11/185: BC1 RGB and BC7 textures land at 8 bpp instead of RC3's 12/16 bpp - same
+  # speed, 25-33% less texture memory, which is what killed the R7 sessions (Clicker Heroes
+  # at 3.1 GB). PANVK_BC_AFRC=0 restores exact decode, 16/24/32 forces a rate for every BC
+  # format. Universal ICD (CSF v9-v13, G925 included). Pinned by checksum.
+  UPSTREAM_TAG: panvk-kbase-v0.1.0-rc3-lowmem
   UPSTREAM_ASSET: libvulkan_panfrost-glibc-aarch64.so
-  UPSTREAM_SHA256: 43d4783f664f21843b2fb2d5a3fdf4646fadb942e42d320ccb0e7449bd8e352f
-  # The adapter: DroidDeck's ICD shim, shipped in the kit zip committed in this repo's root.
+  UPSTREAM_SHA256: 96e925761ed23994f8e3ba9f72cbbcc988b69b4166947e58fea4f96b699604b0
+  # The adapter is built from source in tools/mali-driver on every run, so there is no binary
+  # checksum to pin; what is pinned is the Vulkan header version it compiles against.
+  VULKAN_HEADERS_TAG: v1.4.363
   KIT_ZIP: DroidDeck-Mali-G615-driver-0.1.0.zip
   ADAPTER_NAME: libvulkan_droiddeck_mali.so
-  ADAPTER_SHA256: 73fb851722987479276db954fc45b555de5d1d090f6a0f19927300d4d31ae97b
   RELEASE_TAG: mali-panvk-latest
-  RELEASE_ASSET: DroidDeck-Mali-G615-PanVK-kbase-beta18.zip
+  RELEASE_ASSET: DroidDeck-Mali-CSF-PanVK-kbase-universal.zip
 
 jobs:
   package:
@@ -61,12 +73,19 @@ jobs:
           echo "$UPSTREAM_SHA256  upstream.so" | sha256sum -c -
           ls -l upstream.so
 
-      - name: Take the adapter out of the kit in this repo
+      - name: Build the adapter from tools/mali-driver
         run: |
           set -euo pipefail
-          # -j: the kit has it at the root, and only the file itself is wanted here.
-          unzip -o -j "$KIT_ZIP" "$ADAPTER_NAME" -d kit
-          echo "$ADAPTER_SHA256  kit/$ADAPTER_NAME" | sha256sum -c -
+          pip install --quiet ziglang
+          git clone --depth 1 --branch "$VULKAN_HEADERS_TAG" \
+            https://github.com/KhronosGroup/Vulkan-Headers.git headers
+          mkdir -p kit
+          # The same build tools/mali-driver/build-adapter.sh runs: an aarch64 glibc object,
+          # because the adapter runs inside the glibc rootfs, not against Android's bionic.
+          python3 -m ziglang cc -target aarch64-linux-gnu.2.38 \
+            -shared -fPIC -O2 -fvisibility=hidden -Iheaders/include \
+            -Wl,-soname,"$ADAPTER_NAME" \
+            tools/mali-driver/src/droiddeck_mali_icd.c -o "kit/$ADAPTER_NAME"
           unzip -o -j "$KIT_ZIP" "LICENSE.adapter" "NOTICE.txt" -d kit/licenses >/dev/null 2>&1 || true
 
       - name: Both halves are aarch64 and glibc
@@ -97,19 +116,20 @@ jobs:
           {
             "schemaVersion": 1,
             "kind": "linux-vulkan-icd",
-            "name": "DroidDeck Mali-G615 PanVK-kbase v0.1.0-rc3",
-            "driverVersion": "Adapter 0.1.0 / PanVK-kbase v0.1.0-rc3 / Mesa 26.3.0-devel",
+            "name": "DroidDeck Mali CSF PanVK-kbase v0.1.0-rc3-lowmem (universal)",
+            "driverVersion": "Adapter 0.2.0 (universal Mali) / PanVK-kbase v0.1.0-rc3-lowmem / Mesa 26.3.0-devel",
             "minGlibc": "2.38",
             "libc": "glibc",
             "vulkanApiVersion": "1.4.363",
             "gpuVendor": "mali",
-            "gpu": "Mali-G615 MC6",
+            "gpu": "Mali CSF v9-v13 (validated on Mali-G615 MC6; G925/G720/G715/G610 untested)",
             "kernelInterface": "mali_kbase CSF",
             "backendLibraryName": "libpanvk_backend.so",
             "upstreamRelease": "$UPSTREAM_TAG",
             "upstreamLibrary": "$UPSTREAM_ASSET",
             "upstreamSha256": "$UPSTREAM_SHA256",
-            "adapterSha256": "$ADAPTER_SHA256"
+            "adapterSource": "tools/mali-driver/src/droiddeck_mali_icd.c",
+            "adapterSha256": "$(sha256sum "kit/$ADAPTER_NAME" | cut -d' ' -f1)"
           }
           JSON
           python3 -c 'import json,sys; json.load(open("'"$work"'/meta.json")); print("meta.json parses")'
@@ -173,7 +193,9 @@ jobs:
             echo
             echo "**What it is for:** a session that draws with the Mali GPU. gamescope needs a"
             echo "DRM primary node to composite at all, and a driver that reaches the GPU through"
-            echo "kbase has none to report - the adapter is what answers for it."
+            echo "kbase has none to report - the adapter is what answers for it. The adapter"
+            echo "applies to every ARM Mali the driver reports (CSF v9-v13); only the Mali-G615"
+            echo "(POCO X6 Pro) is validated end to end, every other Mali is experimental."
             echo
             echo "**It uses the GPU.** This is not the safe path: selecting it puts real work on"
             echo "the GPU, and an earlier build of this driver froze a phone mid-session. The safe"
@@ -182,8 +204,9 @@ jobs:
             echo "which keeps the GPU out of the guest entirely."
             echo
             echo "Pinned by checksum in the workflow: the upstream driver"
-            echo "\`$UPSTREAM_ASSET\` ($UPSTREAM_TAG) and the adapter, whose source ships in the kit"
-            echo "zip in this repository. Both halves are checked to be aarch64 glibc before they"
+            echo "\`$UPSTREAM_ASSET\` ($UPSTREAM_TAG). The adapter is built on every run from"
+            echo "tools/mali-driver/src/droiddeck_mali_icd.c against Vulkan-Headers"
+            echo "$VULKAN_HEADERS_TAG. Both halves are checked to be aarch64 glibc before they"
             echo "are packaged."
             echo
             echo "Built by [this run]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID)"
@@ -194,7 +217,7 @@ jobs:
       - name: Upload the zip
         uses: actions/upload-artifact@v4
         with:
-          name: DroidDeck-Mali-G615-PanVK-kbase-beta18
+          name: DroidDeck-Mali-CSF-PanVK-kbase-universal
           path: '*.zip'
           if-no-files-found: error
 
@@ -204,6 +227,6 @@ jobs:
           {
             echo "## Mali PanVK-kbase package"
             echo
-            echo "Upstream \`$UPSTREAM_ASSET\` ($UPSTREAM_TAG), adapter from \`$KIT_ZIP\`."
+            echo "Upstream \`$UPSTREAM_ASSET\` ($UPSTREAM_TAG), adapter built from tools/mali-driver."
             echo "Published as \`$RELEASE_TAG\` when it got that far."
           } >> "$GITHUB_STEP_SUMMARY"

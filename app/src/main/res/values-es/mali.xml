@@ -2,15 +2,18 @@
 <resources>
     <string name="gpuinfo_mali_experimental">Integración Mali-G615 experimental: importa el controlador Linux PanVK; Steam aún no está validado en este dispositivo</string>
     <string name="mali_display_driver">Vulkan del sistema (Mali)</string>
+    <string name="drivers_mali_source">Los controladores vienen directo de las releases de este repositorio: no se consulta ningún repo de Adreno (Turnip).</string>
+    <string name="mali_download_panvk_detail">Controlador de hardware para GPU Mali CSF (v9-v13) · PanVK-kbase</string>
+    <string name="mali_download_lavapipe_detail">Respaldo por software en la CPU · dibuja sin la GPU</string>
     <string name="mali_driver_needed">Mali: falta el controlador Vulkan Linux importado. Importa el paquete experimental PanVK en Controladores GPU → Avanzado → Controlador del entorno Linux y selecciónalo.</string>
-    <string name="mali_integration_hint">Mali-G615 experimental: importa y selecciona PanVK como controlador del entorno Linux. Para la pantalla se usa Vulkan del sistema. Empieza a 1280×720; desactiva HDR y generación de fotogramas. Los juegos no están validados.</string>
+    <string name="mali_integration_hint">Mali/Immortalis (CSF) experimental: descarga abajo el controlador PanVK y empieza a 720p o 1280x720. No actives "Steam interface on the GPU" - reinicia el teléfono en Mali; el WSI dma-buf ya da a la tienda su velocidad. Para juegos: límite de FPS en 60 u Off, preajuste FEX PERFORMANCE o PERFORMANCE_TSO, y "Wine sync" en fsync o esync (wineserver es la vía lenta; sin elegir nada, la sesión ahora pone fsync primero sola). Cierra apps en segundo plano - un juego que pasa de ~2.5 GB hace que Android mate la sesión, y el nuevo controlador lowmem recorta la memoria de texturas entre un cuarto y un tercio. Mantén HDR y generación de fotogramas apagados.</string>
 
     <!-- El interruptor de seguridad de GPU: hasta dónde mantiene la sesión fuera del invitado la GPU del dispositivo. -->
     <string name="gpu_safety_title">Seguridad de GPU</string>
     <string name="gpu_safety_label">Renderizado</string>
     <string name="gpu_safety_hint">El modo software deja la GPU Mali completamente fuera de la sesión: sin /dev/mali0, sin nodo de renderizado y sin sondeos. Es lento: sirve para validar el stack, no para jugar.</string>
     <string name="gpu_safety_auto">Auto (software aquí)</string>
-    <string name="gpu_safety_auto_detail">Software en esta GPU Mali; en Adreno no cambia nada</string>
+    <string name="gpu_safety_auto_detail">Software en esta GPU Mali; en otros dispositivos no cambia nada</string>
     <string name="gpu_safety_software">Software (lavapipe)</string>
     <string name="gpu_safety_software_detail">Solo CPU; el nodo de GPU nunca se entrega a la sesión</string>
     <string name="gpu_safety_mali">Controlador Mali (experimental)</string>

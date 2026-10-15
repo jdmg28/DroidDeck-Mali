@@ -227,6 +227,14 @@ object SessionPrefs {
         prefs(context).edit().putStringSet("gpuAutoInstalled", ids.toSet()).apply()
     }
 
+    /** This fork's own release packages (MaliReleases) already downloaded, so they list once. */
+    fun maliDownloaded(context: Context): Set<String> =
+        prefs(context).getStringSet("maliDownloaded", emptySet()).orEmpty()
+
+    fun setMaliDownloaded(context: Context, names: Set<String>) {
+        prefs(context).edit().putStringSet("maliDownloaded", names.toSet()).apply()
+    }
+
     // The Steam client's own sound has one route now: DirectAudio's engine inside the PulseAudio
     // daemon (PulseAudioComponent), one step from Android. The old "clientDirectAudio" boolean
     // (which meant the relay route, one hop more) is no longer read.
@@ -687,7 +695,7 @@ object SessionPrefs {
     }
 
     /** The app's colour theme (ui/Themes ids); Graphite unless chosen otherwise. */
-    fun theme(context: Context): String = prefs(context).getString("theme", "graphite") ?: "graphite"
+    fun theme(context: Context): String = prefs(context).getString("theme", "steam_purple") ?: "steam_purple"
 
     fun setTheme(context: Context, id: String) {
         prefs(context).edit().putString("theme", id).apply()

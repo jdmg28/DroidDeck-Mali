@@ -30,6 +30,7 @@ import java.util.Locale
  * were in effect. The one thing that comes close is the build fingerprint, which names the ROM and
  * its build date and is the same string on every unit of that model.
  */
+/** Committed for a build retry: the previous run lost the proot fetch to the network. */
 object DeviceReport {
     private const val TAG = "DeviceReport"
 
@@ -104,6 +105,28 @@ object DeviceReport {
         k("KGSL gpu_model", readSys("/sys/class/kgsl/kgsl-3d0/gpu_model"))
         k("KGSL chip id", readSys("/sys/class/kgsl/kgsl-3d0/gpu_chipid"))
         k("System Vulkan ICD", if (File("/vendor/lib64/hw/vulkan.adreno.so").exists()) "/vendor/lib64/hw/vulkan.adreno.so" else "not at the usual path")
+        // Mali (this fork): the node the session is given, and the driver the compositor itself
+        // presents with - the one GPU component common to every driver mode, and therefore the
+        // one to check first when a session draws nothing on a device this was not tested on.
+        k("/dev/mali0", if (File("/dev/mali0").exists()) "visible to the app" else "not visible to the app")
+        runCatching {
+            // The kernel's page size, which decides whether 16 KB-class phones (2026 SoCs on
+            // Android 16) can load this build's native code at all. getconf, not Os.conf -
+            // compileSdk 34 has no such API; the app execs system binaries all day (proot).
+            val proc = ProcessBuilder("/system/bin/getconf", "PAGESIZE")
+                .redirectErrorStream(true).start()
+            val out = proc.inputStream.bufferedReader().readText().trim()
+            proc.waitFor()
+            val ps = out.toIntOrNull()
+            if (ps != null && ps > 0) k("Kernel page size", "$ps bytes" + if (ps >= 16384) " (16 KB-class device)" else "")
+            else k("Kernel page size", out.ifEmpty { "unreadable" })
+        }
+        runCatching {
+            val vk = com.droiddeck.launcher.gpu.VulkanInfo.query()
+            k("System Vulkan device", vk["device"])
+            vk["api"]?.let { k("System Vulkan API", it) }
+            vk["error"]?.let { k("System Vulkan error", it) }
+        }
 
         h("Display")
         k("Session output", SessionState.outputSize?.let { "${it.first}x${it.second}" })

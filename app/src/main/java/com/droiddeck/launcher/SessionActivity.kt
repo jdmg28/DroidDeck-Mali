@@ -1048,6 +1048,7 @@ class SessionActivity : ComponentActivity(), SurfaceHolder.Callback {
         // start nothing, and leave the loading panel counting up over a dead session.
         if (!SessionState.running) {
             SessionEvents.transition(SessionPhase.STARTING_GUEST, "guest.starting")
+            armPresentationWatchdog()
             SessionService.start(
                 this, intent.getStringExtra(SessionService.EXTRA_MODE) ?: SessionService.MODE_STEAM,
                 intent.getStringExtra(SessionService.EXTRA_PROGRAM),
@@ -1117,6 +1118,7 @@ class SessionActivity : ComponentActivity(), SurfaceHolder.Callback {
     override fun surfaceDestroyed(holder: SurfaceHolder) {
         surfaceW = 0
         surfaceH = 0
+        watchdogGen.incrementAndGet() // a surface going away is not a presentation fault to report
         CompositorHost.detach(holder.surface)
     }
 
@@ -1301,6 +1303,25 @@ class SessionActivity : ComponentActivity(), SurfaceHolder.Callback {
     private class EndHint(val text: String, val evenOnSuccess: Boolean = false)
 
     private fun sessionEndHint(log: File?): EndHint? {
+        // The compositor's own word (set by the presentation watchdog, or read back from
+        // wayland.log when this process did not live to see the session end).
+        presentationFault?.let { return EndHint(getString(R.string.session_end_present_fault, it)) }
+        val waylandLog = SessionState.logDirectory?.let { File(it, "wayland.log") }
+        if (waylandLog != null && waylandLog.isFile) {
+            try {
+                java.io.RandomAccessFile(waylandLog, "r").use { f ->
+                    val start = maxOf(0L, waylandLog.length() - 256L * 1024)
+                    f.seek(start)
+                    val bytes = ByteArray((waylandLog.length() - start).toInt())
+                    f.readFully(bytes)
+                    Regex("DD_PRESENT_FAULT: (.+)").find(String(bytes, Charsets.ISO_8859_1))
+                        ?.groupValues?.get(1)?.trim()?.takeIf { it.isNotEmpty() }?.let {
+                            return EndHint(getString(R.string.session_end_present_fault, it))
+                        }
+                }
+            } catch (_: Exception) {
+            }
+        }
         if (log == null || !log.isFile) return null
         return try {
             var enosys = 0
@@ -2095,6 +2116,46 @@ class SessionActivity : ComponentActivity(), SurfaceHolder.Callback {
 
     /** Ours, so a finishing activity never unhooks the one that replaced it. */
     private val endListener: (Int) -> Unit = { status -> onSessionEnded(status) }
+
+    /**
+     * What the compositor says it cannot present with, when the watchdog below acts on it. Read by
+     * [sessionEndHint] ahead of the log: the fault is also a DD_PRESENT_FAULT line in wayland.log,
+     * but the string here is exact even if the log write lost the race with the session ending.
+     */
+    @Volatile private var presentationFault: String? = null
+
+    /** Bumped on every arm/disarm, so a watchdog left over from an earlier session stands down. */
+    private val watchdogGen = java.util.concurrent.atomic.AtomicInteger()
+
+    /**
+     * A session whose compositor cannot present sits on a silent black screen forever: the guest
+     * runs, sound plays, and nothing in the UI says why - the exact report from a Mali device
+     * whose system Vulkan is unusable (a Turbo 5 Max / Immortalis-G925), in every driver mode,
+     * because the presenter is the one GPU component the app itself owns. The compositor records
+     * its reason (vkp_fault); after a minute of no first frame while a session runs, this ends the
+     * session so the reason reaches the ended screen instead of nobody. A slow start (a big
+     * runtime, FEX fetching) has no compositor fault and is left alone.
+     */
+    private fun armPresentationWatchdog() {
+        presentationFault = null
+        val gen = watchdogGen.incrementAndGet()
+        Thread({
+            var waitedMs = 0
+            while (waitedMs < 60_000) {
+                Thread.sleep(1000)
+                waitedMs += 1000
+                if (watchdogGen.get() != gen) return@Thread
+                if (SessionState.firstFrameSeen || SessionState.stopRequested || !SessionState.running) return@Thread
+            }
+            if (watchdogGen.get() != gen || SessionState.firstFrameSeen) return@Thread
+            if (!SessionState.running || SessionState.stopRequested) return@Thread
+            val fault = WaylandCompositor.compositorFault()
+            if (fault.isBlank()) return@Thread
+            presentationFault = fault
+            Log.e(TAG, "presentation watchdog: $fault")
+            SessionService.stop(this@SessionActivity)
+        }, "present-watchdog").start()
+    }
     private val firstFrameListener = Runnable {
         SessionEvents.firstFrame()
         if (SessionState.mode == SessionService.MODE_STEAM) SteamRepair.clientShown(this)

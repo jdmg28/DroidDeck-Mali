@@ -83,6 +83,8 @@ class FrontEndState(
     val ready: Boolean,
     val available: String?,
     val busy: Boolean,
+    /** An Epic launcher AppImage being staged for the run mode. */
+    val importingEpic: Boolean = false,
     val stage: String,
     val percent: Int,
     val desktopInstalled: Boolean,
@@ -146,6 +148,7 @@ class FrontEndState(
 
 class FrontEndActions(
     val onPlay: () -> Unit,
+    val onPlayEpic: () -> Unit = {},
     val onPlayDesktopUi: () -> Unit,
     val onSteamGame: (Library.SteamGame) -> Unit,
     val onGameShortcut: (Library.SteamGame) -> Unit = {},

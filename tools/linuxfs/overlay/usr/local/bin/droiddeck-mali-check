@@ -53,11 +53,21 @@ if command -v vulkaninfo >/dev/null 2>&1; then
         echo "DD_MALI_VULKAN_PROBE_FAILED: exit $result; do not interpret library-load success as hardware support"
         exit 78
     fi
-    if ! printf '%s\n' "$output" | grep -Eq 'Mali-G615([[:space:]]|\(|$)'; then
-        echo "DD_MALI_WRONG_GPU: this experiment targets the Mali-G615; selected driver did not report it"
+    # The driver names CSF GPUs with their core count since beta.18: "Mali-G615 MC6",
+    # "Mali-G925-Immortalis MC12", "Mali-G57 MC2". The kit was validated on the G615, but
+    # PanVK-kbase ships one universal ICD for v9-v13, and other Malis enumerate through the
+    # same driver - refusing every name but G615 left those phones (an Immortalis-G925 Turbo
+    # 5 Max, a G720, a G715) a session that died here, before gamescope ever ran.
+    reported=$(printf '%s\n' "$output" | grep -Eo '(Mali|Immortalis)-G[0-9]+' | head -1)
+    if [ -z "$reported" ]; then
+        echo "DD_MALI_WRONG_GPU: the selected driver reported no ARM Mali GPU; refusing to start"
         exit 78
     fi
-    echo "DD_MALI_GPU_REPORTED: Mali-G615; gamescope/Steam presentation still needs on-device validation"
+    if [ "$reported" = Mali-G615 ]; then
+        echo "DD_MALI_GPU_REPORTED: Mali-G615 (the validated device); gamescope/Steam presentation still needs on-device validation"
+    else
+        echo "DD_MALI_GPU_REPORTED: $reported (not the Mali-G615 this kit was validated on; PanVK-kbase supports v9-v13, but Steam on this GPU is untested)"
+    fi
 else
     echo "DD_MALI_PROBE_SKIPPED: vulkaninfo is not installed; GPU enumeration has not been validated"
 fi

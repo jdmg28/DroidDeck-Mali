@@ -186,6 +186,23 @@ public final class WaylandCompositor {
     /** The IME deleted {@code before} characters before and {@code after} after the caret. */
     public static void textInputDelete(int before, int after) { nativeTextInputDelete(before, after); }
 
+    /**
+     * Why the compositor cannot present, or "" when it can. The session's loading watchdog reads
+     * this: a device whose system Vulkan is unusable used to sit on a silent black screen with the
+     * guest running behind it, in every driver mode, with nothing in the UI saying why.
+     */
+    public static native String nativeCompositorFault();
+
+    /** [nativeCompositorFault] that never throws and never returns null. */
+    public static String compositorFault() {
+        try {
+            String f = nativeCompositorFault();
+            return f == null ? "" : f;
+        } catch (Throwable t) {
+            return "";
+        }
+    }
+
     private static native void nativeSetClipboardText(byte[] utf8);
     private static native void nativeTextInputCommit(byte[] utf8);
     private static native void nativeTextInputPreedit(byte[] utf8, int cursorBegin, int cursorEnd);

@@ -4,7 +4,8 @@ package com.droiddeck.launcher.gpu;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-/** Parse a GPU name, not a MediaTek marketing label. This integration targets the G615 only. */
+/** Parse a GPU name, not a MediaTek marketing label. The kit is validated on the G615; the
+ * driver itself (PanVK-kbase universal ICD) covers CSF Mali v9-v13, G925 included. */
 public final class MaliProfile {
     private static final Pattern NAME = Pattern.compile(
             "\\b((?:Mali|Immortalis)-G([0-9]{2,4})(?:\\s+MC[0-9]+)?)\\b", Pattern.CASE_INSENSITIVE);

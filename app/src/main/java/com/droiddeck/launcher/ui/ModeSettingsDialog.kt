@@ -109,6 +109,8 @@ class ModeSettings(
     val addedGamesDirs: List<String>? = null,
     val addedGames: List<AddedGameRow> = emptyList(),
     val addedGamesArt: Boolean = true,
+    /** A game .zip being extracted for the library, by its name. */
+    val importingGame: String? = null,
     /** Latest Banners-Turnip release: what each driver menu offers to download, and the refresh line. */
     /** Steam only: Decky Loader is managed from the Steam session settings. */
     val deckyInstalled: String? = null,
@@ -158,6 +160,7 @@ class ModeSettingsActions(
     val onWifiDiscovery: (Boolean) -> Unit = {},
     val onWifiDiscoverySettings: () -> Unit = {},
     val onPickAddedGamesDir: () -> Unit = {},
+    val onImportGameZip: () -> Unit = {},
     val onForgetAddedGamesDir: (path: String) -> Unit = {},
     val onAddedGamesArt: (Boolean) -> Unit = {},
     val onAddedGameExe: (folderPath: String, path: String) -> Unit = { _, _ -> },
@@ -450,6 +453,17 @@ fun ModeSettingsPage(s: ModeSettings, a: ModeSettingsActions) {
                 stringResource(R.string.added_games_import_hint),
                 stringResource(R.string.common_add_ellipsis), onClick = a.onPickAddedGamesDir,
             )
+            ActionRow(
+                stringResource(R.string.mode_added_import_zip),
+                stringResource(R.string.mode_added_import_zip_hint),
+                stringResource(R.string.common_add_ellipsis), onClick = a.onImportGameZip,
+            )
+            if (s.importingGame != null) {
+                ActionRow(
+                    stringResource(R.string.mode_added_importing, s.importingGame),
+                    null, stringResource(R.string.mode_added_import_working), onClick = {},
+                )
+            }
             ToggleRow(
                 host, "addedArt", stringResource(R.string.mode_added_art),
                 stringResource(R.string.mode_added_art_hint),

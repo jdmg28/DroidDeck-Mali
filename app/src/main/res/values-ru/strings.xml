@@ -355,7 +355,7 @@
     <string name="comp_import_turnip">Импорт Turnip zip…</string>
     <string name="comp_display_driver">Драйвер дисплея</string>
     <string name="comp_display_driver_hint">Отвечает за вывод изображения на экран в обоих режимах. Вступит в силу после перезапуска приложения.</string>
-    <string name="comp_import_adrenotools">Импорт AdrenoTools zip…</string>
+    <string name="comp_import_adrenotools">Import a display driver zip…</string>
     <string name="comp_never">никогда</string>
     <string name="comp_nightlies_checked">Nightlies проверены: %1$s</string>
     <string name="comp_title">Компоненты</string>
@@ -431,10 +431,10 @@
     <string name="perf_gsrealtime_hint">Повышает приоритет работы GPU композитора. Может улучшить стабильность времени кадра, но потребляет часть производительности игры.</string>
     <string name="perf_gpu">GPU</string>
     <string name="perf_gpuclock">Поддерживать максимальную частоту GPU</string>
-    <string name="perf_gpuclock_hint">Только для Adreno. Меньше подтормаживаний, но больше энергопотребления и нагрева.</string>
+    <string name="perf_gpuclock_hint">Fewer hitches, more battery use and heat.</string>
     <string name="perf_fixes">Исправления сессии</string>
     <string name="perf_sysmem">Turnip: рендеринг sysmem</string>
-    <string name="perf_sysmem_hint">Steam и большинство игр будут быстрее. Требуется для Adreno 710/720/722.</string>
+    <string name="perf_sysmem_hint">Faster for Steam and most games. Required on some GPUs.</string>
     <string name="perf_xalia">Пропустить помощник xalia в Steam</string>
     <string name="perf_fastsync">droiddeck-ntsync (экспериментально)</string>
     <string name="perf_fastsync_hint">Замена драйвера ntsync Linux в пространстве пользователя, для тестирования. Пока включено, Proton использует ее вместо droiddeck-esync и droiddeck-fsync. Работает с Proton Experimental ARM64, GE-Proton и proton-cachyos. Вступит в силу в следующей сессии.</string>
@@ -551,7 +551,7 @@
     <string name="setup_gpu_unsupported">GPU не поддерживается</string>
     <string name="setup_gpu_detail">%1$s · %2$s</string>
     <string name="setup_gpu_untested_detail">%1$s: %2$s</string>
-    <string name="setup_gpu_unsupported_detail">Steam требует драйвер Adreno; на %1$s возможен черный экран.</string>
+    <string name="setup_gpu_unsupported_detail">DroidDeck-Mali needs a Mali (CSF) GPU; %1$s may show a black screen</string>
     <string name="setup_runtime">Среда выполнения Linux</string>
     <string name="setup_runtime_progress">%1$s · %2$d%%</string>
     <string name="setup_runtime_missing">Не установлено · около 3 ГБ, устанавливается при первом запуске игры</string>

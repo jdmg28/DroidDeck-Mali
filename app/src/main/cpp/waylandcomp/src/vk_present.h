@@ -87,6 +87,11 @@ const char *vkp_gpu_name(void);
 
 // 0 if the renderer can create images (device up), -1 otherwise.
 int vkp_ready(void);
+
+/** Why presentation cannot start ("" when it can): the last reason dev_init or the swapchain
+ * build gave up, for the app to surface instead of leaving a session on a silent black screen.
+ * Cleared when a swapchain is built. The string lives as long as the process. */
+const char *vkp_fault(void);
 /* Whether an output window is attached (or requested); without one vkp_render() draws nothing. */
 int vkp_has_window(void);
 /* 1 once the Vulkan device was lost: nothing is presented any more (the session must restart). */

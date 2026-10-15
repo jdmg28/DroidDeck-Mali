@@ -9,12 +9,9 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import com.droiddeck.launcher.R
-import com.droiddeck.launcher.gpu.FrameGen
 import com.droiddeck.launcher.gpu.LinuxVulkanDriverManager
-import com.droiddeck.launcher.gpu.Lossless
 import com.droiddeck.launcher.wayland.WaylandCompositor
 import java.io.File
-import java.util.Locale
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
@@ -133,82 +130,41 @@ class PerfHud(context: Context, private val outputSize: Pair<Int, Int>? = null) 
         text = ""
     }
 
+    /**
+     * The clean layout the fork's users asked for - one figure per line, a blank line between:
+     * Ram, Cpu, Gpu, temperature, the device's own name, and the frame rate. Everything else the
+     * HUD used to say (frame time, clocks, thresholds, the game's RSS, the display mode, frame
+     * generation) moved to the session log, where a diagnosis needs it; a HUD read over a game
+     * carries the six numbers a player acts on.
+     */
     private fun lines(base: Float, cpu: Int, gameCpu: Int, memory: PerfStats.Memory?): String {
-        val out = ArrayList<String>(4)
-        out += head(base)
-        cpuLine(cpu, gpuPercent(gameCpu))?.let { out += it }
-        memory?.let { out += ramLine(it) }
-        tailLine()?.let { out += it }
-        return out.joinToString("\n")
+        val out = ArrayList<String>(6)
+        memory?.let { out += context.getString(R.string.hud_ram_pct, usedPercent(it)) }
+        if (cpu >= 0) out += context.getString(R.string.hud_cpu_pct, cpu)
+        gpuPercent(gameCpu).takeIf { it >= 0 }?.let { out += context.getString(R.string.hud_gpu_pct, it) }
+        stats.celsius().takeIf { it >= 0 }?.let { out += context.getString(R.string.hud_temp, it) }
+        out += context.getString(R.string.hud_device, deviceName())
+        out += context.getString(R.string.hud_fps, base.toInt().coerceAtLeast(0))
+        return out.joinToString("\n\n")
     }
 
-    /** The frame rate, and how long a frame is taking: 30 fps says less than "30 fps · 33 ms". */
-    private fun head(base: Float): String {
-        val smoothed = WaylandCompositor.recentFrameIntervalMs()
-        val ms = when {
-            smoothed > 0 -> smoothed
-            base > 0f -> (1000f / base).toLong()
-            else -> 0L
-        }
-        return if (ms > 0) context.getString(R.string.hud_rate, line(base), ms) else line(base)
+    /** How full the device's memory is, as one percentage: what a phone has left to give. */
+    private fun usedPercent(memory: PerfStats.Memory): Int {
+        if (memory.totalMb <= 0) return 0
+        val used = (memory.totalMb - memory.availMb).coerceAtLeast(0)
+        return (used * 100 / memory.totalMb).toInt().coerceIn(0, 100)
     }
 
-    private fun line(base: Float): String {
-        val mode = FrameGen.mode(context)
-        if (mode.engine == FrameGen.ENGINE_OFF) return fps(base)
-        val lsfg = mode.engine == FrameGen.ENGINE_LSFG
-        val name = if (lsfg) "LSFG" else "Win-FG"
-        val label = FrameGen.label(context, mode)
-        if (lsfg && Lossless.cacheFile(context)?.isFile != true) return context.getString(R.string.hud_fg_needs_lossless, name)
-        val fg = try { WaylandCompositor.nativeFrameGenStats() } catch (t: Throwable) { null }
-        val problem = try { WaylandCompositor.nativeFrameGenProblem() } catch (t: Throwable) { -1 }
+    /** The SoC as the device names it ("Mediatek Dimensity 8300-Ultra"), or its hardware string. */
+    private fun deviceName(): String {
+        val manufacturer = if (android.os.Build.VERSION.SDK_INT >= 31)
+            android.os.Build.SOC_MANUFACTURER.replaceFirstChar { it.uppercase() } else ""
+        val model = if (android.os.Build.VERSION.SDK_INT >= 31)
+            android.os.Build.SOC_MODEL.takeIf { it.isNotBlank() && it != android.os.Build.UNKNOWN } else null
         return when {
-            problem == 1 -> context.getString(R.string.hud_fg_unsupported, name)
-            problem == 2 -> context.getString(R.string.hud_fg_failed, name)
-            fg != null && fg[3] > 1f -> String.format(Locale.US, "%s  %.0f → %.0f fps", label, base, fg[3])
-            else -> context.getString(R.string.hud_fg_starting, label, fps(base))
-        }
-    }
-
-    /**
-     * The two figures that say whether the device has anything left to give, and the clock it is
-     * giving it at. Thermal only appears once the device is actually throttling - below that it is
-     * noise on a line that has to be readable at a glance.
-     */
-    private fun cpuLine(cpu: Int, gpu: Int): String? {
-        if (cpu < 0 && gpu < 0) return null
-        return buildString {
-            if (cpu >= 0) append(context.getString(R.string.hud_cpu, cpu))
-            if (gpu >= 0) {
-                if (isNotEmpty()) append(" · ")
-                append(context.getString(R.string.hud_gpu, gpu))
-            }
-            val mhz = stats.cpuMHz()
-            if (mhz > 0) append(" · ").append(String.format(Locale.US, "%.2f GHz", mhz / 1000.0))
-            thermalLabel(stats.thermal())?.let { append(" · ").append(it) }
-        }
-    }
-
-    /**
-     * Memory, with the number that matters most on a phone: Android's own threshold, the point
-     * past which it starts killing processes to get memory back. Free memory above that threshold
-     * is a session that survives; below it, one that is being hunted.
-     */
-    private fun ramLine(memory: PerfStats.Memory): String =
-        context.getString(R.string.hud_ram, size(memory.availMb), size(memory.totalMb), memory.thresholdMb) +
-            if (memory.low) " · " + context.getString(R.string.hud_low_memory) else ""
-
-    /** What the program on screen is holding, beside the session it is drawing at. */
-    private fun tailLine(): String? {
-        val display = outputSize?.let {
-            context.getString(R.string.hud_display, it.first, it.second, SessionState.refreshHz) +
-                if (SessionState.fpsLimit > 0) context.getString(R.string.hud_display_cap, SessionState.fpsLimit) else ""
-        }
-        val rss = stats.rssMb(gamePid)
-        return when {
-            rss > 0 && display != null -> context.getString(R.string.hud_game_rss, size(rss)) + " · " + display
-            rss > 0 -> context.getString(R.string.hud_game_rss, size(rss))
-            else -> display
+            model != null && manufacturer.isNotEmpty() -> "$manufacturer $model"
+            model != null -> model
+            else -> android.os.Build.HARDWARE.ifBlank { "?" }
         }
     }
 
@@ -225,20 +181,6 @@ class PerfHud(context: Context, private val outputSize: Pair<Int, Int>? = null) 
         return if (software) gameCpu else -1
     }
 
-    /**
-     * Only said once it is worth saying: below "moderate" the device is not throttling yet, so
-     * nothing is printed there. The statuses' own numbers (PowerManager.THERMAL_STATUS_MODERATE
-     * onwards), written out because they are an Android 11 constant and this app builds for 26 -
-     * PerfStats returns -1 on anything older, so the rest never runs there.
-     */
-    private fun thermalLabel(status: Int): String? = when (status) {
-        2 -> context.getString(R.string.hud_thermal_moderate)
-        3 -> context.getString(R.string.hud_thermal_severe)
-        4 -> context.getString(R.string.hud_thermal_critical)
-        5 -> context.getString(R.string.hud_thermal_emergency)
-        6 -> context.getString(R.string.hud_thermal_shutdown)
-        else -> null
-    }
 
     /** The Linux driver the session draws with, read once: it cannot change under a running one. */
     private fun driverLabel(): String? {
@@ -253,12 +195,6 @@ class PerfHud(context: Context, private val outputSize: Pair<Int, Int>? = null) 
         driver = value
         return value
     }
-
-    private fun fps(value: Float) = String.format(Locale.US, "%.0f fps", value)
-
-    /** MiB as GB once it is worth saying in GB, so a line stays short enough to read at a glance. */
-    private fun size(mb: Long): String =
-        if (mb >= 1024) String.format(Locale.US, "%.1f GB", mb / 1024.0) else context.getString(R.string.hud_mb, mb)
 
     private companion object {
         const val TAG = "PerfHud"

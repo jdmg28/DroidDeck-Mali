@@ -377,7 +377,7 @@
     <string name="comp_import_turnip">Turnip zip 가져오기…</string>
     <string name="comp_display_driver">디스플레이 드라이버</string>
     <string name="comp_display_driver_hint">두 모드 모두에서 화면 출력을 담당합니다. 앱을 다시 시작한 후 적용됩니다.</string>
-    <string name="comp_import_adrenotools">AdrenoTools zip 가져오기…</string>
+    <string name="comp_import_adrenotools">Import a display driver zip…</string>
     <string name="comp_never">없음</string>
     <string name="comp_nightlies_checked">Nightlies 확인 시각 %1$s</string>
     <string name="comp_title">구성 요소</string>
@@ -453,10 +453,10 @@
     <string name="perf_gsrealtime_hint">컴포지터 GPU 작업의 우선순위를 높입니다. 프레임 타임 안정성을 개선할 수 있지만 게임 성능의 일부를 소모합니다.</string>
     <string name="perf_gpu">GPU</string>
     <string name="perf_gpuclock">GPU를 최고 클럭으로 유지</string>
-    <string name="perf_gpuclock_hint">Adreno에만 해당됩니다. 끊김이 줄어들지만 전력 소모와 발열이 증가합니다.</string>
+    <string name="perf_gpuclock_hint">Fewer hitches, more battery use and heat.</string>
     <string name="perf_fixes">세션 수정</string>
     <string name="perf_sysmem">Turnip: sysmem 렌더링</string>
-    <string name="perf_sysmem_hint">Steam과 대부분의 게임이 빨라집니다. Adreno 710/720/722에 필수입니다.</string>
+    <string name="perf_sysmem_hint">Faster for Steam and most games. Required on some GPUs.</string>
     <string name="perf_xalia">Steam의 xalia 도우미 건너뛰기</string>
     <string name="perf_fastsync">droiddeck-ntsync(실험적)</string>
     <string name="perf_fastsync_hint">테스트용으로 Linux ntsync 드라이버를 사용자 공간에서 대신하는 기능입니다. 켜져 있으면 Proton이 droiddeck-esync와 droiddeck-fsync 대신 이 기능을 사용합니다. Proton Experimental ARM64, GE-Proton 및 proton-cachyos에서 작동합니다. 다음 세션에 적용됩니다.</string>
@@ -573,7 +573,7 @@
     <string name="setup_gpu_unsupported">GPU 지원되지 않음</string>
     <string name="setup_gpu_detail">%1$s · %2$s</string>
     <string name="setup_gpu_untested_detail">%1$s: %2$s</string>
-    <string name="setup_gpu_unsupported_detail">Steam에는 Adreno 드라이버가 필요합니다. %1$s에서 화면이 검게 변할 수 있습니다.</string>
+    <string name="setup_gpu_unsupported_detail">DroidDeck-Mali needs a Mali (CSF) GPU; %1$s may show a black screen</string>
     <string name="setup_runtime">Linux 런타임</string>
     <string name="setup_runtime_progress">%1$s · %2$d%%</string>
     <string name="setup_runtime_missing">설치되지 않음 · 약 3GB, 처음 \"Steam 실행\" 시 설치</string>
@@ -1079,10 +1079,10 @@
     <string name="main_wadb_unavailable">무선 디버깅을 사용할 수 없습니다</string>
     <string name="main_adb_copied">ADB 명령이 복사되었습니다</string>
     <string name="main_pick_roms">ROM 폴더 선택</string>
-    <string name="main_non_adreno_title">Adreno GPU가 아님</string>
+    <string name="main_non_adreno_title">Unsupported GPU</string>
 
     <!-- %1$s is the GPU's name, %2$.0f the download size in MB -->
-    <string name="main_non_adreno_text">Turnip은 Adreno GPU를 지원합니다. %1$s에서는 Steam 화면이 검게 표시될 수 있습니다. 다운로드: %2$.0f MB.</string>
+    <string name="main_non_adreno_text">DroidDeck-Mali draws with a Mali (CSF) GPU. On %1$s, Steam may show a black screen. Download: %2$.0f MB.</string>
     <string name="main_install_anyway">그래도 설치</string>
     <string name="main_remove_runtime_title">Linux 런타임 제거</string>
     <string name="main_remove_runtime_text">런타임과 그 안의 Steam 클라이언트, 그리고 런타임에 설치된 모든 게임이 삭제됩니다.</string>
@@ -1115,7 +1115,7 @@
     <string name="comp_stored">%1$s 저장됨</string>
     <string name="comp_download_failed">다운로드 실패: %1$s</string>
     <string name="drivers_pick_linux">Linux 런타임 드라이버 선택(-Linux zip 또는 Android + Linux 번들)</string>
-    <string name="drivers_pick_android">디스플레이 드라이버 선택(AdrenoTools zip 또는 Android + Linux 번들)</string>
+    <string name="drivers_pick_android">Choose a display driver</string>
     <string name="drivers_pick_any">드라이버 zip 또는 Android + Linux 번들 선택</string>
 
     <!-- %1$s is a desktop app's name, %2$s what went wrong -->
@@ -1181,7 +1181,7 @@
     <string name="drivers_switched_to_restart">%1$s %2$s(으)로 전환했습니다. 디스플레이 드라이버는 DroidDeck을 다시 시작한 후 적용됩니다.</string>
     <string name="drivers_using">%1$s %2$s 사용 중.</string>
     <string name="drivers_using_restart">%1$s %2$s 사용 중. 디스플레이 드라이버는 DroidDeck을 다시 시작한 후 적용됩니다.</string>
-    <string name="drivers_not_a_driver">드라이버 zip이 아닙니다. AdrenoTools 드라이버, -Linux Turnip, Android + Linux 번들 중 어느 것도 아닙니다</string>
+    <string name="drivers_not_a_driver">Not a driver zip</string>
     <string name="drivers_import_failed">가져오기 실패: %1$s</string>
     <string name="drivers_imported_unnamed">가져온 드라이버</string>
     <string name="drivers_using_bundle">%1$s을(를) 런타임 및 디스플레이 드라이버로 사용 중.</string>
@@ -1881,11 +1881,11 @@
     <string name="look_anime_edge_desc">툰 윤곽선과 샤프닝.</string>
 
     <!-- GPU support line -->
-    <string name="gpuinfo_not_adreno">Adreno GPU가 아님</string>
+    <string name="gpuinfo_not_adreno">Unsupported GPU</string>
     <string name="gpuinfo_supported">지원됨</string>
     <string name="gpuinfo_experimental">실험적: 드라이버가 테스트 빌드입니다</string>
-    <string name="gpuinfo_below_tested">테스트된 하드웨어(Adreno 725 이상)보다 낮음: 실행되지 않을 수 있습니다</string>
-    <string name="gpuinfo_unsupported">지원되지 않음: DroidDeck에는 Adreno(Snapdragon) GPU가 필요합니다</string>
+    <string name="gpuinfo_below_tested">Outside tested hardware: it may not run</string>
+    <string name="gpuinfo_unsupported">Not supported: DroidDeck-Mali needs a Mali (CSF) GPU</string>
 
     <!-- Driver downloads and imports -->
     <string name="turnip_rate_limited">GitHub 요청 한도에 도달했습니다. 나중에 다시 시도하세요</string>
@@ -1895,18 +1895,18 @@
     <string name="turnip_checksum_mismatch">체크섬이 일치하지 않아 다운로드를 삭제했습니다</string>
 
     <!-- %1$s is one of the turnip_reject_* reasons -->
-    <string name="turnip_not_adrenotools">AdrenoTools 드라이버가 아닙니다: %1$s</string>
+    <string name="turnip_not_adrenotools">Not a display driver zip: %1$s</string>
     <string name="turnip_reject_no_meta">meta.json 없음</string>
     <string name="turnip_reject_meta_unreadable">meta.json을 읽을 수 없음(%1$s)</string>
     <string name="turnip_reject_linux_driver">Linux 런타임 드라이버입니다(\"Linux 런타임 드라이버\"에서 가져오세요)</string>
     <string name="turnip_reject_wayland">Wayland 게임 드라이버이며, 이 앱에서는 사용하지 않습니다</string>
-    <string name="turnip_reject_no_library_name">meta.json에 libraryName이 지정되지 않아 AdrenoTools에 전달할 수 없습니다</string>
+    <string name="turnip_reject_no_library_name">meta.json names no libraryName, so the display driver could not be set up</string>
 
     <!-- %1$s is a library file name -->
     <string name="turnip_reject_library_missing">meta.json에 지정된 %1$s이(가) zip에 없습니다</string>
     <string name="turnip_reject_not_aarch64">%1$s은(는) 64비트 AArch64 ELF 공유 라이브러리가 아닙니다</string>
     <string name="turnip_reject_glibc">%1$s은(는) glibc에 링크되어 있습니다. \"-Linux\" Turnip이므로 \"Linux 런타임 드라이버\"에서 가져오세요</string>
-    <string name="lvd_no_library">이 zip에 libvulkan_freedreno*.so가 없습니다. Android(AdrenoTools)용 또는 -Wayland Turnip zip은 Linux 런타임 드라이버가 아닙니다.</string>
+    <string name="lvd_no_library">No Linux Vulkan driver in this zip. A display-driver zip is not a runtime driver.</string>
     <string name="lvd_not_aarch64">%1$s은(는) 64비트 AArch64 ELF 공유 라이브러리가 아닙니다.</string>
     <string name="lvd_not_glibc">%1$s은(는) glibc 드라이버가 아니며 Android의 libc에 링크되어 있습니다. Linux 런타임에는 \"-Linux\" zip이 필요합니다. 일반 또는 \"-Wayland\" Turnip은 Steam 클라이언트에서 전혀 불러올 수 없습니다.</string>
     <string name="bundle_no_manifest">드라이버 번들이 아닙니다: android 및 linux 드라이버를 지정하는 manifest.json이 없습니다</string>

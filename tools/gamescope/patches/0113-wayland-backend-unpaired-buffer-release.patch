@@ -1,0 +1,28 @@
+From: DroidDeck
+Subject: [PATCH] wayland backend: an unshown frame's buffer release is not an error
+
+The nested backend pairs wl_buffer.release with its own Present(): a buffer the
+compositor never attached logs "Compositor released us but we were not acquired.
+Oh no." once per buffer at error level. But releasing a buffer that was committed
+and then not shown is legal Wayland - the compositor only owes the buffer back,
+and ours returns skipped frames' buffers immediately (frame limiter, occluded
+surfaces, focus flips between the client and a game). A session that drops frames
+then spams this line per buffer - 98 of them in one session.log - burying every
+other message under a loop that looks fatal but is only bookkeeping. Debug level.
+
+diff --git a/src/Backends/WaylandBackend.cpp b/src/Backends/WaylandBackend.cpp
+--- a/src/Backends/WaylandBackend.cpp
++++ b/src/Backends/WaylandBackend.cpp
+@@ -992,7 +992,11 @@
+         }
+         else
+         {
+-            xdg_log.errorf( "Compositor released us but we were not acquired. Oh no." );
++            /* DroidDeck: a buffer that was committed and never shown still has to
++             * come back, and our compositor returns skipped frames' buffers right
++             * away (limiter, occlusion, focus flips). Legal Wayland, not a fault -
++             * at error level one dropped frame per present buried the whole log. */
++            xdg_log.debugf( "Compositor released us but we were not acquired - an unshown frame's buffer coming back" );
+         }
+     }
+ 

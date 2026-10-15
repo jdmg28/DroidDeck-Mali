@@ -25,12 +25,21 @@ class Palette(
 )
 
 object Themes {
+    /** The fork's default: Steam in purple - black fill, bright purple edges. */
+    const val STEAM_PURPLE = "steam_purple"
     const val GRAPHITE = "graphite"
     const val PAPER = "paper"
     const val ICON_BLUE = "blue"
     const val ELECTRIC = "electric"
 
     val all: List<Palette> = listOf(
+        Palette(
+            STEAM_PURPLE, R.string.theme_steam_purple, R.string.theme_steam_purple_detail,
+            background = Color(0xFF000000), surface = Color(0xFF0B0713), surfaceVariant = Color(0xFF140D22), line = Color(0xFF3A2266), line2 = Color(0xFF6C3FC0),
+            onBackground = Color(0xFFF3EFFA), onSurfaceVariant = Color(0xFFA798C9),
+            primary = Color(0xFFA855F7), primary2 = Color(0xFF8B2FD6), onPrimary = Color(0xFF0B0713), signal = Color(0xFFB44BFF),
+            good = Color(0xFF4CD37F),
+        ),
         Palette(
             GRAPHITE, R.string.theme_graphite, R.string.theme_graphite_detail,
             background = Color(0xFF0A0B0D), surface = Color(0xFF121417), surfaceVariant = Color(0xFF1A1D22), line = Color(0xFF262A31), line2 = Color(0xFF343A43),

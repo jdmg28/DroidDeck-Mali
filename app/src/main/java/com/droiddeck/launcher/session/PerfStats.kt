@@ -154,6 +154,34 @@ class PerfStats(context: Context) {
         return (top / 1000L).toInt()
     }
 
+    /**
+     * The device's hottest sensor of interest, in whole °C, or -1 when nothing readable says.
+     * Read from the thermal zones' own millidegree files, preferring the ones named for the
+     * silicon (cpu/gpu/soc) over skin or battery sensors: this figure sits in the HUD as "C°",
+     * next to the loads that make it.
+     */
+    fun celsius(): Int {
+        if (thermalZones.isEmpty()) return -1
+        var top = -1
+        for (zone in thermalZones) {
+            val milli = firstLong("$zone/temp") ?: continue
+            val c = (milli / 1000).toInt()
+            if (c in 0..150 && c > top) top = c
+        }
+        return top
+    }
+
+    /** Zones worth watching, found once: type files rarely change while a session runs. */
+    private val thermalZones: List<String> by lazy {
+        val zones = File("/sys/class/thermal").listFiles { f -> f.name.startsWith("thermal_zone") }
+            ?.map { it.path }?.sorted().orEmpty()
+        val interesting = zones.filter { z ->
+            val type = try { File("$z/type").readText().trim().lowercase() } catch (t: Throwable) { "" }
+            listOf("cpu", "gpu", "soc", "tsen", "pa_thm", "ap_therm").any { type.contains(it) }
+        }
+        if (interesting.isNotEmpty()) interesting else zones.take(2)
+    }
+
     /** Android's thermal status (PowerManager.THERMAL_STATUS_*), or -1 where it is not offered. */
     fun thermal(): Int = if (Build.VERSION.SDK_INT >= 29) {
         try {

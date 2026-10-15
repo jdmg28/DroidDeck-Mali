@@ -59,7 +59,7 @@ data class GpuInfo(
     val supportText: String
         get() = when (support) {
             Support.TESTED -> "Supported"
-            Support.UNTESTED -> if (family == Family.MALI) "Experimental Mali-G615: import PanVK-kbase; Steam on this device is not validated"
+            Support.UNTESTED -> if (family == Family.MALI) "Experimental Mali/Immortalis (CSF): import PanVK-kbase; validated on Mali-G615, this GPU is untested"
                 else if (family == Family.A7XX_LOW) "Experimental: its drivers are test builds"
                 else "Outside tested hardware (Adreno 650, 725 and newer): it may not run"
             Support.UNSUPPORTED -> "Not supported: DroidDeck needs an Adreno (Snapdragon) GPU"

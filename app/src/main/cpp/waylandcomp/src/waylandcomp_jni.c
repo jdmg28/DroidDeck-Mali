@@ -232,6 +232,18 @@ Java_com_droiddeck_launcher_wayland_WaylandCompositor_nativeCompositorTid(JNIEnv
     return (jint)g_comp_tid;
 }
 
+/* Why the compositor cannot present ("" when it can): the app shows this on the session's ended
+ * screen instead of leaving a device whose system Vulkan is unusable on a silent black screen.
+ * The string is also logged as a DD_PRESENT_FAULT line, so sessionEndHint finds it in wayland.log
+ * even after this process is gone. */
+JNIEXPORT jstring JNICALL
+Java_com_droiddeck_launcher_wayland_WaylandCompositor_nativeCompositorFault(JNIEnv *env, jclass clazz) {
+    (void)clazz;
+    extern const char *vkp_fault(void);
+    const char *f = vkp_fault();
+    return (*env)->NewStringUTF(env, f ? f : "");
+}
+
 /* Headless start (no output window) - used for bring-up tests. */
 JNIEXPORT void JNICALL
 Java_com_droiddeck_launcher_wayland_WaylandCompositor_nativeStart(JNIEnv *env, jclass clazz,

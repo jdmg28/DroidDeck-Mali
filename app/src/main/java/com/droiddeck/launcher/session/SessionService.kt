@@ -297,6 +297,42 @@ class SessionService : Service() {
         return lines
     }
 
+    /** PANVK_KBASE_DRI3, unless Download/droiddeck-mali-dri3 says otherwise ("0"/"raw"/"termux"). */
+    private fun maliDri3(): String {
+        val override = File(Environment.getExternalStorageDirectory(), "Download/droiddeck-mali-dri3")
+            .takeIf { it.isFile }?.let { FileUtils.readString(it)?.trim() }
+        return override?.takeIf { it.isNotEmpty() && it.matches(Regex("[0-9a-z]+")) } ?: "1"
+    }
+
+    /**
+     * The gamescope WSI layer (the XWayland-bypass swapchain) for games, on by default upstream and
+     * bypassed here on hardware Mali. Both 2026-10-12 (Clicker Heroes) and 2026-10-14 (Craft. Sell.
+     * Goblin. Repeat) sessions froze the same way with it on: the layer logged its swapchain created
+     * (imageCount 4) and then nothing - no error back to the game, audio and input alive, frames
+     * gone. The layer's present path crosses game→gamescope over dma-buf + explicit-sync fences,
+     * and on panvk-kbase that handoff stalls after the first frame; PANVK_KBASE_DRI3 never reaches
+     * it, which is why the R5 store fix did not touch games. Bypassed, a game presents through
+     * panvk's own X11 DRI3 - the exact transport the client and gamescope's output already use.
+     * Download/droiddeck-mali-gamescope-wsi with "1" puts the layer back for an experiment.
+     */
+    private fun maliGamescopeWsi(): Boolean {
+        val override = File(Environment.getExternalStorageDirectory(), "Download/droiddeck-mali-gamescope-wsi")
+            .takeIf { it.isFile }?.let { FileUtils.readString(it)?.trim() }
+        return override == "1"
+    }
+
+    /**
+     * PANVK_KBASE_GPU_SEMAPHORE_WAITS: 1 executes semaphore waits inside the submit ring instead
+     * of polling from the host - fewer CPU-GPU round trips per frame, which is where the R7
+     * sessions were bound (a 2D game burned 64-96% CPU under FEX+Wine). Upstream keeps it opt-in,
+     * so it ships default-on here with a way out: Download/droiddeck-mali-semawaits with "0".
+     */
+    private fun maliSemaphoreWaits(): Boolean {
+        val override = File(Environment.getExternalStorageDirectory(), "Download/droiddeck-mali-semawaits")
+            .takeIf { it.isFile }?.let { FileUtils.readString(it)?.trim() }
+        return override != "0"
+    }
+
     private fun tuDebug(linuxDriverId: String): String? {
         val override = File(Environment.getExternalStorageDirectory(), TU_DEBUG_SWITCH)
             .takeIf { it.isFile }?.let { FileUtils.readString(it)?.trim() }
@@ -604,8 +640,10 @@ class SessionService : Service() {
         guest.add("XDG_SESSION_TYPE=wayland")
         guest.add("WAYLAND_DISPLAY=wayland-0")
         guest.add("BL_ANDROID_CLIPBOARD=" + File(filesDir, "session/android-clipboard").path)
-        guest.add("GAMESCOPE_FORCE_GENERAL_QUEUE=1")
         val mali = com.droiddeck.launcher.core.DeviceSupport.mali()
+        // A Turnip/gamescope quirk. On Mali it works against panvk: the driver schedules its
+        // kbase queues itself, and pinning the general queue serialises graphics and present.
+        if (!mali) guest.add("GAMESCOPE_FORCE_GENERAL_QUEUE=1")
         // GpuSafety: in software mode the guest is given no GPU node at all (LinuxRuntime) and
         // draws with an imported CPU driver. The switch is handed to the session script, which
         // drops the Mali driver's own requirements and its probe for it.
@@ -639,9 +677,18 @@ class SessionService : Service() {
         if (mali) {
             guest.add("BL_GPU_FAMILY=mali")
             if (!software) {
-                // Hardware rendering, initially presented by CPU/SHM WSI for compatibility.
-                guest.add("PANVK_KBASE_DRI3=0")
+                // Hardware rendering. PANVK_KBASE_DRI3: 0 forced panvk's WSI to CPU/SHM with
+                // format modifiers off - every frame a linear copy, no AFBC, and the kind of
+                // store-at-3-fps a G720-class phone reported. 1 lets the driver export dma-bufs
+                // from the dma heap and allocate AFBC when the kernel supports it; gamescope's
+                // buffers then stay on the GPU all the way to the app's compositor.
+                // Download/droiddeck-mali-dri3 overrides for debugging ("0", "raw", "termux").
+                guest.add("PANVK_KBASE_DRI3=" + maliDri3())
                 guest.add("LIBGL_KOPPER_DISABLE=false")
+                // The present-path fix for games stuck at their logo (see maliGamescopeWsi()).
+                guest.add("BL_MALI_GAMESCOPE_WSI=" + if (maliGamescopeWsi()) "1" else "0")
+                // In-ring semaphore waits on the driver (see maliSemaphoreWaits()).
+                guest.add("PANVK_KBASE_GPU_SEMAPHORE_WAITS=" + if (maliSemaphoreWaits()) "1" else "0")
             }
         }
         // An imported glibc Turnip, when one is set (by the user, or by Auto): the session script
@@ -694,8 +741,17 @@ class SessionService : Service() {
         // a slice of a core for gamepad navigation the session already has.
         if (SessionPrefs.noXalia(this)) guest.add("PROTON_USE_XALIA=0")
         guest.add("BL_SYNC=" + (if (SessionPrefs.fastSync(this)) "1" else "0"))
-        guest.add("BL_SYNC_FALLBACK=" + (if (SessionPrefs.syncFallback(this)) "1" else "0"))
-        guest.add("BL_FSYNC_FIRST=" + (if (SessionPrefs.fsyncFirst(this)) "1" else "0"))
+        // A hardware-Mali session with every sync switch off lands on wineserver-only sync - the
+        // slowest path, and where the R7/R8 CPU-bound sessions ran (device.txt said "wineserver").
+        // Nothing steers a new install there on purpose, so until one of the switches is chosen,
+        // put Proton's own fsync first: stock binaries, no esync pack needed, and droiddeck-esync
+        // falls back cleanly when the kernel or the tool lacks it. An explicit pick still wins.
+        val blFastSync = SessionPrefs.fastSync(this)
+        val blFsyncFirst = SessionPrefs.fsyncFirst(this)
+        val blSyncFallback = SessionPrefs.syncFallback(this)
+        val blSyncRescue = mali && !software && !blFastSync && !blFsyncFirst && !blSyncFallback
+        guest.add("BL_FSYNC_FIRST=" + (if (blFsyncFirst || blSyncRescue) "1" else "0"))
+        guest.add("BL_SYNC_FALLBACK=" + (if (blSyncFallback) "1" else "0"))
         // gamescope's realtime Vulkan queues (the session script turns this into
         // GAMESCOPE_FORCE_VULKAN_REALTIME); off unless the user turns it on.
         guest.add("BL_GAMESCOPE_REALTIME=" + (if (SessionPrefs.gamescopeRealtime(this)) "1" else "0"))

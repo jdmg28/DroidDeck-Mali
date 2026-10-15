@@ -104,7 +104,10 @@ android {
         }
         externalNativeBuild {
             cmake {
-                arguments '-DANDROID_STL=c++_shared'
+                // c++_shared: one libc++ for every native target. FLEXIBLE_PAGE_SIZES: NDK r27's
+                // switch for 16 KB-page devices (2026 SoCs boot Android 16 that way); the
+                // explicit -Wl,-z,max-page-size in CMakeLists covers anything the switch misses.
+                arguments '-DANDROID_STL=c++_shared', '-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON'
             }
         }
     }

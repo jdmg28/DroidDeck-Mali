@@ -325,13 +325,17 @@ bl_libpath() {
   case ${DXVK_CONFIG:+set} in
     set) ;;
     *)
-      DXVK_CONFIG="dxvk.numCompilerThreads=${BL_DXVK_COMPILER_THREADS:-2}"
+      DXVK_CONFIG="dxvk.numCompilerThreads=${BL_DXVK_COMPILER_THREADS:-4}"
       DXVK_CONFIG="$DXVK_CONFIG;dxvk.enableGraphicsPipelineLibrary=${BL_DXVK_GPL:-True}"
       DXVK_CONFIG="$DXVK_CONFIG;dxvk.trackPipelineLifetime=${BL_DXVK_TRACK_PIPELINES:-False}"
       DXVK_CONFIG="$DXVK_CONFIG;dxvk.enableMemoryDefrag=${BL_DXVK_MEMORY_DEFRAG:-False}"
       DXVK_CONFIG="$DXVK_CONFIG;d3d11.cachedDynamicResources=${BL_DXVK_CACHED_DYNAMIC:-a}"
       DXVK_CONFIG="$DXVK_CONFIG;dxvk.maxMemoryBudget=${BL_DXVK_MEMORY_BUDGET:-384}"
       DXVK_CONFIG="$DXVK_CONFIG;dxgi.maxDeviceMemory=${BL_DXVK_DEVICE_MEMORY:-384}"
+      # Up to three frames in flight: the R8 sessions pinned the truth - the pipeline is CPU-bound
+      # (a 2D game at 78-95% cpu) and a queue this shallow serializes the CPU against the GPU, so
+      # latency-only defaults cost frames here. BL_DXVK_MAX_FRAME_LATENCY=1 buys latency back.
+      DXVK_CONFIG="$DXVK_CONFIG;dxgi.maxFrameLatency=${BL_DXVK_MAX_FRAME_LATENCY:-3};d3d9.maxFrameLatency=${BL_DXVK_MAX_FRAME_LATENCY:-3}"
       DXVK_CONFIG="$DXVK_CONFIG;dxgi.maxSharedMemory=${BL_DXVK_SHARED_MEMORY:-384}"
       DXVK_CONFIG="$DXVK_CONFIG;dxvk.enableAsync=True;dxvk.gplAsyncCache=True"
       if [ -n "${BL_DXVK_CONFIG:-}" ]; then DXVK_CONFIG="$DXVK_CONFIG;$BL_DXVK_CONFIG"; fi
