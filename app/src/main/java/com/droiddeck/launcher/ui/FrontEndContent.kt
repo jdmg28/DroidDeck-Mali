@@ -225,6 +225,11 @@ private fun Content(
         SteamHome(s, a, modifier)
         return
     }
+    // Epic is Steam's home without Steam: the mark, Play and the launcher's own report.
+    if (selected == "epic") {
+        EpicHome(s, a, modifier)
+        return
+    }
     // The Store scrolls and navigates inside itself (its tabs and an app's page).
     if (selected == "store" && s.storeEnabled) {
         StorePage(s, a, modifier)

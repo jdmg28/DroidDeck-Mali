@@ -85,6 +85,10 @@ class FrontEndState(
     val busy: Boolean,
     /** An Epic launcher AppImage being staged for the run mode. */
     val importingEpic: Boolean = false,
+    /** The Epic launcher is staged at its run-mode path; false, the Epic page asks for it. */
+    val epicStaged: Boolean = false,
+    /** Why the launcher's last session died, from that session's log; null, nothing to report. */
+    val epicError: String? = null,
     val stage: String,
     val percent: Int,
     val desktopInstalled: Boolean,
@@ -149,6 +153,8 @@ class FrontEndState(
 class FrontEndActions(
     val onPlay: () -> Unit,
     val onPlayEpic: () -> Unit = {},
+    /** The Epic page's cog: the run mode's settings, the session the launcher boots through. */
+    val onEpicSettings: () -> Unit = {},
     val onPlayDesktopUi: () -> Unit,
     val onSteamGame: (Library.SteamGame) -> Unit,
     val onGameShortcut: (Library.SteamGame) -> Unit = {},

@@ -45,6 +45,7 @@ import androidx.compose.material.icons.outlined.Apps
 import androidx.compose.material.icons.outlined.DesktopWindows
 import androidx.compose.material.icons.outlined.Layers
 import androidx.compose.material.icons.outlined.LocalMall
+import androidx.compose.material.icons.outlined.RocketLaunch
 import androidx.compose.material.icons.outlined.SportsEsports
 import androidx.compose.material.icons.outlined.Storefront
 import androidx.compose.material.icons.outlined.SystemUpdate
@@ -103,7 +104,7 @@ internal fun SideRail(
         modifier = modifier.width(if (iconOnly) 64.dp else 92.dp).background(colors.surface).padding(vertical = if (compact) 8.dp else 12.dp),
     ) {
         // Every section on screen at once: items shrink (to 44dp, still a touch target) before the rail scrolls.
-        val count = 6 + (if (s.storeEnabled) 1 else 0) + (if (s.gameStoresEnabled) 1 else 0) + (if (s.isHomeApp) 1 else 0)
+        val count = 7 + (if (s.storeEnabled) 1 else 0) + (if (s.gameStoresEnabled) 1 else 0) + (if (s.isHomeApp) 1 else 0)
         BoxWithConstraints(Modifier.weight(1f).fillMaxWidth()) {
         val fit = (maxHeight / count - 4.dp).coerceIn(44.dp, if (iconOnly) 48.dp else if (compact) 52.dp else 60.dp)
         Column(
@@ -111,6 +112,8 @@ internal fun SideRail(
             verticalArrangement = Arrangement.spacedBy(4.dp),
             modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
         ) {
+            // Epic first: the launcher the user is on right now sits above the store they came from.
+            RailItem(stringResource(R.string.rail_epic), Icons.Outlined.RocketLaunch, "epic", selected == "epic", compact, iconOnly, fit, onFocus = { onFocusSelect("epic") }) { onSelect("epic") }
             RailItem(stringResource(R.string.rail_steam), Icons.Outlined.SportsEsports, "steam", selected == "steam", compact, iconOnly, fit, onFocus = { onFocusSelect("steam") }) { onSelect("steam") }
             // Always there, so the items below it never move; an empty library says how to fill it.
             RailItem(stringResource(R.string.rail_games), Icons.Outlined.VideoLibrary, "games", selected == "games", compact, iconOnly, fit, onFocus = { onFocusSelect("games") }) { onSelect("games") }

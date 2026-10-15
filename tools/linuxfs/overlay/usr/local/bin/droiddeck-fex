@@ -438,10 +438,15 @@ def guest_environment(fex, env):
             result.pop(name)
     if fex.get("rootfs"):
         result["FEX_ROOTFS"] = fex["rootfs"]
-    if fex.get("rootfs") and fex.get("host_thunks") and fex.get("guest_thunks") and fex.get("thunks_db"):
+    if fex.get("rootfs") and fex.get("host_thunks") and fex.get("guest_thunks") and fex.get("thunks_db") \
+            and result.get("BL_FEX_NO_THUNKS") != "1":
         result["FEX_THUNKHOSTLIBS"] = fex["host_thunks"]
         result["FEX_THUNKGUESTLIBS"] = fex["guest_thunks"]
         result["FEX_THUNKCONFIG"] = os.path.join(CONFIG_DIR, "ThunksConfig.json")
+    # The Epic launcher ships a glibc loader newer than the thunks' x86 preload (built against
+    # 2.31): preloaded into it, both die before main with "sbrk() failure while processing
+    # tunables". The session asks for a thunkless run for that one program, so its guest uses
+    # plain syscall translation - slower, but with no preload to disagree with its loader.
     preload = [part for part in split_paths(result.get("LD_PRELOAD")) if os.path.exists(part) and not is_arm(part)]
     library_path = [part for part in (result.get("LD_LIBRARY_PATH") or "").split(":")
                     if part and "steamrtarm64" not in part and "aarch64" not in part]

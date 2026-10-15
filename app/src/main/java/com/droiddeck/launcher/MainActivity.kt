@@ -322,6 +322,8 @@ class MainActivity : ComponentActivity() {
         }
     }
     private var importingEpic by mutableStateOf(false)
+    private var epicStaged by mutableStateOf(false)
+    private var epicError by mutableStateOf<String?>(null)
     private val pickEpicAppImage = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { r ->
         if (r.resultCode == RESULT_OK) InAppFilePicker.pickedFile(r.data)?.let { file ->
             importingEpic = true
@@ -332,6 +334,7 @@ class MainActivity : ComponentActivity() {
                 }.getOrElse { e -> getString(R.string.main_action_failed, "Epic", e.message ?: e.javaClass.simpleName) }
                 ui.post {
                     importingEpic = false
+                    refresh()
                     android.widget.Toast.makeText(this, message, android.widget.Toast.LENGTH_LONG).show()
                 }
             }, "epic-import").start()
@@ -620,6 +623,8 @@ class MainActivity : ComponentActivity() {
                         phantomProcessStatus = phantomProcessStatus,
                         showPhantomGate = showPhantomGate,
                         importingEpic = importingEpic,
+                        epicStaged = epicStaged,
+                        epicError = epicError,
                         launcherFullscreen = launcherFullscreen,
                         animationsEnabled = animationsEnabled,
                         storeEnabled = storeEnabled,
@@ -633,6 +638,7 @@ class MainActivity : ComponentActivity() {
                     FrontEndActions(
                         onPlay = { startSteamSession() },
                         onPlayEpic = { launchEpic() },
+                        onEpicSettings = { openModeSettings(SessionService.MODE_RUN) },
                         // Steam's desktop client as a window on the desktop: under gamescope the
                         // client puts itself into Big Picture whatever it is started with.
                         onPlayDesktopUi = {
@@ -1571,6 +1577,9 @@ class MainActivity : ComponentActivity() {
         offline = OfflineMode.enabled(this)
         installed = LinuxRuntimeInstaller.installedVersion(this)
         ready = LinuxRuntime.isInstalled(this)
+        // The Epic page's own report: whether a launcher is staged, and what its last session died of.
+        epicStaged = com.droiddeck.launcher.frontend.GameImport.epicProgram(this) != null
+        epicError = com.droiddeck.launcher.frontend.EpicDiagnostics.lastError(this)
         removalPending = LinuxRuntimeInstaller.hasRemovalPending(this)
         frameGenLabel = FrameGen.label(this)
         romsDir = SessionPrefs.romsDir(this).takeIf { it.isNotEmpty() }

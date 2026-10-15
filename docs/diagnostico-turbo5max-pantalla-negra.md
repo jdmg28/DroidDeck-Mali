@@ -367,6 +367,49 @@ launcher.epicgames.com). DroidDeck lo integra sin Steam de por medio:
 - Estado de importación con su fila de progreso en la pestaña ("importing/Importando"), toast
   de resultado, y nombre fijo para que una actualización del AppImage reemplace al anterior.
 
+## 6undecies. Ronda 11 fase 2: el launcher de Epic muere al arrancar, y su apartado propio
+
+**El reporte (session.log 15-10-2026 20:18, modo `run`, el AppImage de Epic):** la sesión entera
+levanta bien (gamescope, Xwayland, driver panvk, FEX preparado con el runtime sniper) y el
+programa muere antes de ejecutar una línea del launcher:
+
+```
+E Failed to remap /proc/pid/cmdline data (prctl failed: result -1, errno 1)   ← cosmético (proot)
+sbrk() failure while processing tunables                                      ← ×2
+[gamescope] launch: Primary child shut down!
+```
+
+**Lectura:** ese `sbrk() failure while processing tunables` lo escribe la **glibc del invitado**
+mientras arranca (el cargador de su AppImage, una glibc más nueva que la del runtime sniper).
+No es falta de RAM ni del WebKitGTK previsto como riesgo: es el **precarga de thunks de FEX**
+— librerías x86 construidas contra **glibc 2.31** que FEX inyecta vía `LD_AUDIT`/`LD_PRELOAD`
+para acelerar syscalls — chocando con el cargador nuevo del launcher. Dos procesos mueren igual
+(FEXServer y el invitado), firma clásica de un desacuerdo de versiones en el arranque temprano.
+
+**Arreglo:** el launcher de Epic corre **sin thunks** (traducción de syscalls pura de FEX; más
+lento por syscall, irrelevante para un launcher):
+
+- `SessionService` (modo `run`) añade `BL_FEX_NO_THUNKS=1` al entorno **solo** cuando el
+  programa es el AppImage de Epic; escotilla de escape: fichero
+  `Download/droiddeck-fex-thunks` para volver a precargar thunks.
+- `droiddeck-fex` (`guest_environment`) honra esa señal y no configura `FEX_THUNK*`; su línea
+  de reporte pasa sola a "thunks off". Los emuladores y juegos siguen con thunks: nada cambia
+  para lo que ya funcionaba.
+- Test nuevo en `tools/tests/test_droiddeck_fex.py` (34 OK): con la señal no hay
+  `FEX_THUNKCONFIG`; sin ella, sí.
+
+**Apartado dedicado de Epic (el mockup del usuario):** entrada **"Epic" en el raíl, arriba de
+"Steam"** (icono cohete), y su propia página — `EpicHome`, gemela de la de Steam pero sin Steam:
+la marca DroidDeck centrada, el botón grande "Jugar Epic Games" (primer toque: elige el
+AppImage; después: arranca directo en modo `run`), engranaje que abre los ajustes del modo de
+ejecución, el estado ("preparado" o qué falta) y la tarjeta **Reanudar** cuando hay sesión viva.
+
+**Y lo que la página cuenta sola:** si el launcher vuelve a morir, la página muestra la línea
+fatal de la última sesión de Epic en su propio idioma ("La última ejecución del launcher murió:
+…"), leída de `session.log` con lectura acotada (primera línea = sesión de Epic, patrones
+fatales, ruido cosmético descartado, 4 000 líneas máximo). Sin zips a ciegas: el fallo se lee en
+la pantalla.
+
 ## 7. Plan de prueba sugerido (en el Turbo 5 Max, cuando el reportante colabore)
 
 1. APK de este fork + **nuevo zip universal** (importar sin descomprimir) + modo Mali experimental.

@@ -927,6 +927,10 @@
     <string name="games_play_epic">Play Epic Games</string>
     <string name="main_epic_pick_appimage">Pick Epic\'s Linux AppImage (EpicGamesLauncher-x86_64.AppImage, from launcher.epicgames.com)</string>
     <string name="main_epic_staged">Epic ready: %1$s</string>
+    <string name="epic_subtitle">The Epic Games launcher, no Steam involved</string>
+    <string name="epic_install_hint">No launcher installed: Play picks Epic\'s Linux AppImage and stages it.</string>
+    <string name="epic_staged_ready">Epic\'s launcher is staged. Play boots it - Steam stays closed.</string>
+    <string name="epic_last_error">The launcher\'s last run died: %1$s</string>
     <string name="games_launch_settings">Launch settings</string>
     <string name="games_launch">Launch</string>
     <string name="games_files">Game files</string>
@@ -1008,6 +1012,7 @@
     <string name="second_hide_keyboard">Hide keyboard</string>
     <string name="second_terminal">Linux terminal</string>
     <string name="second_terminal_not_ready">The Linux session isn\'t ready for a terminal yet.</string>
+    <string name="rail_epic">Epic</string>
     <string name="rail_steam">Steam</string>
     <string name="rail_games">Games</string>
     <string name="rail_desktop">Desktop</string>

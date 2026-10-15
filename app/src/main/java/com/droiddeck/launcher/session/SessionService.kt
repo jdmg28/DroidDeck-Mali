@@ -469,6 +469,14 @@ class SessionService : Service() {
             }
             guest.add(program)
             guest.addAll(SessionState.programArgs)
+            // The Epic launcher ships a glibc loader newer than FEX's thunk preload (x86, glibc
+            // 2.31): preloaded into it, both die before main with "sbrk() failure while processing
+            // tunables" - session.log 2026-10-15 20:18. It runs without thunks (plain syscall
+            // translation); Download/droiddeck-fex-thunks puts the preload back for it.
+            if (program.contains("EpicGamesLauncher", ignoreCase = true) &&
+                !File(Environment.getExternalStorageDirectory(), FEX_THUNKS_SWITCH).exists()) {
+                guest.add("BL_FEX_NO_THUNKS=1")
+            }
             Log.i(TAG, "run: $program (${SessionState.programArgs.size} arguments) under gamescope")
         }
 
@@ -1871,6 +1879,8 @@ class SessionService : Service() {
         private const val NO_PAD_SWITCH = "Download/droiddeck-no-pad"
         private const val NO_UINPUT_SWITCH = "Download/droiddeck-no-uinput"
         private const val NO_DECK_PAD_SWITCH = "Download/droiddeck-no-deck-pad"
+        /** Present: the Epic launcher is preloaded with FEX's thunks again (see the run mode). */
+        private const val FEX_THUNKS_SWITCH = "Download/droiddeck-fex-thunks"
         /** libfakeinput numbers the pads made through its /dev/uinput stand-in from here. */
         private const val FIRST_VIRTUAL_PAD = 16
 
