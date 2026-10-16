@@ -278,6 +278,10 @@
     <string name="mode_osc">Controles en pantalla</string>
     <string name="mode_osc_qam">Steam + QAM</string>
     <string name="mode_osc_note">Auto muestra los controles cuando no hay ningún mando conectado.</string>
+    <string name="osc_steam_touch">Steam táctil (beta)</string>
+    <string name="osc_style_next_session">Los controles táctiles de Steam empiezan con la próxima sesión de Steam</string>
+    <string name="osc_steam_layout">Diseño táctil de Steam</string>
+    <string name="osc_steam_layout_hint">Mueve, redimensiona u oculta los controles táctiles de este juego; se guarda en Steam</string>
     <string name="mode_controller">Mando</string>
     <string name="mode_controller_hint">Cómo ve Steam tu mando. Se aplica en la próxima sesión.</string>
     <string name="mode_controller_deck">Mando de Steam Deck</string>

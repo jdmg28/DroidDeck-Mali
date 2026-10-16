@@ -282,6 +282,10 @@
     <string name="mode_osc">On-screen controls</string>
     <string name="mode_osc_qam">Steam + QAM</string>
     <string name="mode_osc_note">Auto shows the controls when no controller is connected.</string>
+    <string name="osc_steam_touch">Steam touch (beta)</string>
+    <string name="osc_style_next_session">Steam\'s touch controls start with the next Steam session</string>
+    <string name="osc_steam_layout">Steam touch layout</string>
+    <string name="osc_steam_layout_hint">Move, resize or hide this game\'s touch controls; saved to Steam</string>
     <string name="mode_controller">Controller</string>
     <string name="mode_controller_hint">How Steam sees your controller. Applies next session.</string>
     <string name="mode_controller_deck">Steam Deck controller</string>

@@ -472,6 +472,20 @@ such file or directory`. Tres fallos apilados, los tres arreglados:
    Steam once" si no está instalado), y un objetivo ausente o vacío muere con líneas legibles
    ("does not exist in the guest", "is empty") que la página de Epic reconoce.
 
+## Primer informe del zip importado (16-10-2026): Dark Souls 1 — el crash lo trae la copia
+
+Sesión `DroidDeck-2026-10-16-06-steam` (X6 Pro, paquete Mali): la importación R10 funcionó de
+punta a punta — 3 accesos directos escritos, mapeados a `droiddeck-proton-arm64`, prefijo nuevo
+y **DARKSOULS.exe corriendo como i386 bajo wow64+FEX con D3D9 vivo** (`DARKSOULS_d3d9.log`:
+swapchain 1280x720, 4 imágenes, 119.7 Hz, 8 hilos de compilación, caché creada, **cero
+errores**). A los ~25 s murió con `Unhandled page fault ... in lgoboost (+0x53535)`:
+**`lgoBoost.dll`**, un inyector/optimizador que trae la copia (en `gamedata-2\gamedata\Hi\`),
+consultó WMI (`wbemprox`) y se cayó leyendo NULL — no es el juego ni el port. Además quedó
+constancia de que **el pack esync de Valve Experimental ya está en uso** ("1 pack(s) in use,
+0 wanted") — el techo de la ronda 12 resuelto para este Proton. Acción del usuario: borrar o
+renombrar `lgoBoost.dll` (y lanzar DARKSOULS.exe directamente), y re-apuntar el acceso directo
+al exe real si el elegido era un lanzador.
+
 ## 7. Plan de prueba sugerido (en el Turbo 5 Max, cuando el reportante colabore)
 
 1. APK de este fork + **nuevo zip universal** (importar sin descomprimir) + modo Mali experimental.
