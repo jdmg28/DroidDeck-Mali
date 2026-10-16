@@ -182,15 +182,7 @@ object DeviceReport {
         k("FEX preset", SessionPrefs.fexPreset(context).ifEmpty { "FEX defaults" })
         k("Skip xalia", SessionPrefs.noXalia(context))
         k("Wine sync", SessionPrefs.syncBackend(context))
-        EsyncPacks.status(LinuxRuntime.rootDir(context)).let { s ->
-            k("droiddeck-esync packs", "${s.installed} installed, ${s.wanted} wanted")
-            // What each installed Proton's sync pair says, with its wine version line: the next
-            // report answers "which token needs a pack published" without another round trip.
-            for (t in s.tools.take(4)) {
-                val version = t.versionLine.trim().take(72).ifEmpty { "version unknown" }
-                k("  ${t.toolDir.trimEnd('/').substringAfterLast('/')}", "${t.state}${t.packId?.let { ", pack $it" } ?: ""} ($version)")
-            }
-        }
+        EsyncPacks.status(LinuxRuntime.rootDir(context)).let { k("droiddeck-esync packs", "${it.installed} installed, ${it.wanted} wanted") }
         k("Linux x86 (FEX)", if (com.droiddeck.launcher.runtime.LinuxFex.ready(context)) "ready" else "not set up")
         k("gamescope realtime", SessionPrefs.gamescopeRealtime(context))
         k("proot without seccomp", SessionPrefs.prootNoSeccomp(context))
@@ -228,51 +220,6 @@ object DeviceReport {
         b.append("\nNothing identifying is collected here: no serial number, no device or advertising\n")
         b.append("id, no account name, no network names. Safe to attach to a bug report as it is.\n")
         return b.toString()
-    }
-
-    /**
-     * The sync backend the games of a finished session really ran on, appended to a finished
-     * session's device report: the choice in the settings above says what was ASKED for, while
-     * wine says on its stderr what answered - "droiddeck-ntsync/esync/fsync: up and running."
-     * from a pack or our userspace stand-ins, "fsync: up and running." from Proton's own, and
-     * nothing at all when every object went through the wineserver. Written at a session's end,
-     * when the log is final (device.txt itself is written at a session's start). The last marker
-     * wins: a session can run the client and then a game that turned esync off.
-     */
-    fun appendSyncInUse(device: File, sessionLog: File?) {
-        try {
-            val lines = sessionLog?.takeIf { it.isFile }?.let { log ->
-                runCatching {
-                    log.useLines { lines -> lines.take(150_000).toList() }
-                }.getOrNull()
-            } ?: emptyList()
-            val backend = syncBackendInUse(lines)
-            device.appendText("\n\nSync in use\n-----------\n")
-            device.appendText(backend ?: "no wineserver started (no game ran, or it never got there)")
-            device.appendText("\n")
-        } catch (e: Exception) {
-            Log.w(TAG, "sync-in-use", e)
-        }
-    }
-
-    /** The backend the markers in a session log name; the last one wins, null when none. */
-    fun syncBackendInUse(lines: List<String>): String? {
-        var found: String? = null
-        for (line in lines) {
-            // The droiddeck names first: "droiddeck-fsync: up and running." contains the stock
-            // marker's words, and the pack's wineserver and our stand-ins report their own.
-            val backend = when {
-                "droiddeck-ntsync: up and running" in line -> "ntsync through the pack (in-process)"
-                "droiddeck-esync: up and running" in line -> "esync through the pack (in-process)"
-                "droiddeck-fsync: up and running" in line -> "droiddeck-fsync (in-process)"
-                "/dev/ntsync" in line && "up and running" in line -> "ntsync (kernel driver)"
-                "fsync: up and running" in line -> "fsync (Proton's own, in-process)"
-                "esync: up and running" in line -> "esync (wine's own, in-process)"
-                else -> null
-            }
-            if (backend != null) found = backend
-        }
-        return found
     }
 
     private fun readSys(path: String): String? = FileUtils.readString(File(path))?.trim()?.ifEmpty { null }
