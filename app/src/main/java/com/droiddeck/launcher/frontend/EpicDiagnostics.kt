@@ -23,6 +23,10 @@ object EpicDiagnostics {
         "glibc-detected",
         "out of memory",
         "primary child shut down",
+        "x86 linux programs need",
+        "does not exist in the guest",
+        "is empty; pick it again",
+        "bad interpreter",
     )
 
     /** Noise a dead session still leaves: FEX's cmdline remap needs a capability proot blocks. */

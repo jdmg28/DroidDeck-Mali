@@ -51,4 +51,22 @@ class EpicDiagnosticsTest {
         session("2026-10-15-07-steam", "== droiddeck-session mode=steam", "primary child shut down")
         assertNull(EpicDiagnostics.lastError(listOf(tmp.root)))
     }
+
+    @Test
+    fun `a package where FEX never got installed says so on the page`() {
+        session("2026-10-16-01-run", "== droiddeck-session mode=run /opt/appimages/EpicGamesLauncher.AppImage BL_FEX_NO_THUNKS=1",
+            "x86 Linux programs need FEX (Steam app 3127680) and Steam Linux Runtime 3.0 (sniper, Steam app 2464680); open Steam once and it is installed for you")
+        assertEquals(
+            "x86 Linux programs need FEX (Steam app 3127680) and Steam Linux Runtime 3.0 (sniper, Steam app 2464680); open Steam once and it is installed for you",
+            EpicDiagnostics.lastError(listOf(tmp.root)))
+    }
+
+    @Test
+    fun `a target that never made it into the guest reads on the page`() {
+        session("2026-10-16-02-run", "== droiddeck-session mode=run /opt/appimages/EpicGamesLauncher.AppImage BL_FEX_NO_THUNKS=1",
+            "== run: /data/user/0/com.droiddeck.launcher/files/linuxfs/opt/appimages/EpicGamesLauncher.AppImage does not exist in the guest; stage it again")
+        assertEquals(
+            "== run: /data/user/0/com.droiddeck.launcher/files/linuxfs/opt/appimages/EpicGamesLauncher.AppImage does not exist in the guest; stage it again",
+            EpicDiagnostics.lastError(listOf(tmp.root)))
+    }
 }

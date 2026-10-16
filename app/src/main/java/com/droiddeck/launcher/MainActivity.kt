@@ -323,6 +323,7 @@ class MainActivity : ComponentActivity() {
     }
     private var importingEpic by mutableStateOf(false)
     private var epicStaged by mutableStateOf(false)
+    private var epicFexReady by mutableStateOf<Boolean?>(null)
     private var epicError by mutableStateOf<String?>(null)
     private val pickEpicAppImage = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { r ->
         if (r.resultCode == RESULT_OK) InAppFilePicker.pickedFile(r.data)?.let { file ->
@@ -624,6 +625,7 @@ class MainActivity : ComponentActivity() {
                         showPhantomGate = showPhantomGate,
                         importingEpic = importingEpic,
                         epicStaged = epicStaged,
+                        epicFexReady = epicFexReady,
                         epicError = epicError,
                         launcherFullscreen = launcherFullscreen,
                         animationsEnabled = animationsEnabled,
@@ -1580,6 +1582,9 @@ class MainActivity : ComponentActivity() {
         // The Epic page's own report: whether a launcher is staged, and what its last session died of.
         epicStaged = com.droiddeck.launcher.frontend.GameImport.epicProgram(this) != null
         epicError = com.droiddeck.launcher.frontend.EpicDiagnostics.lastError(this)
+        // The launcher is x86_64: without FEX (a package where Steam never ran) it cannot boot,
+        // and the page says so before a session is spent finding out.
+        epicFexReady = com.droiddeck.launcher.runtime.LinuxFex.ready(this)
         removalPending = LinuxRuntimeInstaller.hasRemovalPending(this)
         frameGenLabel = FrameGen.label(this)
         romsDir = SessionPrefs.romsDir(this).takeIf { it.isNotEmpty() }

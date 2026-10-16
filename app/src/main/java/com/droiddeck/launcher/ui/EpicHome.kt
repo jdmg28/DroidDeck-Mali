@@ -72,6 +72,12 @@ internal fun EpicHome(s: FrontEndState, a: FrontEndActions, modifier: Modifier) 
             Spacer(Modifier.height(10.dp))
             // Staged or not: what the button does the moment it is pressed.
             Note(stringResource(if (s.epicStaged) R.string.epic_staged_ready else R.string.epic_install_hint))
+            // The launcher is x86_64: without FEX (set up the first time Steam runs) it cannot
+            // boot, whatever the button says. Said here, before a session is spent finding out.
+            if (s.epicFexReady == false) {
+                Spacer(Modifier.height(8.dp))
+                Note(stringResource(R.string.app_fex_not_ready, "x86_64"))
+            }
             // A launcher that died on its last boot says why, in its own words, from its own log.
             s.epicError?.let { error ->
                 Spacer(Modifier.height(8.dp))

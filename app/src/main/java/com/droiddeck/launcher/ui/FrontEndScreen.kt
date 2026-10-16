@@ -87,6 +87,8 @@ class FrontEndState(
     val importingEpic: Boolean = false,
     /** The Epic launcher is staged at its run-mode path; false, the Epic page asks for it. */
     val epicStaged: Boolean = false,
+    /** Whether FEX is set up for the launcher's x86_64 session; null, unknown. */
+    val epicFexReady: Boolean? = null,
     /** Why the launcher's last session died, from that session's log; null, nothing to report. */
     val epicError: String? = null,
     val stage: String,

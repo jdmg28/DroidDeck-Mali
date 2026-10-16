@@ -410,6 +410,28 @@ fatal de la última sesión de Epic en su propio idioma ("La última ejecución 
 fatales, ruido cosmético descartado, 4 000 líneas máximo). Sin zips a ciegas: el fallo se lee en
 la pantalla.
 
+**Segunda muerte (21:21, zip `…-21-epicgameslauncher-appima`):** ya con `BL_FEX_NO_THUNKS` en
+el arranque, el launcher murió **antes de FEX**: `droiddeck-session: line 485: …AppImage: No
+such file or directory`. Tres fallos apilados, los tres arreglados:
+
+1. **La señal viajaba como argumento, no como variable.** La lista del invitado es un
+   `env -i …` — lo añadido tras el guion de sesión es un argumento del programa. El
+   `BL_FEX_NO_THUNKS=1` se añadía después del programa: `droiddeck-fex` jamás lo vio. Ahora se
+   añade entre las variables (antes del guion), con la condición sobre `SessionState.program`.
+2. **El paquete era nuevo y FEX no existía aún.** Esta sesión no fue del APK experimental Mali
+   sino del `software-mode-latest` (paquete recién instalado, Steam nunca corrió en él): sin
+   FEX-Emu ni runtime sniper. Antes de gastar una sesión, la página de Epic lo dice —
+   "Este programa está hecho para PC x86_64 y se ejecuta con FEX, que aún no está listo. Abre
+   Steam una vez…" (el aviso ya existía para apps de usuario; ahora también en Epic, vía
+   `LinuxFex.ready()`).
+3. **El guion ejecutaba el AppImage a pelo si su sonda `od` fallaba.** La detección x86 del
+   modo `run` usa `od` (2 bytes en el offset 18); si no da 3/62, el AppImage se ejecuta
+   directamente y el kernel ARM responde ENOENT (igual que un intérprete ELF faltante) — el
+   mensaje más criptico posible. Ahora los AppImage los decide `droiddeck-fex` (`--mode auto`,
+   su propia lectura ELF; ARM nativo si lo es, y el mensaje "x86 Linux programs need FEX … open
+   Steam once" si no está instalado), y un objetivo ausente o vacío muere con líneas legibles
+   ("does not exist in the guest", "is empty") que la página de Epic reconoce.
+
 ## 7. Plan de prueba sugerido (en el Turbo 5 Max, cuando el reportante colabore)
 
 1. APK de este fork + **nuevo zip universal** (importar sin descomprimir) + modo Mali experimental.

@@ -472,6 +472,10 @@ case $mode in
     fi
     # Player 1 on the controller in an emulator that has no profile of its own yet.
     python3 /usr/local/bin/droiddeck-pad-defaults 2>&1 || true
+    # A launch whose target never shows up dies here with a line the front end can read, not a
+    # bare "No such file or directory" from exec (the same words a missing ELF interpreter gets).
+    [ -e "$target" ] || { echo "== run: $target does not exist in the guest; stage it again"; exit 127; }
+    [ -s "$target" ] || { echo "== run: $target is empty; pick it again"; exit 126; }
     fex=()
     if [ -x /usr/local/bin/droiddeck-fex ]; then
       case $(od -An -tu2 -j18 -N2 "$target" 2>/dev/null | tr -d ' ') in
@@ -482,7 +486,14 @@ case $mode in
       *.appimage)
         export APPIMAGE_EXTRACT_AND_RUN=1
         chmod +x "$target" 2>/dev/null
-        exec "${fex[@]}" "$target" "$@"
+        # AppImages are decided by droiddeck-fex itself (mode auto: its own ELF read sends x86_64
+        # to FEX and an ARM AppImage runs native, and an uninstalled FEX says so in words). The
+        # od probe above has no say here - a read it missed used to exec the image raw, and the
+        # kernel answered with the same "No such file or directory" as a missing interpreter.
+        if [ -x /usr/local/bin/droiddeck-fex ]; then
+          exec /usr/local/bin/droiddeck-fex run --mode auto -- "$target" "$@"
+        fi
+        exec "$target" "$@"
         ;;
       *.sh)
         if [ -x /usr/local/bin/droiddeck-fex ]; then
