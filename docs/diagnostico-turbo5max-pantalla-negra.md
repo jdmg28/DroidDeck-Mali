@@ -340,6 +340,16 @@ camino sin PC:
   DXVK/FEX/Wine *por juego* — el knob exacto para exprimir cada juego importado una vez que
   la base de fps esté donde queremos.
 
+## CANCELADO (16-10-2026): todo el apartado de Epic
+
+Por decisión del usuario se **elimina por completo** la integración del launcher de Epic de las
+rondas 11 y 11-fase-2: el botón en Juegos, la sección propia en el raíl, el diagnóstico en
+página y el camino sin thunks. El proyecto se centra **por completo en Steam**. (Queda intacta
+la sección de Tiendas con su backend de Epic/GOG/Amazon, que es otra cosa.) Lo aprendido que
+sobrevive: el guion de sesión decide los AppImage con droiddeck-fex en modo auto, un objetivo
+ausente muere con líneas legibles, y droiddeck-fex honra BL_FEX_NO_THUNKS si algún día se
+necesita.
+
 ## 6septies-decies. Ronda 11: botón "Jugar Epic Games" (el launcher nuevo de Epic para Linux)
 
 Epic lanzó el 14-10-2026 el preview de su launcher rehecho con **soporte Linux nativo por

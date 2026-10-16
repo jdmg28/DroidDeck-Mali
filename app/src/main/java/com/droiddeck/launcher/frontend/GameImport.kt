@@ -71,26 +71,4 @@ object GameImport {
         }
         return folder
     }
-
-    /**
-     * The guest path of a staged Epic Games launcher, or null when none is staged. AppImages live
-     * at /opt/appimages in the guest - where the emulators the run mode already launches sit.
-     */
-    fun epicProgram(context: Context): File? =
-        File(com.droiddeck.launcher.runtime.LinuxRuntime.rootDir(context), "opt/appimages/EpicGamesLauncher.AppImage")
-            .takeIf { it.isFile }
-
-    /**
-     * Stage a downloaded Epic launcher AppImage at the emulators' place: one fixed name so an
-     * update replaces the old one, executable, ready for the run mode's AppImage+FEX path.
-     */
-    fun stageAppImage(context: Context, file: File): File {
-        if (!file.isFile) throw ImportException("no such file: $file")
-        val dir = File(com.droiddeck.launcher.runtime.LinuxRuntime.rootDir(context), "opt/appimages")
-        if (!dir.isDirectory && !dir.mkdirs()) throw ImportException("cannot create ${dir.path}")
-        val out = File(dir, "EpicGamesLauncher.AppImage")
-        file.copyTo(out, overwrite = true)
-        out.setExecutable(true, false)
-        return out
-    }
 }

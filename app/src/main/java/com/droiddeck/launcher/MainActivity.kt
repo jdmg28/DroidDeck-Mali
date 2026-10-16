@@ -321,26 +321,6 @@ class MainActivity : ComponentActivity() {
             refresh()
         }
     }
-    private var importingEpic by mutableStateOf(false)
-    private var epicStaged by mutableStateOf(false)
-    private var epicFexReady by mutableStateOf<Boolean?>(null)
-    private var epicError by mutableStateOf<String?>(null)
-    private val pickEpicAppImage = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { r ->
-        if (r.resultCode == RESULT_OK) InAppFilePicker.pickedFile(r.data)?.let { file ->
-            importingEpic = true
-            Thread({
-                val message = runCatching {
-                    val staged = com.droiddeck.launcher.frontend.GameImport.stageAppImage(this, file)
-                    getString(R.string.main_epic_staged, staged.name)
-                }.getOrElse { e -> getString(R.string.main_action_failed, "Epic", e.message ?: e.javaClass.simpleName) }
-                ui.post {
-                    importingEpic = false
-                    refresh()
-                    android.widget.Toast.makeText(this, message, android.widget.Toast.LENGTH_LONG).show()
-                }
-            }, "epic-import").start()
-        }
-    }
     private var addedGamesDirs by mutableStateOf<List<String>>(emptyList())
     private var addedGamesArt by mutableStateOf(true)
     @Volatile private var artFetchRunning = false
@@ -623,10 +603,6 @@ class MainActivity : ComponentActivity() {
                         updates = updates.state(),
                         phantomProcessStatus = phantomProcessStatus,
                         showPhantomGate = showPhantomGate,
-                        importingEpic = importingEpic,
-                        epicStaged = epicStaged,
-                        epicFexReady = epicFexReady,
-                        epicError = epicError,
                         launcherFullscreen = launcherFullscreen,
                         animationsEnabled = animationsEnabled,
                         storeEnabled = storeEnabled,
@@ -639,8 +615,6 @@ class MainActivity : ComponentActivity() {
                     ),
                     FrontEndActions(
                         onPlay = { startSteamSession() },
-                        onPlayEpic = { launchEpic() },
-                        onEpicSettings = { openModeSettings(SessionService.MODE_RUN) },
                         // Steam's desktop client as a window on the desktop: under gamescope the
                         // client puts itself into Big Picture whatever it is started with.
                         onPlayDesktopUi = {
@@ -1214,17 +1188,6 @@ class MainActivity : ComponentActivity() {
         desktopInstalled = DesktopCatalog.desktopInstalled(this)
     }
 
-    /** Play Epic Games: the staged launcher AppImage full screen under gamescope, like an emulator;
-     *  none staged yet means the pick dialog first (the file is Epic's own Linux AppImage). */
-    private fun launchEpic() {
-        val epic = com.droiddeck.launcher.frontend.GameImport.epicProgram(this)
-        if (epic == null) {
-            pickEpicAppImage.launch(InAppFilePicker.buildIntent(this, listOf("appimage"), getString(R.string.main_epic_pick_appimage)))
-            return
-        }
-        launchProgram(epic.absolutePath)
-    }
-
     private fun launchProgram(path: String) {
         startActivity(Intent(this, SessionActivity::class.java)
             .putExtra(SessionService.EXTRA_MODE, SessionService.MODE_RUN)
@@ -1579,12 +1542,6 @@ class MainActivity : ComponentActivity() {
         offline = OfflineMode.enabled(this)
         installed = LinuxRuntimeInstaller.installedVersion(this)
         ready = LinuxRuntime.isInstalled(this)
-        // The Epic page's own report: whether a launcher is staged, and what its last session died of.
-        epicStaged = com.droiddeck.launcher.frontend.GameImport.epicProgram(this) != null
-        epicError = com.droiddeck.launcher.frontend.EpicDiagnostics.lastError(this)
-        // The launcher is x86_64: without FEX (a package where Steam never ran) it cannot boot,
-        // and the page says so before a session is spent finding out.
-        epicFexReady = com.droiddeck.launcher.runtime.LinuxFex.ready(this)
         removalPending = LinuxRuntimeInstaller.hasRemovalPending(this)
         frameGenLabel = FrameGen.label(this)
         romsDir = SessionPrefs.romsDir(this).takeIf { it.isNotEmpty() }

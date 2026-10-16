@@ -74,7 +74,6 @@ internal fun GamesPage(s: FrontEndState, a: FrontEndActions, selected: String, o
             if (!s.shortcutPicker) Rise(2) {
                 Actions {
                     PrimaryButton(stringResource(R.string.games_play_steam), enabled = !s.busy, main = true, icon = Icons.Filled.PlayArrow, modifier = Modifier.testTag("play-steam"), onClick = a.onPlay)
-                    SecondaryButton(stringResource(R.string.games_play_epic), enabled = !s.busy && !s.importingEpic, onClick = a.onPlayEpic)
                 }
             }
             GameFileFolderActions(s, a)

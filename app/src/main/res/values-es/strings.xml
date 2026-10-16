@@ -922,13 +922,6 @@
     <string name="content_linux_desktop_hint">KDE Plasma, Firefox y tus emuladores</string>
     <string name="games_empty">Los juegos que instales en Steam aparecen aquí después de la sesión.</string>
     <string name="games_play_steam">Jugar en Steam</string>
-    <string name="games_play_epic">Jugar Epic Games</string>
-    <string name="main_epic_pick_appimage">Elige la AppImage de Linux de Epic (EpicGamesLauncher-x86_64.AppImage, de launcher.epicgames.com)</string>
-    <string name="main_epic_staged">Epic listo: %1$s</string>
-    <string name="epic_subtitle">El launcher de Epic Games, sin Steam de por medio</string>
-    <string name="epic_install_hint">Sin launcher instalado: Jugar elige la AppImage de Linux de Epic y la prepara.</string>
-    <string name="epic_staged_ready">El launcher de Epic está preparado. Jugar lo arranca; Steam queda cerrado.</string>
-    <string name="epic_last_error">La última ejecución del launcher murió: %1$s</string>
     <string name="games_launch_settings">Ajustes de inicio</string>
     <string name="games_launch">Iniciar</string>
     <string name="games_files">Archivos del juego</string>
@@ -1008,7 +1001,6 @@
     <string name="second_hide_keyboard">Ocultar teclado</string>
     <string name="second_terminal">Terminal de Linux</string>
     <string name="second_terminal_not_ready">La sesión de Linux aún no está lista para un terminal.</string>
-    <string name="rail_epic">Epic</string>
     <string name="rail_steam">Steam</string>
     <string name="rail_games">Juegos</string>
     <string name="rail_desktop">Escritorio</string>

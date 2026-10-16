@@ -79,17 +79,4 @@ class GameImportTest {
         assertTrue(base.isDirectory)
         assertEquals(listOf(base.path), SessionPrefs.addedGamesDirs(app))
     }
-
-    @Test fun anEpicAppImageIsStagedExecutableAtTheEmulatorsPlace() {
-        val appimage = tmp.newFile("EpicGamesLauncher-x86_64.AppImage")
-        appimage.writeText("launcher")
-        val staged = GameImport.stageAppImage(app, appimage)
-        assertEquals("EpicGamesLauncher.AppImage", staged.name)
-        assertTrue(staged.canExecute())
-        assertTrue(staged.path.contains("opt/appimages"))
-        assertEquals(staged, GameImport.epicProgram(app))
-        appimage.writeText("update")
-        GameImport.stageAppImage(app, appimage)
-        assertEquals("update", GameImport.epicProgram(app)!!.readText())
-    }
 }
