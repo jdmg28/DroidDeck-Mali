@@ -410,6 +410,36 @@ fatal de la última sesión de Epic en su propio idioma ("La última ejecución 
 fatales, ruido cosmético descartado, 4 000 líneas máximo). Sin zips a ciegas: el fallo se lee en
 la pantalla.
 
+
+## 6duodecies. Ronda 12: el cuello de botella al jugar — dónde está y cómo lo medimos
+
+El techo medido en la ronda 8 sigue siendo el válido: **CPU 78-95 % con 24-26 fps** — la
+tubería está atada al CPU (FEX traduciendo el juego + Wine + DXVK llamando a Vulkan). Lo que
+esta ronda encontró al auditar la pila de sincronización (la parte de CPU que multiplica
+round-trips por cuadro):
+
+- **La pila ya está en su mejor punto por defecto.** El fork corre **droiddeck-fsync** (sync
+  en-proceso vía `libblsession`, `futex_waitv` respondido en espacio de usuario porque el
+  sandbox lo bloquea) como **primera opción en Mali**: los juegos no deberían estar en sync por
+  wineserver. El pack esync (eventfd + shm compartida, el escalón siguiente) se publica por
+  token de wine en `Droid-Deck/DroidDeck-Components` — el índice se actualizó el 15-10 21:50
+  UTC, horas después del "1 wanted" del reporte; los packs de GE-Proton11-5/6/7 y de Valve
+  Experimental/11.0 existen, y GE 11-8/11-9 aparecen como *fallidos* en el índice.
+- **Lo que faltaba era evidencia, y la ronda la añade a `device.txt`:**
+  1. **"Sync in use"** — al cerrar la sesión se adjunta al reporte el backend que wine dijo en
+     su stderr (`fsync: up and running.` = Proton stock en-proceso; `droiddeck-fsync:` = el
+     nuestro; `droiddeck-esync:` = pack; nada = wineserver). La línea "Wine sync" de arriba dice
+     lo *pedido*; esta dice lo *usado* (el entorno de un juego puede cambiarlo).
+  2. **Estado del pack por Proton instalado** — cada herramienta con su estado y su línea de
+     versión de wine: el próximo zip responde "qué token necesita pack" sin otra vuelta.
+- **Protocolo de prueba (el teléfono pone los números):**
+  1. Juega 10 min con el preset FEX **PERFORMANCE_TSO** (el de fábrica) y anota los fps del HUD.
+  2. Repite 10 min con **EXTREME_TSO** (la medición pendiente desde la ronda 8: la sesión de
+     Craft Sell a 24-26 fps corría EXTREME_TSO; si PERFORMANCE_TSO da igual o más, ahí queda).
+  3. Manda el zip: con "Sync in use" sabremos si el juego corrió fsync en-proceso o si cayó a
+     wineserver (y si cayó, el token del pack que hay que publicar está en el mismo reporte).
+
+
 **Segunda muerte (21:21, zip `…-21-epicgameslauncher-appima`):** ya con `BL_FEX_NO_THUNKS` en
 el arranque, el launcher murió **antes de FEX**: `droiddeck-session: line 485: …AppImage: No
 such file or directory`. Tres fallos apilados, los tres arreglados:
