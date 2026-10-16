@@ -510,7 +510,9 @@ jobs:
           set -o pipefail
           ./gradlew testReleaseUnitTest --console=plain -PndkVersion="$NDK_VERSION" 2>&1 | tee /tmp/unit.log
           status=$?
-          tail -n 45 /tmp/unit.log | cut -c1-190 | sed 's/^/::error::/' | head -45 || true
+          echo "::error::UNITLOG_BYTES=$(wc -c < /tmp/unit.log 2>/dev/null || echo missing)" || true
+          awk 'NR<=28 { print "::error::L" NR ":" substr($0,1,170) }' /tmp/unit.log || true
+          awk 'NR>28 && NR<=56 { print "::error::M" NR ":" substr($0,1,170) }' /tmp/unit.log || true
 
 
           exit $status
