@@ -398,11 +398,7 @@ fun ModeSettingsPage(s: ModeSettings, a: ModeSettingsActions) {
                 stringResource(R.string.mode_mangoapp_hint),
                 s.mangoapp, onChange = a.onMangoapp,
             )
-            ToggleRow(
-                host, "steamUiGpu", stringResource(R.string.mode_steam_ui_gpu),
-                stringResource(R.string.mode_steam_ui_gpu_hint),
-                s.steamUiOnGpu, onChange = a.onSteamUiOnGpu,
-            )
+            // Steam's browser is kept on the CPU: drawing it on the GPU restarts a Mali-G615 device.
             // Deck mode fixes the branch (SessionPrefs.steamChannel); the choice is for Deck mode off.
             if (s.steamDeckMode) SettingsRow(stringResource(R.string.mode_branch), stringResource(R.string.mode_branch_deck)) {}
             else ChoiceRow(

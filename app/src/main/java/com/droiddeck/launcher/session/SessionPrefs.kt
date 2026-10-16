@@ -487,8 +487,11 @@ object SessionPrefs {
      * Xwaylands answering, and the device restarted seconds after the client's browser asked that
      * GPU for Vulkan. Games use the GPU either way - this is the store and the library only.
      */
-    fun steamUiOnGpu(context: Context): Boolean = prefs(context).getBoolean("steamUiGpu", false)
-    fun setSteamUiOnGpu(context: Context, on: Boolean) { prefs(context).edit().putBoolean("steamUiGpu", on).apply() }
+    // Steam's browser is never drawn on the GPU: on a Mali-G615 that path took the device down
+    // (gamescope + both Xwaylands on the real GPU, then the client's browser asking it for Vulkan),
+    // so the toggle is gone and this is pinned to false. Kept as a function for callers.
+    fun steamUiOnGpu(context: Context): Boolean = false
+    fun setSteamUiOnGpu(context: Context, on: Boolean) { /* no-op: Steam UI on GPU is disabled */ }
 
     /**
      * Zink's lazy descriptor mode (ZINK_DESCRIPTORS=lazy) with its compact set layout
