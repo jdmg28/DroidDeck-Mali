@@ -510,9 +510,9 @@ jobs:
           set -o pipefail
           ./gradlew testReleaseUnitTest --console=plain -PndkVersion="$NDK_VERSION" 2>&1 | tee /tmp/unit.log
           status=$?
-          grep -E '^com\..+ > .+ FAILED|^[0-9]+ tests completed.*failed|^e: ' /tmp/unit.log | sed 's/^/::error::/' | head -30 || true
-          find app/build/test-results -name '*.xml' -exec grep -hoE '<failure message=.[^>]{0,180}' {} + | sed 's/^/::error::/' | head -30 || true
-          find app/build/test-results -name '*.xml' -exec grep -hoE '<testcase name=.[^>]{0,140}' {} + | sed 's/^/::error::case /' | head -80 || true
+          tail -n 45 /tmp/unit.log | cut -c1-190 | sed 's/^/::error::/' | head -45 || true
+
+
           exit $status
 
       - name: Check the native dependency closure
