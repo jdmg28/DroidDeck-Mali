@@ -506,16 +506,7 @@ jobs:
         run: python3 -m unittest discover -s tools/tests -p 'test_*.py'
 
       - name: Unit tests
-        run: |
-          set -o pipefail
-          ./gradlew testReleaseUnitTest --console=plain -PndkVersion="$NDK_VERSION" 2>&1 | tee /tmp/unit.log
-          status=$?
-          echo "::error::UNITLOG_BYTES=$(wc -c < /tmp/unit.log 2>/dev/null || echo missing)" || true
-          awk 'NR<=28 { print "::error::L" NR ":" substr($0,1,170) }' /tmp/unit.log || true
-          awk 'NR>28 && NR<=56 { print "::error::M" NR ":" substr($0,1,170) }' /tmp/unit.log || true
-
-
-          exit $status
+        run: ./gradlew testReleaseUnitTest --console=plain -PndkVersion="$NDK_VERSION"
 
       - name: Check the native dependency closure
         run: |
