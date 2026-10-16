@@ -256,7 +256,7 @@ object DeviceReport {
     }
 
     /** The backend the markers in a session log name; the last one wins, null when none. */
-    internal fun syncBackendInUse(lines: List<String>): String? {
+    fun syncBackendInUse(lines: List<String>): String? {
         var found: String? = null
         for (line in lines) {
             // The droiddeck names first: "droiddeck-fsync: up and running." contains the stock
