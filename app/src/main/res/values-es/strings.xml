@@ -105,6 +105,7 @@
     <string name="game_env_xalia">Pon 0 para desactivar el asistente de navegación con mando de Proton en este juego.</string>
     <string name="game_env_hud">Superposición de DXVK para D3D9–11. fps muestra la tasa de fotogramas; sin definir la oculta.</string>
     <string name="game_env_dxvk_config">Ajustes de DXVK separados por punto y coma. Las versiones recientes usan dxvk.maxFrameRate para limitar fotogramas; para el uso normal prefiere el límite de fotogramas de la sesión.</string>
+    <string name="game_env_panvk_debug">Flags de depuración del driver PanVK: no_crc quita los checksums de los render targets, wsi_no_afbc la compresión del swapchain, no_bc_emul la decodificación BC, sync envía de a un submission por vez.</string>
     <string name="game_env_vkd3d_limit">Límite de fotogramas de D3D12. 0 desactiva el límite.</string>
     <string name="game_env_glthread">Subprocesos de OpenGL de Mesa. true puede ayudar a juegos OpenGL limitados por la CPU; pruébalo en cada juego.</string>
     <string name="sync_backend_title">Sincronización de Wine</string>
@@ -924,6 +925,10 @@
     <string name="ctrl_mapping_default">Cada botón envía su propia entrada</string>
     <string name="ctrl_mapping_count">%1$d de %2$d botones reasignados</string>
     <string name="ctrl_configure">Configurar</string>
+    <string name="ctrl_settings">Ajustes</string>
+    <string name="ctrl_shape_circle">Círculo</string>
+    <string name="ctrl_shape_rounded">Redondeado</string>
+    <string name="ctrl_shape_square">Cuadrado</string>
     <string name="ctrl_reset_all">Restablecer mando</string>
     <string name="ctrl_reset_all_hint">Restaura todos los ajustes del mando y la disposición</string>
     <string name="ctrl_mapping_lede">Lo que cada botón en pantalla envía al juego. Oculto quita el botón.</string>

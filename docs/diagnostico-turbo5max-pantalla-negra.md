@@ -670,6 +670,27 @@ se hornea en el driver (tabla de formatos sin D24S8 → todos los D3D9 van por D
 DXGI ya cae solo a D32S8 cuando el formato no se anuncia). PROTON_USE_WINED3D queda como segunda
 opción (en este runtime no hay GL, puede no arrancar).
 
+**Resultado del A/B (reportado por el usuario, con captura):** con
+`d3d9.useD32forD24 = True` el mundo sigue negro y **baja a menos de 8 fps** (los menús siguen
+bien). D32S8 es el doble de ancho de banda y no arregla el negro → el D24S8 de panvk no es la
+causa única; **se recomienda al usuario quitar esa línea** (o dejarla vacía). La pantalla de
+objetos de DS1 sí se dibuja (captura: cajas de ítems con el athamu) — el composite del mundo 3D
+es lo que queda negro.
+
+Siguiente generación de palancas — los switches del propio driver (`PANVK_DEBUG`, documentados
+en RUN-PC-GAMES-ON-MALI.md del repo del driver), ahora exposición como opción **PanVK debug
+flags** del editor de entorno (Múltiple, nada aplicado hasta elegir):
+
+1. `no_crc` — sin checksums CRC de render targets (el sospechoso clásico de un RT que se lee
+   negro en Mali; barato de probar).
+2. `wsi_no_afbc` — sin AFRC/AFBC en el swapchain (el composite final).
+3. `no_bc_emul` — sin decodificación BC por compute (las texturas del mundo son BC; los menús
+   usan UI sin BC — encaja con "menús sí, mundo no").
+4. `sync` — submissions síncronos (si fuera una carrera de barriers).
+
+Probar de a uno, relanzando el juego cada vez; si alguno ilumina el mundo, queda identificado el
+sub-sistema y se hornea como default en el paquete del driver.
+
 ## El mando táctil gana perfiles de HUD (estilo Winlator)
 
 Tras el rechazo del apartado separado (b3ac670) y del lienzo único con extras (8711021), el

@@ -31,6 +31,10 @@ object GameEnvironmentOptions {
         Option("TU_DEBUG", "forcecb", 0, Type.MULTIPLE, listOf("forcecb", "nocb", "startup", "deck_emu", "nir", "nobin", "sysmem", "gmem", "forcebin", "layout", "noubwc", "nomultipos", "nolrz", "nolrzfc", "perf", "perfc", "flushall", "syncdraw", "push_consts_per_stage", "rast_order", "unaligned_store", "log_skip_gmem_ops", "dynamic", "bos", "3d_load", "fdm", "noconform", "rd")),
         Option("IR3_SHADER_DEBUG", "nouboopt", 0, Type.MULTIPLE, listOf("nouboopt", "nopreamble", "noearlypreamble")),
         Option("MESA_EXTENSION_MAX_YEAR", "", 0, Type.TEXT),
+        // The Mali driver's own switches; nothing applied until one is picked. no_crc renders
+        // without the render-target checksums, the likeliest lever when a game's world draws
+        // black while its menus draw fine.
+        Option("PANVK_DEBUG", "", R.string.game_env_panvk_debug, Type.MULTIPLE, listOf("no_crc", "wsi_no_afbc", "no_bc_emul", "no_gs", "sync", "trace")),
         Option("MESA_GL_VERSION_OVERRIDE", "", 0, Type.TEXT),
         Option("PULSE_LATENCY_MSEC", "", 0, Type.NUMBER),
         Option("WINE_LARGE_ADDRESS_AWARE", "0", 0, Type.TOGGLE, listOf("0", "1")),

@@ -107,6 +107,7 @@
     <string name="game_env_xalia">Set to 0 to disable Proton’s gamepad-navigation helper for this game.</string>
     <string name="game_env_hud">DXVK overlay for D3D9–11. fps displays frame rate; unset hides it.</string>
     <string name="game_env_dxvk_config">DXVK settings separated by semicolons. Recent builds use dxvk.maxFrameRate for frame limiting; prefer the session frame limiter for ordinary play.</string>
+    <string name="game_env_panvk_debug">PanVK driver debug flags: no_crc drops render-target checksums, wsi_no_afbc the swapchain compression, no_bc_emul the BC decode, sync submits one submission at a time.</string>
     <string name="game_env_vkd3d_limit">D3D12 frame-rate limit. 0 disables the limit.</string>
     <string name="game_env_glthread">Mesa OpenGL threading. true can help CPU-limited OpenGL games; test per game.</string>
     <string name="sync_backend_title">Wine sync</string>
@@ -926,6 +927,10 @@
     <string name="ctrl_mapping_default">Every button sends its own input</string>
     <string name="ctrl_mapping_count">%1$d of %2$d buttons remapped</string>
     <string name="ctrl_configure">Configure</string>
+    <string name="ctrl_settings">Settings</string>
+    <string name="ctrl_shape_circle">Circle</string>
+    <string name="ctrl_shape_rounded">Rounded</string>
+    <string name="ctrl_shape_square">Square</string>
     <string name="ctrl_reset_all">Reset controller</string>
     <string name="ctrl_reset_all_hint">Restores all controller settings and the layout</string>
     <string name="ctrl_mapping_lede">What each on-screen button sends to the game. Hidden removes the button.</string>

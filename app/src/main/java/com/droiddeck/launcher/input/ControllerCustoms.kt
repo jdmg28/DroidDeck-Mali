@@ -135,7 +135,7 @@ object ControllerCustoms {
             }
             chip(title, {})
             chip(activity.getString(R.string.touchkeys_shape)) {
-                ControllerPrefs.setControlShape(activity, layout, c.id, (c.shape + 1) % 3)
+                ControllerPrefs.setGroupShape(activity, layout, ControllerPrefs.groupOf(c), (c.shape + 1) % 3)
             }
             chip(activity.getString(R.string.touchkeys_remove)) {
                 ControllerPrefs.removeControl(activity, layout, c.id)
@@ -150,6 +150,91 @@ object ControllerCustoms {
     }
 
     private var manage: AlertDialog? = null
+
+    /**
+     * One picked control (or d-pad): its shape as three labelled choices, a size slider, and
+     * remove - Winlator's element-settings sheet, staying open while the user tries shapes.
+     */
+    fun showElementSettings(activity: android.app.Activity, layoutId: String, group: String, onChanged: () -> Unit = {}) {
+        val controls = ControllerPrefs.layoutById(activity, layoutId)?.controls
+            ?.filter { ControllerPrefs.groupOf(it) == group }
+            ?.takeIf { it.isNotEmpty() } ?: return
+        val first = controls.first()
+        val title = when {
+            first.label.isNotEmpty() -> first.label
+            first.kind == ControllerPrefs.KIND_GAMEPAD_BTN -> first.target.uppercase()
+            else -> activity.getString(R.string.ctrl_untitled)
+        }
+        val d = activity.resources.displayMetrics.density
+        val col = LinearLayout(activity).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding((20 * d).toInt(), (8 * d).toInt(), (20 * d).toInt(), 0)
+        }
+        // Shape: three choices, the current one ticked; picking applies at once.
+        val shapeRow = LinearLayout(activity).apply { gravity = android.view.Gravity.CENTER }
+        fun shapeChip(target: Int, label: Int) {
+            val active = first.shape == target
+            shapeRow.addView(Button(activity).apply {
+                text = if (active) "✓ " + activity.getString(label) else activity.getString(label)
+                isAllCaps = false
+                setOnClickListener {
+                    ControllerPrefs.setGroupShape(activity, layoutId, group, target)
+                    settings?.dismiss()
+                    onChanged()
+                    showElementSettings(activity, layoutId, group, onChanged)
+                }
+            }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                .apply { setMargins((2 * d).toInt(), 0, (2 * d).toInt(), 0) })
+        }
+        shapeChip(ControllerPrefs.SHAPE_CIRCLE, R.string.ctrl_shape_circle)
+        shapeChip(ControllerPrefs.SHAPE_ROUNDED, R.string.ctrl_shape_rounded)
+        shapeChip(ControllerPrefs.SHAPE_SQUARE, R.string.ctrl_shape_square)
+        col.addView(shapeRow, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+
+        // Size: a slider over the drawn multiplier, applied when the finger lifts.
+        val percent = first.scale * 100f
+        val value = android.widget.TextView(activity).apply { text = "${percent.toInt()}%" }
+        val slider = android.widget.SeekBar(activity).apply {
+            max = 210 // 40% .. 250%
+            progress = ((first.scale - 0.4f) * 100f).toInt().coerceIn(0, 210)
+            setOnSeekBarChangeListener(object : android.widget.SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(seekBar: android.widget.SeekBar?, value: Int, fromUser: Boolean) {}
+                override fun onStartTrackingTouch(seekBar: android.widget.SeekBar?) {}
+                override fun onStopTrackingTouch(seekBar: android.widget.SeekBar?) {
+                    val scale = 0.4f + progress / 100f
+                    ControllerPrefs.setGroupScale(activity, layoutId, group, scale)
+                    value.text = "${(scale * 100).toInt()}%"
+                    onChanged()
+                }
+            })
+        }
+        col.addView(LinearLayout(activity).apply {
+            gravity = android.view.Gravity.CENTER_VERTICAL
+            orientation = LinearLayout.HORIZONTAL
+            addView(android.widget.TextView(activity).apply { text = activity.getString(R.string.ctrl_size) })
+            addView(slider, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                .apply { setMargins((10 * d).toInt(), 0, (10 * d).toInt(), 0) })
+            addView(value)
+        }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+
+        col.addView(Button(activity).apply {
+            text = activity.getString(R.string.touchkeys_remove); isAllCaps = false
+            setOnClickListener {
+                settings?.dismiss()
+                ControllerPrefs.removeControl(activity, layoutId, group)
+                onChanged()
+            }
+        }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+            .apply { setMargins(0, (10 * d).toInt(), 0, 0) })
+
+        settings = AlertDialog.Builder(activity)
+            .setTitle(title)
+            .setView(ScrollView(activity).apply { addView(col) })
+            .setPositiveButton(android.R.string.ok, null)
+            .show()
+    }
+
+    private var settings: AlertDialog? = null
 
     /** A yes/no confirm (removing a layout takes its controls with it). */
     fun confirm(activity: android.app.Activity, message: Int, onYes: () -> Unit) {

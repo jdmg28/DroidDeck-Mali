@@ -30,13 +30,15 @@ class OnScreenControls(
     private val onMouse: ((Int, Boolean) -> Unit)? = null,
     /** The custom touchpad dragged, in this view's pixels. */
     private val onPadDelta: ((Float, Float) -> Unit)? = null,
+    /** The editor: which group the finger picked (null = none), so its bar can act on it. */
+    private val onSelection: ((String?) -> Unit)? = null,
 ) : View(context) {
 
     private class Control(
         val id: String,
         val group: String,
         val stick: Int,
-        val radiusDp: Float,
+        var radiusDp: Float,
         val offsetXDp: Float,
         val offsetYDp: Float,
         val kind: Int = KIND_GAMEPAD,
@@ -128,6 +130,9 @@ class OnScreenControls(
         if (storedLayout.isEmpty()) {
             if (!customLayoutMode()) controls += baseControls()
         } else for (c in storedLayout) controls += customControl(c)
+        // What the finger held may be gone (removed in the manage sheet): drop it, never draw
+        // or move a group that no longer exists.
+        if (selected != null && groups.none { it == selected }) { selected = null; onSelection?.invoke(null) }
         if (width > 0) relayout() else invalidate()
     }
 
@@ -167,6 +172,7 @@ class OnScreenControls(
             shape = c.shape, labelOverride = c.label,
             wideOverride = c.kind == ControllerPrefs.KIND_TOUCHPAD || gamepad && c.target in shoulderIds)
         if (gamepad) control.target = c.target.ifEmpty { c.id }
+        control.radiusDp *= c.scale
         return control
     }
 
@@ -402,15 +408,15 @@ class OnScreenControls(
     private fun members(group: String) = controls.filter { it.group == group }
 
     private fun centre(group: String): Pair<Float, Float> {
-        val first = members(group).first()
+        val first = members(group).firstOrNull() ?: return 0f to 0f
         return (first.cx - scaled(first.offsetXDp)) to (first.cy - scaled(first.offsetYDp))
     }
 
-    private fun extent(group: String): Float = members(group).maxOf { control ->
+    private fun extent(group: String): Float = members(group).maxOfOrNull { control ->
         sqrt(scaled(control.offsetXDp).let { it * it } + scaled(control.offsetYDp).let { it * it }) + control.halfW
-    }
+    } ?: 0f
 
-    private fun halfH(group: String): Float = members(group).maxOf { abs(scaled(it.offsetYDp)) + it.halfH }
+    private fun halfH(group: String): Float = members(group).maxOfOrNull { abs(scaled(it.offsetYDp)) + it.halfH } ?: 0f
 
     private fun put(group: String, x: Float, y: Float) {
         for (control in members(group)) {
@@ -421,6 +427,7 @@ class OnScreenControls(
 
     private fun clamp(group: String) {
         val list = members(group)
+        if (list.isEmpty()) return
         val margin = dp(4f)
         val minX = list.minOf { it.cx - it.halfW } - safe.left - margin
         val maxX = list.maxOf { it.cx + it.halfW } - (width - safe.right - margin)
@@ -467,9 +474,11 @@ class OnScreenControls(
     private fun placeCustomsDefaults(w: Float, taken: Set<String>) {
         val known = setOf("dpad", "ls", "rs", "face", "lb", "lt", "rb", "rt", "select", "start", "guide", "qam")
         val fresh = controls.map { it.group }.distinct().filter { it !in known && it !in taken }
-        fresh.forEachIndexed { index, group ->
+        var y = safe.top + dp(96f)
+        for (group in fresh) {
             val r = members(group).maxOf { it.radius }
-            put(group, w - safe.right - r - dp(10f), safe.top + dp(110f) + index * (2 * r + dp(14f)))
+            put(group, w - safe.right - r - dp(10f), y + r)
+            y += 2 * r + dp(12f)
         }
     }
 
@@ -741,6 +750,7 @@ class OnScreenControls(
             MotionEvent.ACTION_DOWN -> {
                 val control = controlAt(event.x, event.y)
                 selected = control?.group
+                onSelection?.invoke(selected)
                 val group = selected ?: run { invalidate(); return false }
                 val (x, y) = centre(group)
                 grabX = x - event.x
@@ -752,6 +762,12 @@ class OnScreenControls(
                 ignoreSaved = false
                 put(group, event.x + grabX, event.y + grabY)
                 clamp(group)
+                invalidate()
+            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                // Where the finger leaves it is where it stays: saving per drag is what keeps
+                // the next added control from shuffling the ones already placed.
+                if (event.actionMasked == MotionEvent.ACTION_UP) saveLayout()
                 invalidate()
             }
         }

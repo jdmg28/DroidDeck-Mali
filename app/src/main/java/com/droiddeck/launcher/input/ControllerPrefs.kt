@@ -177,6 +177,8 @@ object ControllerPrefs {
         val group: String = "",
         /** Normalized centre; negative means "nobody placed it yet". */
         val x: Float = -1f, val y: Float = -1f,
+        /** Drawn and hit at [ControllerPrefs.sizes]-like multiplier: 1 is the natural size. */
+        val scale: Float = 1f,
     )
 
     data class Layout(val id: String, val name: String, val controls: List<Custom> = emptyList())
@@ -185,6 +187,7 @@ object ControllerPrefs {
         .put("id", c.id).put("kind", c.kind).put("code", c.code)
         .put("label", c.label).put("shape", c.shape)
         .put("target", c.target).put("group", c.group).put("x", c.x.toDouble()).put("y", c.y.toDouble())
+        .put("scale", c.scale.toDouble())
 
     private fun decodeCustoms(o: org.json.JSONObject): Custom? {
         val kind = runCatching { o.getInt("kind") }.getOrNull() ?: return null
@@ -200,6 +203,7 @@ object ControllerPrefs {
             group = o.optString("group"),
             x = o.optString("x").toFloatOrNull() ?: -1f,
             y = o.optString("y").toFloatOrNull() ?: -1f,
+            scale = (o.optString("scale").toFloatOrNull() ?: 1f).coerceIn(0.4f, 2.5f),
         )
     }
 
@@ -354,10 +358,29 @@ object ControllerPrefs {
         }
     }
 
+    /** Removes one control - or, when it belongs to one, the whole group - from [layoutId]. */
     fun removeControl(context: Context, layoutId: String, controlId: String) {
         layoutById(context, layoutId)?.let { l ->
-            val gone = l.controls.firstOrNull { it.id == controlId } ?: return
-            putLayout(context, l.copy(controls = l.controls.filterNot { it.id == controlId || (gone.group.isNotEmpty() && it.group == gone.group) }))
+            val gone = l.controls.firstOrNull { it.id == controlId || it.group == controlId } ?: return
+            putLayout(context, l.copy(controls = l.controls.filterNot {
+                it.id == gone.id || (gone.group.isNotEmpty() && it.group == gone.group)
+            }))
+        }
+    }
+
+    /** The group a control belongs to: its own id when it drags alone. */
+    fun groupOf(c: Custom): String = c.group.ifEmpty { c.id }
+
+    fun setGroupShape(context: Context, layoutId: String, group: String, shape: Int) {
+        layoutById(context, layoutId)?.let { l ->
+            putLayout(context, l.copy(controls = l.controls.map { c -> if (groupOf(c) == group) c.copy(shape = shape) else c }))
+        }
+    }
+
+    fun setGroupScale(context: Context, layoutId: String, group: String, scale: Float) {
+        val k = scale.coerceIn(0.4f, 2.5f)
+        layoutById(context, layoutId)?.let { l ->
+            putLayout(context, l.copy(controls = l.controls.map { c -> if (groupOf(c) == group) c.copy(scale = k) else c }))
         }
     }
 

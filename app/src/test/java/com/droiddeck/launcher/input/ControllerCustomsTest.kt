@@ -40,6 +40,28 @@ class ControllerCustomsTest {
         assertNull(ControllerPrefs.layoutById(context, made.id))
     }
 
+    @Test fun shapeAndScaleApplyPerGroupAndRoundTrip() {
+        val made = ControllerPrefs.newLayout(context, "Tamaño")
+        ControllerPrefs.addDpad(context, made.id)
+        ControllerPrefs.addControl(context, made.id, ControllerPrefs.KIND_MOUSE_LEFT, 0)
+        val first = ControllerPrefs.layoutById(context, made.id)!!.controls.first()
+        val group = ControllerPrefs.groupOf(first)
+        ControllerPrefs.setGroupShape(context, made.id, group, ControllerPrefs.SHAPE_SQUARE)
+        ControllerPrefs.setGroupScale(context, made.id, group, 1.75f)
+        var stored = ControllerPrefs.layoutById(context, made.id)!!.controls
+        // Every arrow of the cross takes the shape and the size; the mouse button does not.
+        assertEquals(4, stored.count { it.shape == ControllerPrefs.SHAPE_SQUARE && it.scale == 1.75f })
+        assertEquals(1f, stored.first { it.kind == ControllerPrefs.KIND_MOUSE_LEFT }.scale, 0f)
+        // Out-of-range scales are clamped, not stored raw.
+        ControllerPrefs.setGroupScale(context, made.id, group, 99f)
+        assertEquals(2.5f, ControllerPrefs.layoutById(context, made.id)!!.controls.first().scale, 0f)
+        // Removing through a group id (the editor's selection) takes the cross away.
+        ControllerPrefs.removeControl(context, made.id, group)
+        stored = ControllerPrefs.layoutById(context, made.id)!!.controls
+        assertEquals(1, stored.size)
+        assertEquals(ControllerPrefs.KIND_MOUSE_LEFT, stored[0].kind)
+    }
+
     @Test fun addedControlsKeepEveryFieldAndNeverCollide() {
         val made = ControllerPrefs.newLayout(context, "Mezcla")
         ControllerPrefs.addControl(context, made.id, ControllerPrefs.KIND_KEY, 17, target = "")
