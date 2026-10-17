@@ -106,6 +106,16 @@ def godot_sentry(game):
         return {"WINEDLLOVERRIDES": ";".join(n + "=d" for n in sentry)}, [], "Godot: Sentry crash handler off"
 
 
+@fix
+def darksouls_exact_bc(game):
+    # Dark Souls 1 draws its menus and videos as TV colour bars over static, and the world black
+    # behind its HUD, on the rc3-lowmem driver's 8 bpp AFRC shadow image (2026-10-17 zip). 0 is
+    # the driver's exact decode, at its pre-lowmem RAM cost; the game page's PANVK_BC_AFRC entry
+    # overrides this one.
+    if game.stem == "darksouls":
+        return {"PANVK_BC_AFRC": "0"}, [], "Dark Souls: exact BC decode (the lowmem AFRC shadow corrupts its textures)"
+
+
 def engine_fixes(exe, args):
     """Environment and extra arguments a game needs because of what it is built with."""
     game = Game(exe, args)
@@ -265,6 +275,7 @@ def main():
     env = os.environ.copy()
     mark_install_scripts(command, env)
     app_id = game_id(env)
+    base = dict(env)
     if app_id:
         waiting = len(command) > 1 and command[1] == "waitforexitandrun"
         fixes = {}
@@ -290,6 +301,13 @@ def main():
                 env = apply_config(env, {"version": 1}, app_id, fixes)
         except (OSError, ValueError, TypeError, AttributeError):
             print("droiddeck-game-env: invalid configuration; using inherited environment", file=sys.stderr)
+        # What the configuration and the engine fixes actually changed, one line for the session
+        # log: a knob asked about in a bug report ("was PANVK_BC_AFRC on?") reads its answer here.
+        overrides = sorted((k, str(env[k])) for k in env if base.get(k) != env[k])
+        if overrides:
+            print("droiddeck-game-env: env: " + ", ".join(
+                "%s=%s" % (name, value if len(value) <= 24 else value[:21] + "...") for name, value in overrides),
+                file=sys.stderr)
     env = force_ssbs(command, env)
     sync = load_sync()
     launch, launch_env = select_sync(command, env, sync)

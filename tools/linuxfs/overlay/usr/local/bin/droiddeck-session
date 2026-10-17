@@ -179,6 +179,9 @@ fi
 if [ "$software" != yes ] && [ "${BL_GPU_FAMILY:-}" = mali ]; then
   echo "== mali wsi: PANVK_KBASE_DRI3=${PANVK_KBASE_DRI3:-unset} (1 = dma-buf/AFBC, 0 = shm copies)"
   echo "== mali sema-waits: PANVK_KBASE_GPU_SEMAPHORE_WAITS=${PANVK_KBASE_GPU_SEMAPHORE_WAITS:-unset} (1 = waits inside the submit ring; Download/droiddeck-mali-semawaits=0 undoes it)"
+  if [ -n "${PANVK_BC_AFRC:-}" ]; then
+    echo "== mali bc: PANVK_BC_AFRC=${PANVK_BC_AFRC} (0 = exact BC decode; Download/droiddeck-mali-afrc or the game page set it)"
+  fi
   # Games' present path. The gamescope WSI layer (the XWayland-bypass swapchain) hung after the
   # first frame on both 2026-10-12 and 2026-10-14 sessions: swapchain created, no error back,
   # audio and input alive, picture frozen at the game's logo. It never reads PANVK_KBASE_DRI3,

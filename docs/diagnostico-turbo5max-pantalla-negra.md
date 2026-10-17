@@ -516,6 +516,33 @@ Sospechosos, por orden:
 3. **WSI dma-buf/AFBC**: poco probable ya (el OSD y el texto salen bien); queda el A/B
    `PANVK_KBASE_DRI3=0` para la corrupción de vídeos si el punto 1 no basta.
 
+## Tercer informe (17-10-2026 por la mañana): la degradación BC es DE DISEÑO en rc3-lowmem, y DS1 ahora va con decode exacto por defecto
+
+El zip "log juego externos 2" trajo dos sesiones: **Mecha con el Shipping.exe** (ver su sección)
+y **DS1 por la mañana** (6 min, 08:50-08:56 local, captura 08:55: en partida el HUD, las barras
+de vida y los menús del juego SÍ se dibujan; el mundo 3D sigue negro). Esa sesión salió **sin
+recolectar** (sin `artifacts_collected`, sin `.complete`, sin sección "Sync in use") y **sin
+rastro de `PANVK_BC_AFRC`** — `apply_config` aplicaba la configuración en silencio, así que no
+se podía distinguir "no la activó" de "la activó y no se ve".
+
+Hecho clave aprendido de upstream (notas de rc3-lowmem): la degradación BC **es intencional** —
+"BC textures are decoded into an AFRC shadow image... look slightly worse", BC1 RGB y BC7 a 8 bpp
+con error máx. 38-61 LSB en bloques aleatorios; upstream solo probó NFS (pocas texturas BC) y NO
+hay release más nuevo que rc3-lowmem (checks de hoy). DS1 está lleno de BC → candidato perfecto.
+
+**Cambios de este commit (APK nuevo):**
+
+- **Dark Souls ya no necesita tocar nada**: nuevo motor-fix en `droiddeck-game-env` que detecta
+  `DARKSOULS.exe` y exporta `PANVK_BC_AFRC=0` (decode exacto, coste RAM previo a lowmem; la
+  opción de la página del juego puede sobreescribirlo). Probado: la sesión imprime
+  `droiddeck-game-env: Dark Souls: exact BC decode...` + `droiddeck-game-env: env: PANVK_BC_AFRC=0`.
+- **Observabilidad**: `droiddeck-game-env` imprime ahora UNA línea `env: NOMBRE=valor, ...` con
+  todo lo que la configuración y los fixes cambiaron (antes era invisible) — la próxima duda
+  "¿estaba activo X?" se lee en session.log. Y `droiddeck-session` hace eco del switch global
+  (`== mali bc: PANVK_BC_AFRC=...`) cuando el archivo `Download/droiddeck-mali-afrc` está.
+- Si con decode exacto DS1 **sigue** con barras/negro: AFRC queda descartado como causa y el
+  siguiente sospechoso es el camino D24S8 (punto 2 de la lista anterior).
+
 ## Mecha Chameleon (16-10-2026, sesión 09-steam): no inicia, "falta de componentes" — RESUELTO
 
 appid local 15188656168751857664 → `MECCHA CHAMELEON/MECCHA CHAMELEON/PenguinHotel.exe`, prefijo
@@ -537,6 +564,15 @@ launcher el juego corre entero.
 `*-Shipping.exe`). Alternativa si se quisiera el launcher: instalar el VC++ 2015-2022 x64 en el
 prefijo (componente de Windows del juego) — pero el chequeo puede seguir fallando igual, así
 que el `-Shipping.exe` es el camino fiable.
+
+**Resultado del intento del usuario (zip "2", sesión 2026-10-16-11, APK nuevo confirmado por el
+nuevo "Sync in use"): el Shipping.exe ya NO es el chequeo del launcher — el juego arranca de
+verdad** (vcruntime `__telemetry_main_invoke_trigger` en 3 módulos: CRT de UE5 vivo; el runtime
+VC++ está bien) pero a ~56 s saca OTRO MessageBox `#32770`+`Button` y sale limpio
+(`__telemetry_main_return` = descarga ordenada). Sin un solo `err:` mientras corría. Candidatos:
+**Epic Online Services** (el juego lo exige para matchmaking; su SDK saca MessageBox propio al
+fallar) o el diálogo de UE5 "Out of video memory" (RHI sin espacio con heap al 12%). Siguiente
+paso: **texto/captura del diálogo**; red activa en la sesión (su network.txt: WiFi validado ✓).
 
 ## 7. Plan de prueba sugerido (en el Turbo 5 Max, cuando el reportante colabore)
 
