@@ -60,7 +60,7 @@ object SessionArtifacts {
             SessionLogCapture.dumpCrashBuffer(File(dir, "crash.log"))
             // The log is final by now: say which sync backend the games actually ran on, the one
             // thing the report's settings lines cannot tell (a game's env can override them).
-            com.droiddeck.launcher.core.DeviceReport.appendSyncInUse(File(dir, "device.txt"), File(dir, "session.log"))
+            com.droiddeck.launcher.core.DeviceReport.appendSyncInUse(File(dir, "device.txt"), dir)
             markScrubbed(scrubTree(record))
             SessionEvents.record("session.artifacts_collected", mapOf("reason" to reason), dir)
             File(dir, COMPLETE_MARKER).writeText("collected: $reason at ${now()}\n")

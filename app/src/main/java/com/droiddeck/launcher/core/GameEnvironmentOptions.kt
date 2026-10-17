@@ -12,6 +12,7 @@ object GameEnvironmentOptions {
         Option("VKD3D_SHADER_MODEL", "6_9", R.string.game_env_shader, Type.CHOICE, listOf("6_9", "6_8", "6_7", "6_6", "6_5", "6_4", "6_3", "6_2", "6_1", "6_0", "5_1")),
         Option("VKD3D_CONFIG", "nodxr", R.string.game_env_vkd3d_config, Type.MULTIPLE, listOf("nodxr", "single_queue", "no_upload_hvv")),
         Option("MESA_SHADER_CACHE_MAX_SIZE", "1G", R.string.game_env_cache_size, Type.CHOICE, listOf("512M", "1G", "2G", "4G")),
+        Option("PANVK_BC_AFRC", "0", R.string.game_env_bc_afrc, Type.CHOICE, listOf("0", "16", "24", "32")),
         Option("PROTON_LOG", "1", R.string.game_env_proton_log, Type.TOGGLE, listOf("0", "1")),
         Option("PROTON_USE_WINED3D", "1", R.string.game_env_wined3d, Type.TOGGLE, listOf("0", "1")),
         Option("PROTON_USE_XALIA", "0", R.string.game_env_xalia, Type.TOGGLE, listOf("0", "1")),

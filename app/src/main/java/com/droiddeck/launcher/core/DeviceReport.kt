@@ -236,17 +236,28 @@ object DeviceReport {
      * wine says on its stderr what answered - "droiddeck-ntsync/esync/fsync: up and running."
      * from a pack or our userspace stand-ins, "fsync: up and running." from Proton's own, and
      * nothing at all when every object went through the wineserver. Written at a session's end,
-     * when the log is final (device.txt itself is written at a session's start). The last marker
-     * wins: a session can run the client and then a game that turned esync off.
+     * when the log is final (device.txt itself is written at a session's start). The real marker
+     * lands in each game's steam/steam-<appid>.log (one per game wineserver) - the session log
+     * only carries the launcher's own wineserver and often none at all - so the game logs are
+     * read first, newest first, and the session log is the fallback for sessions that never
+     * launched Steam. Within one log the last marker wins: a session can run the client and
+     * then a game that turned esync off.
      */
-    fun appendSyncInUse(device: File, sessionLog: File?) {
+    fun appendSyncInUse(device: File, sessionDir: File?) {
         try {
-            val lines = sessionLog?.takeIf { it.isFile }?.let { log ->
+            val sessionLog = sessionDir?.takeIf { it.isDirectory }?.let { File(it, "session.log") }
+            val gameLogs = sessionDir?.takeIf { it.isDirectory }?.let { dir ->
                 runCatching {
-                    log.useLines { lines -> lines.take(150_000).toList() }
-                }.getOrNull()
+                    File(dir, "steam").listFiles { f -> f.isFile && f.name.startsWith("steam-") && f.name.endsWith(".log") }
+                        ?.sortedByDescending { it.lastModified() }?.take(4)
+                }.getOrNull() ?: emptyList()
             } ?: emptyList()
-            val backend = syncBackendInUse(lines)
+            val backend = (gameLogs + listOfNotNull(sessionLog)).firstNotNullOfOrNull { log ->
+                val lines = log.takeIf { it.isFile }?.let { f ->
+                    runCatching { f.useLines { ls -> ls.take(150_000).toList() } }.getOrNull()
+                } ?: return@firstNotNullOfOrNull null
+                syncBackendInUse(lines)
+            }
             device.appendText("\n\nSync in use\n-----------\n")
             device.appendText(backend ?: "no wineserver started (no game ran, or it never got there)")
             device.appendText("\n")

@@ -305,6 +305,20 @@ class SessionService : Service() {
     }
 
     /**
+     * PANVK_BC_AFRC, only when Download/droiddeck-mali-afrc says so ("0"/"16"/"24"/"32"). The
+     * rc3-lowmem driver stores BC1/BC7 textures Arm-fixed-rate-compressed (8bpp - the R8 RAM
+     * win); a game whose videos and menus come up as TV colour bars over static (Dark Souls,
+     * 2026-10-16 22:04) is the signature of that compression disagreeing with a texture, and
+     * "0" stores them exact again at the old RAM cost. Unset = the driver's own choice; a game
+     * can also set just itself through its launch settings' PANVK_BC_AFRC.
+     */
+    private fun maliBcAfrc(): String? {
+        val override = File(Environment.getExternalStorageDirectory(), "Download/droiddeck-mali-afrc")
+            .takeIf { it.isFile }?.let { FileUtils.readString(it)?.trim() }
+        return override?.takeIf { it in setOf("0", "16", "24", "32") }
+    }
+
+    /**
      * The gamescope WSI layer (the XWayland-bypass swapchain) for games, on by default upstream and
      * bypassed here on hardware Mali. Both 2026-10-12 (Clicker Heroes) and 2026-10-14 (Craft. Sell.
      * Goblin. Repeat) sessions froze the same way with it on: the layer logged its swapchain created
@@ -689,6 +703,12 @@ class SessionService : Service() {
                 guest.add("BL_MALI_GAMESCOPE_WSI=" + if (maliGamescopeWsi()) "1" else "0")
                 // In-ring semaphore waits on the driver (see maliSemaphoreWaits()).
                 guest.add("PANVK_KBASE_GPU_SEMAPHORE_WAITS=" + if (maliSemaphoreWaits()) "1" else "0")
+                // Exact BC textures when the switch asks (see maliBcAfrc()); the log line says
+                // what the session chose, beside the driver's other knobs.
+                maliBcAfrc()?.let {
+                    guest.add("PANVK_BC_AFRC=" + it)
+                    Log.i(TAG, "mali: PANVK_BC_AFRC=$it (Download/droiddeck-mali-afrc)")
+                }
             }
         }
         // An imported glibc Turnip, when one is set (by the user, or by Auto): the session script

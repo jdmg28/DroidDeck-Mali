@@ -486,6 +486,58 @@ constancia de que **el pack esync de Valve Experimental ya está en uso** ("1 pa
 renombrar `lgoBoost.dll` (y lanzar DARKSOULS.exe directamente), y re-apuntar el acceso directo
 al exe real si el elegido era un lanzador.
 
+## Segundo informe (16-10-2026, tras quitar lgoBoost): DS1 arranca, pero vídeos/menús corruptos y partida en negro
+
+**Confirmado por el usuario**: sin `lgoBoost.dll` el juego abre ("ahora sí ya puedo jugar").
+Sesión `DroidDeck-2026-10-16-10-steam` + captura (X6 Pro, G615): ahora el problema es gráfico —
+
+- **Menús y pantallas de carga**: barras de color de TV + estática, con el texto del juego
+  ("In the Age of Ancients,") dibujado correcto encima → la presentación va bien; lo que se
+  corrompe es **la subida de texturas dinámicas/vídeo** (los FMV de DS1 y sus fondos de menú
+  son texturas que se re-suben cada frame en D3D9).
+- **En partida**: pantalla **completamente negra**, solo se ven los iconos del overlay táctil;
+  HUD Fps: 18, Ram: 82%. El overlay es app-side y funciona → el negro no es del presentador.
+- Logs limpios: `DARKSOULS_d3d9.log` sano (swapchain 1280x720 A8R8G8B8 ventana, "Auto Depth
+  Stencil: false" con formato D24S8, 1440 shaders de caché encontrados, GPL soportado,
+  memory type mask 0x7), sin errores en session.log. **No es Proton: apunta al camino de
+  textura/profundidad del driver panvk en G615.**
+
+Sospechosos, por orden:
+
+1. **AFRC sobre texturas BC/dinámicas** del driver rc3-lowmem (comprime texturas a tasa fija
+   Arm ~8bpp; una discrepancia ahí produce exactamente ruido/barras en texturas re-subidas).
+   **Palanca nueva**: `Download/droiddeck-mali-afrc` con `0` (la sesión exporta
+   `PANVK_BC_AFRC=0` y el driver guarda esas texturas exactas, a coste de RAM), o por juego en
+   los ajustes de inicio (opción `PANVK_BC_AFRC` = 0/16/24/32). La línea
+   `mali: PANVK_BC_AFRC=…` queda en logcat al arrancar.
+2. **D24S8 como profundidad en panvk/G615** (encaja con 3D negro + overlay vivo); el juego pide
+   D24S8 con "Auto Depth Stencil: false" — si el punto 1 no arregla, siguiente prueba: que el
+   driver tome D24S8 como D32S8 interno.
+3. **WSI dma-buf/AFBC**: poco probable ya (el OSD y el texto salen bien); queda el A/B
+   `PANVK_KBASE_DRI3=0` para la corrupción de vídeos si el punto 1 no basta.
+
+## Mecha Chameleon (16-10-2026, sesión 09-steam): no inicia, "falta de componentes" — RESUELTO
+
+appid local 15188656168751857664 → `MECCHA CHAMELEON/MECCHA CHAMELEON/PenguinHotel.exe`, prefijo
+`compatdata/3536384592`, esync vivo. A ~25 s: MessageBox Win32 (`#32770` + `Button`, con stubs
+uiautomation/oleacc) y salida limpia por `AppPolicyGetProcessTerminationMethod`. Sin ningún
+`err:module` (WINEDEBUG lleva `+err`, un import estático faltante se habría registrado).
+
+**Causa raíz**: el juego es **Unreal Engine 5.6 + Epic Online Services** (Steam App ID 4704690,
+lemorion_1224/Haganeiro) y `PenguinHotel.exe` es el **launcher de UE5**, no el juego. Ese
+launcher comprueba el runtime y saca el diálogo **"Microsoft Visual C++ 2015-2022
+Redistributable (x64) is required to run this program"** (= el "falta de componentes" que vio
+el usuario) — y lo saca **incluso con el redist instalado**: bajo Wine/CrossOver su chequeo
+falla siempre. Verificado por terceros en CrossOver (allthings.how, jun-2026): saltándose el
+launcher el juego corre entero.
+
+**Fix**: apuntar el juego directamente a la build shipping de UE5:
+`MECCHA CHAMELEON/MECCHA CHAMELEON/PenguinHotel/Binaries/Win64/PenguinHotel-Win64-Shipping.exe`
+(en DroidDeck: página del juego → cambiar el ejecutable / re-importar apuntando al
+`*-Shipping.exe`). Alternativa si se quisiera el launcher: instalar el VC++ 2015-2022 x64 en el
+prefijo (componente de Windows del juego) — pero el chequeo puede seguir fallando igual, así
+que el `-Shipping.exe` es el camino fiable.
+
 ## 7. Plan de prueba sugerido (en el Turbo 5 Max, cuando el reportante colabore)
 
 1. APK de este fork + **nuevo zip universal** (importar sin descomprimir) + modo Mali experimental.
