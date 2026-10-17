@@ -66,7 +66,7 @@ class CloudSavesTest {
     }
 
     @Test fun aDirtyMarkStaysUntilAnUploadGoesThroughOrIsSkippedForGood() {
-        val gameId = "1207664643"
+        val gameId = "${System.nanoTime()}"
         val folder = File(StoreInstallRoot.storeDir(StoreInstallRoot.internalRoot(app), Store.GOG), "ELDERBORN-mark").apply { mkdirs() }
         File(folder, "ELDERBORN.exe").writeText("MZ")
         StoreGameSidecar(Store.GOG, gameId, "ELDERBORN", "ELDERBORN.exe").write(folder)
@@ -82,7 +82,9 @@ class CloudSavesTest {
         assertTrue(CloudSaves.dirty(app).contains(Store.GOG to gameId))
         // The store has no cloud saves for it: a final skip, the mark goes; a second trigger finds nothing.
         com.droiddeck.launcher.stores.gog.GogPrefs.get(app).edit().putString("cloud_template_$gameId", "").apply()
-        assertEquals("no-cloud-saves", CloudSaves.uploadDirty(app, Store.GOG, gameId, "exit")!!.reason)
+        val exit = CloudSaves.uploadDirty(app, Store.GOG, gameId, "exit")
+        assertTrue("the mark was already gone when the final skip ran: ${exit?.line}", exit != null)
+        assertEquals("no-cloud-saves", exit?.reason)
         assertTrue(CloudSaves.dirty(app).none { it.second == gameId })
         assertEquals(null, CloudSaves.uploadDirty(app, Store.GOG, gameId, "session-end"))
     }
