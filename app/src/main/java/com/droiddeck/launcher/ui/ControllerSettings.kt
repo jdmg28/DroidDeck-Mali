@@ -30,6 +30,8 @@ class ControllerActions(
     val onKeyboardButton: (Boolean) -> Unit,
     val onEditLayout: () -> Unit,
     val onResetLayout: () -> Unit,
+    /** Adds a custom on-screen control (a PC key, a mouse button, a WASD stick, a touchpad). */
+    val onAddControl: () -> Unit = {},
     val onMapping: () -> Unit,
     val onResetAll: () -> Unit,
 )
@@ -72,6 +74,7 @@ fun ColumnScope.ControllerRows(host: MenuHost, oscMode: String, c: ControllerPre
     ToggleRow(host, "controller-keyboard", stringResource(R.string.ctrl_keyboard_button), null, c.keyboardButton, onChange = a.onKeyboardButton)
     SettingsRow(stringResource(R.string.ctrl_layout), if (c.customLayout) stringResource(R.string.ctrl_layout_custom) else stringResource(R.string.ctrl_layout_default)) {
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            SecondaryButton(stringResource(R.string.touchkeys_add)) { a.onAddControl() }
             SecondaryButton(stringResource(R.string.ctrl_edit)) { a.onEditLayout() }
             SecondaryButton(stringResource(R.string.ctrl_reset), enabled = c.customLayout) { a.onResetLayout() }
         }

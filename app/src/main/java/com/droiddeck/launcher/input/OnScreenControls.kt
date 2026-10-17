@@ -24,6 +24,12 @@ class OnScreenControls(
     private val pad: PadBridge?,
     private val editing: Boolean = false,
     private val onKeyboard: (() -> Unit)? = null,
+    /** A custom control pressed a real PC key (the session's wl_keyboard). */
+    private val onKey: ((Int, Boolean) -> Unit)? = null,
+    /** A custom control clicked the mouse (an evdev button code, the scene pointer). */
+    private val onMouse: ((Int, Boolean) -> Unit)? = null,
+    /** The custom touchpad dragged, in this view's pixels. */
+    private val onPadDelta: ((Float, Float) -> Unit)? = null,
 ) : View(context) {
 
     private class Control(
@@ -33,8 +39,20 @@ class OnScreenControls(
         val radiusDp: Float,
         val offsetXDp: Float,
         val offsetYDp: Float,
+        val kind: Int = KIND_GAMEPAD,
+        val code: Int = 0,
+        val shape: Int = ControllerPrefs.SHAPE_CIRCLE,
+        val labelOverride: String = "",
+        wideOverride: Boolean = false,
     ) {
         var target = id
+        // Custom controls' sink state: edge detection for presses, the keys a WASD stick holds,
+        // and the touchpad finger's last place.
+        var sinkDown = false
+        val heldKeys = mutableSetOf<Int>()
+        var padLastX = 0f
+        var padLastY = 0f
+        var padTravelled = 0f
         var radius = 0f
         var cx = 0f
         var cy = 0f
@@ -46,7 +64,7 @@ class OnScreenControls(
         var dirty = false
         var clicked = false
         var lastUp = 0L
-        val wide = id in shoulderIds
+        val wide = wideOverride || id in shoulderIds
         val halfW get() = if (wide) radius * SHOULDER_WIDTH else radius
         val halfH get() = if (wide) radius * SHOULDER_HEIGHT else radius
 
@@ -67,7 +85,11 @@ class OnScreenControls(
         }
     }
 
-    private val controls = listOf(
+    private val controls = mutableListOf<Control>()
+
+    private val groups: List<String> get() = controls.map { it.group }.distinct()
+
+    private fun baseControls() = listOf(
         Control("up", "dpad", -1, 26f, 0f, -52f),
         Control("right", "dpad", -1, 26f, 52f, 0f),
         Control("down", "dpad", -1, 26f, 0f, 52f),
@@ -88,7 +110,31 @@ class OnScreenControls(
         Control("qam", "qam", -1, 22f, 0f, 0f),
     )
 
-    private val groups = controls.map { it.group }.distinct()
+    /** Re-reads the custom controls (the editor or the settings page changed them). */
+    fun rebuild() {
+        releaseAll()
+        controls.clear()
+        controls += baseControls()
+        for (c in ControllerPrefs.customs(context)) {
+            controls += Control(c.id, c.id,
+                if (c.kind == ControllerPrefs.KIND_WASD) 0 else -1,
+                when (c.kind) {
+                    ControllerPrefs.KIND_WASD -> 46f
+                    ControllerPrefs.KIND_TOUCHPAD -> 30f
+                    else -> 22f
+                }, 0f, 0f,
+                kind = c.kind,
+                code = when (c.kind) {
+                    ControllerPrefs.KIND_MOUSE_LEFT -> PointerGestures.BTN_LEFT
+                    ControllerPrefs.KIND_MOUSE_RIGHT -> PointerGestures.BTN_RIGHT
+                    ControllerPrefs.KIND_MOUSE_MIDDLE -> PointerGestures.BTN_MIDDLE
+                    else -> c.code
+                },
+                shape = c.shape, labelOverride = c.label,
+                wideOverride = c.kind == ControllerPrefs.KIND_TOUCHPAD)
+        }
+        if (width > 0) relayout() else invalidate()
+    }
 
     private var buttonsOnly = false
     private var quickHidden = false
@@ -120,6 +166,7 @@ class OnScreenControls(
     }
 
     init {
+        rebuild()
         applySettings()
     }
 
@@ -138,6 +185,7 @@ class OnScreenControls(
     fun reload() {
         releaseAll()
         settings = ControllerPrefs.read(context)
+        rebuild()
         applySettings()
         relayout()
     }
@@ -206,6 +254,7 @@ class OnScreenControls(
             put("qam", width - safe.right - inset, height - safe.bottom - inset)
         } else {
             placeAuto(width.toFloat(), height.toFloat())
+            placeCustomsDefaults(width.toFloat())
             if (!ignoreSaved) for ((group, pos) in ControllerPrefs.layout(context, width, height)) {
                 if (group in groups) put(group, pos.first * width, pos.second * height)
             }
@@ -354,13 +403,26 @@ class OnScreenControls(
         relayout()
     }
 
-    private fun label(control: Control): String = when (control.target) {
-        "ls" -> "L"
-        "rs" -> "R"
-        "select" -> "⧉"
-        "start" -> "☰"
-        "guide" -> if (buttonsOnly && !editing) "Steam" else "◉"
-        "qam" -> "⋯"
+    /** Customs nobody positioned yet: a column inside the right edge, under the face group. */
+    private fun placeCustomsDefaults(w: Float) {
+        val known = setOf("dpad", "ls", "rs", "face", "lb", "lt", "rb", "rt", "select", "start", "guide", "qam")
+        val saved = ControllerPrefs.layout(context, width, height).keys
+        val fresh = controls.map { it.group }.distinct().filter { it !in known && it !in saved }
+        fresh.forEachIndexed { index, group ->
+            val r = members(group).maxOf { it.radius }
+            put(group, w - safe.right - r - dp(10f), safe.top + dp(110f) + index * (2 * r + dp(14f)))
+        }
+    }
+
+    private fun label(control: Control): String = when {
+        control.labelOverride.isNotEmpty() -> control.labelOverride
+        control.kind == ControllerPrefs.KIND_TOUCHPAD -> "TOUCH"
+        control.target == "ls" -> "L"
+        control.target == "rs" -> "R"
+        control.target == "select" -> "⧉"
+        control.target == "start" -> "☰"
+        control.target == "guide" -> if (buttonsOnly && !editing) "Steam" else "◉"
+        control.target == "qam" -> "⋯"
         else -> control.target.uppercase()
     }
 
@@ -383,7 +445,7 @@ class OnScreenControls(
                 stroke.color = if (held) heldStroke else idleStroke
                 canvas.drawCircle(bx + control.kx, by + control.ky, knob, stroke)
                 text.color = if (held) Color.WHITE else idleText
-                text.textSize = knob * 0.8f
+                text.textSize = knob * if (label(control).length > 3) 0.55f else 0.8f
                 canvas.drawText(label(control), bx + control.kx, by + control.ky + text.textSize * 0.35f, text)
             } else if (control.wide) {
                 box.set(control.cx - control.halfW, control.cy - control.halfH, control.cx + control.halfW, control.cy + control.halfH)
@@ -397,9 +459,17 @@ class OnScreenControls(
                 canvas.drawText(label(control), control.cx, control.cy + text.textSize * 0.35f, text)
             } else {
                 fill.color = if (held) heldFill else idleFill
-                canvas.drawCircle(control.cx, control.cy, radius, fill)
                 stroke.color = if (held) heldStroke else idleStroke
-                canvas.drawCircle(control.cx, control.cy, radius, stroke)
+                if (control.shape == ControllerPrefs.SHAPE_CIRCLE) {
+                    canvas.drawCircle(control.cx, control.cy, radius, fill)
+                    canvas.drawCircle(control.cx, control.cy, radius, stroke)
+                } else {
+                    val inset = radius * 0.92f
+                    box.set(control.cx - inset, control.cy - inset, control.cx + inset, control.cy + inset)
+                    val corner = if (control.shape == ControllerPrefs.SHAPE_ROUNDED) inset * 0.45f else inset * 0.15f
+                    canvas.drawRoundRect(box, corner, corner, fill)
+                    canvas.drawRoundRect(box, corner, corner, stroke)
+                }
                 text.color = if (held) Color.WHITE else idleText
                 val direction = directions.indexOf(control.target)
                 if (direction >= 0) {
@@ -517,6 +587,11 @@ class OnScreenControls(
                     control.ay = if (adaptive) event.getY(index) else control.cy
                     control.drag(event.getX(index), event.getY(index))
                 }
+                if (control.kind == ControllerPrefs.KIND_TOUCHPAD) {
+                    control.padLastX = event.getX(index)
+                    control.padLastY = event.getY(index)
+                    control.padTravelled = 0f
+                }
                 requestUnbufferedDispatch(event)
                 apply()
                 return true
@@ -531,9 +606,20 @@ class OnScreenControls(
                     val y = event.getY(index)
                     val stick = controls.firstOrNull { it.stick >= 0 && it.pressedBy == pointer }
                     if (stick != null) { stick.drag(x, y); changed = true; continue }
-                    val over = controlAt(x, y)?.takeIf { it.stick < 0 }
+                    val pad = controls.firstOrNull { it.kind == ControllerPrefs.KIND_TOUCHPAD && it.pressedBy == pointer }
+                    if (pad != null) {
+                        val dx = x - pad.padLastX
+                        val dy = y - pad.padLastY
+                        pad.padLastX = x
+                        pad.padLastY = y
+                        pad.padTravelled += sqrt(dx * dx + dy * dy)
+                        onPadDelta?.invoke(dx, dy)
+                        continue
+                    }
+                    val over = controlAt(x, y)?.takeIf { it.stick < 0 && it.kind != ControllerPrefs.KIND_TOUCHPAD }
                     for (control in controls) {
-                        if (control.stick < 0 && control.pressedBy == pointer && control !== over) {
+                        if (control.stick < 0 && control.kind != ControllerPrefs.KIND_TOUCHPAD &&
+                            control.pressedBy == pointer && control !== over) {
                             control.pressedBy = -1
                             changed = true
                         }
@@ -567,10 +653,13 @@ class OnScreenControls(
                 }
                 if (quickHidden) return false
                 var changed = false
+                var padTapped = false
                 for (control in controls) {
                     if (control.pressedBy == pointer || event.actionMasked == MotionEvent.ACTION_CANCEL) {
                         if (control.pressedBy != -1) changed = true
                         if (control.stick >= 0 && control.pressedBy != -1) control.lastUp = if (control.clicked || event.actionMasked == MotionEvent.ACTION_CANCEL) 0L else event.eventTime
+                        if (control.kind == ControllerPrefs.KIND_TOUCHPAD && control.pressedBy != -1 &&
+                            event.actionMasked == MotionEvent.ACTION_UP && control.padTravelled < dp(12f)) padTapped = true
                         control.pressedBy = -1
                         control.clicked = false
                         if (control.stick >= 0 && (control.kx != 0f || control.ky != 0f)) control.dirty = true
@@ -578,6 +667,10 @@ class OnScreenControls(
                     }
                 }
                 if (changed) apply()
+                if (padTapped) {
+                    onMouse?.invoke(PointerGestures.BTN_LEFT, true)
+                    postDelayed({ onMouse?.invoke(PointerGestures.BTN_LEFT, false) }, 60L)
+                }
                 return true
             }
         }
@@ -649,8 +742,10 @@ class OnScreenControls(
                     when {
                         control.stick >= 0 -> {
                             val click = if (control.stick == 0) "l3" else "r3"
-                            if (settings.stickClick) used.add(click)
-                            if (control.clicked) held.add(click)
+                            if (control.kind == KIND_GAMEPAD) {
+                                if (settings.stickClick) used.add(click)
+                                if (control.clicked) held.add(click)
+                            }
                             if (!control.dirty) continue
                             if (control.stick == 0) { state.leftX = control.kx / control.radius; state.leftY = control.ky / control.radius }
                             else { state.rightX = control.kx / control.radius; state.rightY = control.ky / control.radius }
@@ -664,6 +759,28 @@ class OnScreenControls(
                     }
                 }
                 for (target in used) write(state, target, target in held)
+            }
+            // The custom controls speak directly: keys and mouse buttons with edge detection, the
+            // WASD stick by diffing the keys its knob position holds.
+            for (control in controls) {
+                when (control.kind) {
+                    ControllerPrefs.KIND_KEY, ControllerPrefs.KIND_MOUSE_LEFT,
+                    ControllerPrefs.KIND_MOUSE_RIGHT, ControllerPrefs.KIND_MOUSE_MIDDLE -> {
+                        val down = control.pressedBy != -1
+                        if (down != control.sinkDown) {
+                            control.sinkDown = down
+                            if (control.kind == ControllerPrefs.KIND_KEY) onKey?.invoke(control.code, down)
+                            else onMouse?.invoke(control.code, down)
+                        }
+                    }
+                    ControllerPrefs.KIND_WASD -> {
+                        val target = TouchKeys.wasdKeys(control.kx / control.radius, control.ky / control.radius)
+                        for (code in target - control.heldKeys) onKey?.invoke(code, true)
+                        for (code in control.heldKeys - target) onKey?.invoke(code, false)
+                        control.heldKeys.clear()
+                        control.heldKeys += target
+                    }
+                }
             }
         }
         invalidate()
@@ -695,18 +812,28 @@ class OnScreenControls(
         quickPressedBy = -1
         keyboardPressedBy = -1
         invalidate()
-        if (controls.none { it.pressedBy != -1 || it.clicked } && !buttonsOnly) return
+        if (controls.none { it.pressedBy != -1 || it.clicked || it.sinkDown || it.heldKeys.isNotEmpty() } && !buttonsOnly) return
         controls.forEach {
             it.pressedBy = -1
             it.clicked = false
             it.lastUp = 0L
             if (it.stick >= 0 && (it.kx != 0f || it.ky != 0f)) it.dirty = true
             it.kx = 0f; it.ky = 0f
+            // The sinks are edge-triggered in apply(); release what they hold directly.
+            if (it.sinkDown) {
+                if (it.kind == ControllerPrefs.KIND_KEY) onKey?.invoke(it.code, false) else onMouse?.invoke(it.code, false)
+                it.sinkDown = false
+            }
+            if (it.heldKeys.isNotEmpty()) {
+                for (code in it.heldKeys) onKey?.invoke(code, false)
+                it.heldKeys.clear()
+            }
         }
         apply()
     }
 
     private companion object {
+        const val KIND_GAMEPAD = -1
         const val DOUBLE_TAP_MS = 300L
         const val MIN_FACE_MM = 9.5f
         const val FULL_SIZE_HEIGHT_MM = 85f

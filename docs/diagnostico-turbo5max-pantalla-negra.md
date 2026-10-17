@@ -633,3 +633,35 @@ tests Robolectric (TouchKeysStoreTest).
 saber si corrió con el paquete RC3 exact-BC o con el lowmem. El reporte de sesión ya imprime
 `Linux driver: <nombre> <versión>` (de meta.json), así que el próximo zip lo dice solo.
 Si confirma RC3-exactbc y sigue negro → siguiente sospechoso D24S8 vía el adaptador ICD.
+
+## Sexta ronda (17-10-2026 noche): DS1 con RC3-exactbc estable pero negro en partida → BC descartado; sospechoso restante: profundidad (D24S8)
+
+Sesión `2026-10-17-16-steam` (zip subido de noche): el device.txt prueba que el usuario instaló
+el paquete nuevo — `Linux driver: DroidDeck Mali CSF PanVK-kbase v0.1.0-rc3 exact BC`. DARKSOULS.exe
+llegó a **1.1 GB RSS** con heartbeats sanos (2.2→1.4 GB disponibles, cpu 64-79%) durante varios
+minutos y **NO hubo reinicio** (el juego se cerró y la sesión quedó "without teardown" por la
+salida de la app). **Con BC exacto el mundo sigue negro en partida** → la causa del negro NO es
+AFRC/BC (esa era la de las barras de los menús/vídeos). El usuario no dejó captura de DS1: falta
+saber si los menús/vídeos se arreglaron con RC3-exactbc (para separar BC-render de profundidad).
+
+Siguiente hipótesis (única en pie): **el camino de profundidad D24S8** (el juego pide
+D16S8→DXVK lo mapea a D24S8; "Auto Depth Stencil: false") o el render-target del frame final.
+Prueba A/B sin driver nuevo: en la página del juego, "Entorno" → activar
+**PROTON_USE_WINED3D** (DXVK→wined3d/GL). Si con wined3d el mundo se dibuja, es del formato de
+profundidad en panvk y se ataca en el adaptador ICD (D24S8→D32S8 interno).
+
+## El mando táctil gana controles de teclado/ratón (rehecho tras el rechazo del apartado separado)
+
+El usuario rechazó la capa aparte (commit b3ac670): quería editar **el mando de siempre** desde
+**Configuración → Mando → Disposición**. Rehecho: `ControllerPrefs.Custom` (tecla de PC / clic
+izq-der / **joystick que aprieta WASD** / touchpad relativo, con **forma** círculo↔cuadrado) —
+
+- **Configuración → Mando → Disposición → "Añadir"**: abre el selector (ControllerCustoms);
+  "Editar" (el editor de siempre, ControllerEditorActivity) también tiene el botón Añadir y
+  arrastra los controles nuevos como cualquier otro; cada control añadido tiene Forma y Quitar.
+- En juego se ven y funcionan con **Controles en pantalla: Siempre** (OSC_ALWAYS muestra el
+  mando clásico también en sesiones Steam). Teclas por wl_keyboard (sendGuestKey), clics por el
+  puntero de escena, touchpad por sendPointerDelta (los canales existentes).
+- WASD: stick virtual cuyo knob mantiene las teclas (TouchKeys.wasdKeys, zona muerta 0.35,
+  diagonales incluidas; probado en ControllerCustomsTest).
+- La capa TouchKeysView separada y su apartado en el cajón de sesión: eliminados.

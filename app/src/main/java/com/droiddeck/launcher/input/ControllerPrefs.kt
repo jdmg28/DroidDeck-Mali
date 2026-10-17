@@ -142,6 +142,76 @@ object ControllerPrefs {
         prefs(context).edit().clear().putBoolean("rumble", true).apply()
     }
 
+    // ---- Custom on-screen controls (input/OnScreenControls draws and drives them) ----
+    //
+    // A keyboard-and-mouse game hears nothing from a virtual gamepad, so the pad can carry
+    // controls the user adds: buttons that press real PC keys, mouse clicks, a stick that holds
+    // WASD, a relative touchpad. Lives beside the layout (the editor drags them like any other).
+
+    const val KIND_KEY = 0
+    const val KIND_MOUSE_LEFT = 1
+    const val KIND_MOUSE_RIGHT = 2
+    const val KIND_MOUSE_MIDDLE = 3
+    const val KIND_WASD = 4
+    const val KIND_TOUCHPAD = 5
+
+    /** 0 circle (the default), 1 rounded square, 2 square. */
+    const val SHAPE_CIRCLE = 0
+    const val SHAPE_ROUNDED = 1
+    const val SHAPE_SQUARE = 2
+
+    data class Custom(val id: String, val kind: Int, val code: Int, val label: String, val shape: Int = SHAPE_CIRCLE)
+
+    fun customs(context: Context): List<Custom> = decodeCustoms(prefs(context).getString("customControls", null))
+
+    fun setCustoms(context: Context, list: List<Custom>) {
+        val array = org.json.JSONArray()
+        for (c in list) array.put(org.json.JSONObject()
+            .put("id", c.id).put("kind", c.kind).put("code", c.code)
+            .put("label", c.label).put("shape", c.shape))
+        prefs(context).edit().putString("customControls", array.toString()).apply()
+    }
+
+    /** Adds one custom control and returns the list; [id] is derived so repeats never collide. */
+    fun addCustom(context: Context, kind: Int, code: Int): List<Custom> {
+        val list = customs(context).toMutableList()
+        val base = when (kind) {
+            KIND_KEY -> "key" + code
+            KIND_MOUSE_LEFT -> "mouseL"
+            KIND_MOUSE_RIGHT -> "mouseR"
+            KIND_MOUSE_MIDDLE -> "mouseM"
+            KIND_WASD -> "wasd"
+            else -> "pad"
+        }
+        var id = base
+        var n = 2
+        while (list.any { it.id == id }) id = base + "-" + n++
+        val label = when (kind) {
+            KIND_KEY -> TouchKeys.keyName(code)
+            KIND_MOUSE_LEFT -> "L"
+            KIND_MOUSE_RIGHT -> "R"
+            KIND_MOUSE_MIDDLE -> "M"
+            KIND_WASD -> "WASD"
+            else -> "TOUCH"
+        }
+        list += Custom(id, kind, code, label)
+        setCustoms(context, list)
+        return list
+    }
+
+    fun decodeCustoms(json: String?): List<Custom> {
+        val out = ArrayList<Custom>()
+        val array = json?.let { runCatching { org.json.JSONArray(it) }.getOrNull() } ?: return out
+        for (i in 0 until array.length()) runCatching {
+            val o = array.getJSONObject(i)
+            val kind = o.getInt("kind")
+            if (kind !in KIND_KEY..KIND_TOUCHPAD) return@runCatching
+            out += Custom(o.getString("id"), kind, o.getInt("code"),
+                o.optString("label"), o.optInt("shape", 0).coerceIn(0, 2))
+        }
+        return out
+    }
+
     fun resetAllLayouts(context: Context) {
         val p = prefs(context)
         p.edit().apply { p.all.keys.filter { it.startsWith("layout.") }.forEach { remove(it) } }.apply()

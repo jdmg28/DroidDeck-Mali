@@ -877,13 +877,22 @@
     <string name="ctrl_qam_button">Botón QAM</string>
     <string name="ctrl_keyboard_button">Botón de teclado</string>
 
-    <string name="touchkeys_title">Teclado y ratón en pantalla</string>
-
-    <string name="touchkeys_enable">Botones de teclado y ratón</string>
-
-    <string name="touchkeys_hint">Botones que aprietan teclas de PC de verdad, hacen clic con el ratón o mueven el puntero: para juegos que solo tienen teclado y ratón.</string>
-
     <string name="touchkeys_add">Añadir</string>
+
+
+    <string name="touchkeys_add_title">Añadir un control en pantalla</string>
+
+
+    <string name="touchkeys_joystick_wasd">Añadir un joystick WASD (teclado)</string>
+
+
+    <string name="touchkeys_shape">Forma</string>
+
+
+    <string name="touchkeys_remove">Quitar</string>
+
+
+    <string name="touchkeys_manage">Gestionar los controles añadidos</string>
 
     <string name="touchkeys_add_key">Añadir una tecla</string>
 
@@ -892,10 +901,6 @@
     <string name="touchkeys_add_rmb">Añadir clic derecho</string>
 
     <string name="touchkeys_add_touchpad">Añadir un touchpad</string>
-
-    <string name="touchkeys_edit">Ordenar los botones</string>
-
-    <string name="touchkeys_edit_hint">Arrastra para mover, pellizca para el tamaño, ✕ quita. ✓ guarda.</string>
     <string name="setup_animations">Animaciones</string>
     <string name="ctrl_adaptive_hint">Los sticks aparecen donde tocas y se ocultan al soltar</string>
     <string name="ctrl_layout">Disposición</string>
