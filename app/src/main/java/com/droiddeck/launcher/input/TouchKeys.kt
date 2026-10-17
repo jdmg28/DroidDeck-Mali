@@ -139,7 +139,7 @@ class TouchKeysView(context: Context) : View(context) {
         color = Color.WHITE; textAlign = Paint.Align.CENTER; isFakeBoldText = true }
     private val dash = Paint(stroke).apply {
         color = Color.argb(255, 179, 136, 255); style = Paint.Style.STROKE; strokeWidth = 2.5f
-        pathEffect = android.graphics.DashPathEffect(floatArrayOf(10f, 8f)) }
+        pathEffect = android.graphics.DashPathEffect(floatArrayOf(10f, 8f), 0f) }
     private val density = resources.displayMetrics.density
 
     /** Re-reads the stored widgets (the drawer just added or removed one). */

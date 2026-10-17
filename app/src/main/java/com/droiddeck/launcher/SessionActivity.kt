@@ -607,8 +607,8 @@ class SessionActivity : ComponentActivity(), SurfaceHolder.Callback {
                         drawerOpen = false
                         steamTouchControls?.startEditing()
                     }) else null,
-                    touchKeysOn = SessionPrefs.touchKeys(this),
-                    onTouchKeysToggle = { on -> SessionPrefs.setTouchKeys(this, on); refreshTouchKeys() },
+                    touchKeysOn = SessionPrefs.touchKeys(this@SessionActivity),
+                    onTouchKeysToggle = { on -> SessionPrefs.setTouchKeys(this@SessionActivity, on); refreshTouchKeys() },
                     onTouchKeysAddKey = { showTouchKeyPicker() },
                     onTouchKeysAddMouse = { button -> addTouchKeyWidget(if (button == PointerGestures.BTN_RIGHT) TouchKeys.MOUSE_RIGHT else TouchKeys.MOUSE_LEFT, 0) },
                     onTouchKeysAddTouchpad = { addTouchKeyWidget(TouchKeys.TOUCHPAD, 0) },
