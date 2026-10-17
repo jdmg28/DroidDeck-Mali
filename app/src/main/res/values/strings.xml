@@ -96,7 +96,7 @@
     <string name="game_env_shader">D3D12 shader-model override. 6_9 requires a sufficiently recent VKD3D and matching GPU features. Leave unset for automatic detection.</string>
     <string name="game_env_cache">Keep Mesa shader caching enabled to reduce repeated compilation. false enables caching.</string>
     <string name="game_env_cache_size">Maximum Mesa shader-cache size, such as 1G. Larger caches use more storage.</string>
-    <string name="game_env_bc_afrc">BC texture storage (AFRC). 0 stores them exact - try it when videos or menus show colour bars or static; 16/24/32 force a compression rate. Costs RAM at 0.</string>
+    <string name="game_env_bc_afrc">BC texture storage (AFRC). 0 stores them exact - on a Mali-G615 it rebooted the device once; prefer the RC3 exact-BC driver. 16/24/32 force a rate. Costs RAM at 0.</string>
     <string name="game_env_vkd3d_config">VKD3D options for D3D12. nodxr disables ray tracing; use only for a game that needs it.</string>
     <string name="game_env_proton_log">Set to 1 for a Proton diagnostic log. Logging can reduce performance and use storage.</string>
     <string name="game_env_wined3d">Set to 1 to use OpenGL-based WineD3D instead of DXVK for D3D9–11 compatibility testing.</string>

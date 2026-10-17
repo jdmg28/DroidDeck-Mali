@@ -94,7 +94,7 @@
     <string name="game_env_shader">Forzar el modelo de shaders de D3D12. 6_9 requiere un VKD3D suficientemente reciente y funciones de GPU compatibles. Déjalo sin definir para detección automática.</string>
     <string name="game_env_cache">Mantén activada la caché de shaders de Mesa para reducir compilaciones repetidas. false activa la caché.</string>
     <string name="game_env_cache_size">Tamaño máximo de la caché de shaders de Mesa, como 1G. Las cachés grandes usan más almacenamiento.</string>
-    <string name="game_env_bc_afrc">Almacenamiento de texturas BC (AFRC). 0 las guarda exactas: pruébalo si los vídeos o los menús muestran barras de color o estática; 16/24/32 fuerzan una tasa. Cuesta RAM en 0.</string>
+    <string name="game_env_bc_afrc">Almacenamiento de texturas BC (AFRC). 0 las guarda exactas - en un Mali-G615 reinició el dispositivo una vez; mejor usa el controlador RC3 de BC exacto. 16/24/32 fuerzan una tasa. Cuesta RAM en 0.</string>
     <string name="game_env_vkd3d_config">Opciones de VKD3D para D3D12. nodxr desactiva el trazado de rayos; úsalo solo en un juego que lo necesite.</string>
     <string name="game_env_proton_log">Pon 1 para obtener un registro de diagnóstico de Proton. El registro puede reducir el rendimiento y usar almacenamiento.</string>
     <string name="game_env_wined3d">Pon 1 para usar WineD3D basado en OpenGL en lugar de DXVK, para pruebas de compatibilidad con D3D9–11.</string>

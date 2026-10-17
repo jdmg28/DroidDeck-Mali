@@ -543,6 +543,38 @@ hay release más nuevo que rc3-lowmem (checks de hoy). DS1 está lleno de BC →
 - Si con decode exacto DS1 **sigue** con barras/negro: AFRC queda descartado como causa y el
   siguiente sospechoso es el camino D24S8 (punto 2 de la lista anterior).
 
+## Cuarto informe (17-10-2026 mediodía): PANVK_BC_AFRC=0 REINICIÓ el X6 Pro — auto-fix retirado; la vía es el paquete RC3 "exact BC"; y el Mecha era OnlineFix
+
+Sesión `2026-10-17-02-steam` (zip subido al mediodía): la línea de observabilidad nueva probó su
+valor — `droiddeck-game-env: env: ... PANVK_BC_AFRC=0 ...` quedó registrado, así que el auto-fix
+SÍ se aplicó. DS1 arrancó (foco 10:12:56), heartbeats sanos (2.2 GB disponibles — **no era
+RAM**), y a los ~90 s el log se corta a mitad de escritura; la sesión terminó "without teardown"
+y se recuperó al reiniciar la app a las 10:49 → **el dispositivo se reinició solo**, corriendo
+DS1 con decode exacto. En las 3 sesiones previas con el AFRC por defecto nunca pasó.
+
+Conclusiones:
+
+- **El camino "exact decode" del build rc3-lowmem es inestable en el G615** (kernel/kbase), no
+  solo lento. El auto-fix `PANVK_BC_AFRC=0` para DS1 quedó **retirado** del `droiddeck-game-env`
+  (queda el comentario con el motivo, la opción manual de la página del juego sigue para
+  experimentos, y el texto de la opción ahora avisa del reinicio).
+- **La alternativa correcta es otro binario**: el paquete nuevo
+  **`DroidDeck-Mali-CSF-PanVK-kbase-rc3-exactbc.zip`** (RC3 sin el parche lowmem: BC1 RGB a 12 bpp
+  y BC7 a 16 bpp **exactos, sin AFRC en absoluto** — el camino original que upstream validó
+  38/38 PanProbe en el MISMO POCO X6 Pro). El workflow `mali-panvk-driver` empaqueta y publica
+  ahora las DOS variantes en `mali-panvk-latest`, y la pestaña de drivers del APK ofrece las dos
+  filas. Cuesta RAM extra (lo que ahorra lowmem), pero DS1 es un juego de 2007 y sobra.
+  **Instrucción al usuario: instalar el paquete RC3 exact-BC y re-probar DS1.**
+- Sospechoso D24S8 sigue en pie si con RC3-exactbc el mundo sigue en negro (las barras de los
+  vídeos deberían desaparecer por BC exacto; el negro de partida es otra pata).
+
+**Mecha Chameleon — resuelto el misterio del diálogo**: la captura del usuario lo dice:
+**"Failed to get OnlineFix interface."** — OnlineFix (online-fix.me) es el **crack multijugador
+que trae la copia pirata** del juego. No es "falta de componentes" de DroidDeck: es el propio
+crack el que no inicializa bajo Wine (y explica también el MessageBox original del launcher).
+No se ayuda a hacer funcionar el crack; el juego cuesta 5,99 € en Steam, funciona por Proton
+(verificado "Playable" en Steam Deck), y por esa vía (Steam real) es como está soportado.
+
 ## Mecha Chameleon (16-10-2026, sesión 09-steam): no inicia, "falta de componentes" — RESUELTO
 
 appid local 15188656168751857664 → `MECCHA CHAMELEON/MECCHA CHAMELEON/PenguinHotel.exe`, prefijo

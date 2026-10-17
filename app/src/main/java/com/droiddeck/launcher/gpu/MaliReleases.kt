@@ -23,6 +23,7 @@ import java.io.IOException
  */
 object MaliReleases {
     const val PANVK = "DroidDeck-Mali-CSF-PanVK-kbase-universal.zip"
+    const val PANVK_RC3 = "DroidDeck-Mali-CSF-PanVK-kbase-rc3-exactbc.zip"
     const val LAVAPIPE = "DroidDeck-Software-Vulkan-lavapipe.zip"
     private const val REPO = "jdmg28/DroidDeck-Mali"
 
@@ -39,6 +40,10 @@ object MaliReleases {
               "https://github.com/$REPO/releases/download/mali-panvk-latest/$PANVK",
               "DroidDeck Mali · PanVK-kbase (universal)",
               R.string.mali_download_panvk_detail),
+        Entry(PANVK_RC3,
+              "https://github.com/$REPO/releases/download/mali-panvk-latest/$PANVK_RC3",
+              "DroidDeck Mali · PanVK-kbase RC3 (BC exacto)",
+              R.string.mali_download_panvk_rc3_detail),
         Entry(LAVAPIPE,
               "https://github.com/$REPO/releases/download/software-mode-lavapipe/$LAVAPIPE",
               "DroidDeck Software Vulkan · lavapipe",

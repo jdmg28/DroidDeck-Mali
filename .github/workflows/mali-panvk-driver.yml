@@ -17,6 +17,17 @@ name: Mali PanVK-kbase driver package (universal Mali CSF)
 # Immortalis-G925 Turbo 5 Max / POCO X8 Pro Max) a session that died before gamescope.
 # docs/diagnostico-turbo5max-pantalla-negra.md tells that story.
 #
+# TWO variants are packaged, from the same adapter:
+#  - rc3-lowmem (the default): RC3 plus csf-v11/185 - BC textures land in an 8 bpp Arm-fixed-rate
+#    (AFRC) shadow image. 25-33% less texture memory, which is what killed the R7 sessions
+#    (Clicker Heroes at 3.1 GB), but the compression is lossy by design and on Dark Souls 1 it
+#    draws menus and videos as TV colour bars over static (2026-10-17 zips).
+#  - rc3-exactbc (the DS1 candidate): plain RC3, no AFRC shadow at all - BC1 RGB at 12 bpp and
+#    BC7 at 16 bpp, decoded exact. Costs the memory the lowmem variant saves; on the X6 Pro it is
+#    the one to try when a game's textures come up corrupt, because PANVK_BC_AFRC=0 on the lowmem
+#    build is NOT the same path: the X6 Pro went full-black and rebooted the device ~90 s into
+#    Dark Souls with it (2026-10-17-02 session - the fix is reverted, this package is the way).
+#
 # This package is the GPU path, not the safe one: installing and selecting it means a session
 # issues real work to the GPU. The software (lavapipe) package from the other workflow is the one
 # that keeps the GPU out of the guest.
@@ -40,14 +51,14 @@ env:
   GH_TOKEN: ${{ github.token }}
   # Upstream: zenithblue's PanVK-kbase, glibc build (the Linux runtime is glibc; the Android .so
   # in the same release would not load in the guest at all). Their own reference device for it is
-  # a Poco X6 Pro - Mali-G615 MC6, the phone this branch started on; RC3-lowmem is RC3 plus
-  # csf-v11/185: BC1 RGB and BC7 textures land at 8 bpp instead of RC3's 12/16 bpp - same
-  # speed, 25-33% less texture memory, which is what killed the R7 sessions (Clicker Heroes
-  # at 3.1 GB). PANVK_BC_AFRC=0 restores exact decode, 16/24/32 forces a rate for every BC
-  # format. Universal ICD (CSF v9-v13, G925 included). Pinned by checksum.
+  # a Poco X6 Pro - Mali-G615 MC6, the phone this branch started on; both variants passed
+  # upstream's PanProbe 38/38 on that exact phone. Universal ICD (CSF v9-v13, G925 included).
+  # Both pinned by checksum.
   UPSTREAM_TAG: panvk-kbase-v0.1.0-rc3-lowmem
   UPSTREAM_ASSET: libvulkan_panfrost-glibc-aarch64.so
   UPSTREAM_SHA256: 96e925761ed23994f8e3ba9f72cbbcc988b69b4166947e58fea4f96b699604b0
+  RC3_TAG: panvk-kbase-v0.1.0-rc3
+  RC3_SHA256: 43d4783f664f21843b2fb2d5a3fdf4646fadb942e42d320ccb0e7449bd8e352f
   # The adapter is built from source in tools/mali-driver on every run, so there is no binary
   # checksum to pin; what is pinned is the Vulkan header version it compiles against.
   VULKAN_HEADERS_TAG: v1.4.363
@@ -55,6 +66,7 @@ env:
   ADAPTER_NAME: libvulkan_droiddeck_mali.so
   RELEASE_TAG: mali-panvk-latest
   RELEASE_ASSET: DroidDeck-Mali-CSF-PanVK-kbase-universal.zip
+  RC3_RELEASE_ASSET: DroidDeck-Mali-CSF-PanVK-kbase-rc3-exactbc.zip
 
 jobs:
   package:
@@ -65,13 +77,16 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Fetch the upstream PanVK-kbase driver
+      - name: Fetch the upstream PanVK-kbase drivers
         run: |
           set -euo pipefail
-          curl -fsSL --retry 3 -o upstream.so \
+          curl -fsSL --retry 3 -o upstream-lowmem.so \
             "https://github.com/zenithblue-oss/panvk-kbase-android/releases/download/$UPSTREAM_TAG/$UPSTREAM_ASSET"
-          echo "$UPSTREAM_SHA256  upstream.so" | sha256sum -c -
-          ls -l upstream.so
+          echo "$UPSTREAM_SHA256  upstream-lowmem.so" | sha256sum -c -
+          curl -fsSL --retry 3 -o upstream-rc3.so \
+            "https://github.com/zenithblue-oss/panvk-kbase-android/releases/download/$RC3_TAG/$UPSTREAM_ASSET"
+          echo "$RC3_SHA256  upstream-rc3.so" | sha256sum -c -
+          ls -l upstream-lowmem.so upstream-rc3.so
 
       - name: Build the adapter from tools/mali-driver
         run: |
@@ -88,12 +103,12 @@ jobs:
             tools/mali-driver/src/droiddeck_mali_icd.c -o "kit/$ADAPTER_NAME"
           unzip -o -j "$KIT_ZIP" "LICENSE.adapter" "NOTICE.txt" -d kit/licenses >/dev/null 2>&1 || true
 
-      - name: Both halves are aarch64 and glibc
+      - name: Every half is aarch64 and glibc
         run: |
           set -euo pipefail
           # The same two checks the app makes when it imports a driver: an aarch64 object that
           # links glibc's versioned soname. A bionic .so would load in neither place.
-          for f in "kit/$ADAPTER_NAME" upstream.so; do
+          for f in "kit/$ADAPTER_NAME" upstream-lowmem.so upstream-rc3.so; do
             readelf -h "$f" | grep -q AArch64 || { echo "::error::$f is not an aarch64 object"; exit 1; }
             grep -qa "libc.so.6" "$f" || { echo "::error::$f does not link glibc"; exit 1; }
             echo "$f: $(readelf -h "$f" | sed -n 's/^ *Machine: *//p')"
@@ -101,23 +116,25 @@ jobs:
           # The adapter loads its backend by name, from its own directory.
           grep -qa "libpanvk_backend.so" "kit/$ADAPTER_NAME" || { echo "::error::the adapter does not look for libpanvk_backend.so"; exit 1; }
 
-      - name: Write the package
+      - name: Write the packages
         run: |
           set -euo pipefail
-          work=build
-          mkdir -p "$work"
-          cp "kit/$ADAPTER_NAME" "$work/$ADAPTER_NAME"
-          cp upstream.so "$work/libpanvk_backend.so"
-          [ -d kit/licenses ] && cp -r kit/licenses "$work/licenses" || true
-          # What the importer reads: the name it offers, the version it shows, the glibc the
-          # driver needs, and the Vulkan API version for the manifest it writes. gpuVendor is not
-          # "software" here on purpose - this package draws with the GPU.
-          cat > "$work/meta.json" <<JSON
+          # One adapter, two backends. The importer reads meta.json for the name it offers, the
+          # version it shows, the glibc the driver needs, and the Vulkan API version for the
+          # manifest it writes. gpuVendor is not "software" on purpose - this draws with the GPU.
+          write_kit() {
+            zip_name=$1; upstream_so=$2; upstream_tag=$3; upstream_sha=$4; title=$5; version=$6
+            work="build/$zip_name"
+            mkdir -p "$work"
+            cp "kit/$ADAPTER_NAME" "$work/$ADAPTER_NAME"
+            cp "$upstream_so" "$work/libpanvk_backend.so"
+            [ -d kit/licenses ] && cp -r kit/licenses "$work/licenses" || true
+            cat > "$work/meta.json" <<JSON
           {
             "schemaVersion": 1,
             "kind": "linux-vulkan-icd",
-            "name": "DroidDeck Mali CSF PanVK-kbase v0.1.0-rc3-lowmem (universal)",
-            "driverVersion": "Adapter 0.2.0 (universal Mali) / PanVK-kbase v0.1.0-rc3-lowmem / Mesa 26.3.0-devel",
+            "name": "$title",
+            "driverVersion": "$version",
             "minGlibc": "2.38",
             "libc": "glibc",
             "vulkanApiVersion": "1.4.363",
@@ -125,27 +142,34 @@ jobs:
             "gpu": "Mali CSF v9-v13 (validated on Mali-G615 MC6; G925/G720/G715/G610 untested)",
             "kernelInterface": "mali_kbase CSF",
             "backendLibraryName": "libpanvk_backend.so",
-            "upstreamRelease": "$UPSTREAM_TAG",
+            "upstreamRelease": "$upstream_tag",
             "upstreamLibrary": "$UPSTREAM_ASSET",
-            "upstreamSha256": "$UPSTREAM_SHA256",
+            "upstreamSha256": "$upstream_sha",
             "adapterSource": "tools/mali-driver/src/droiddeck_mali_icd.c",
             "adapterSha256": "$(sha256sum "kit/$ADAPTER_NAME" | cut -d' ' -f1)"
           }
           JSON
-          python3 -c 'import json,sys; json.load(open("'"$work"'/meta.json")); print("meta.json parses")'
-          ( cd "$work" && zip -q -r -9 "../$RELEASE_ASSET" . )
-          sha256sum -- "$RELEASE_ASSET" > "$RELEASE_ASSET.sha256"
-          cat "$RELEASE_ASSET.sha256"
-          unzip -l "$RELEASE_ASSET"
+            python3 -c 'import json,sys; json.load(open(sys.argv[1])); print("meta.json parses")' "$work/meta.json"
+            ( cd "$work" && zip -q -r -9 "../../$zip_name" . )
+            sha256sum -- "$zip_name" > "$zip_name.sha256"
+            cat "$zip_name.sha256"
+            unzip -l "$zip_name"
+          }
+          write_kit "$RELEASE_ASSET" upstream-lowmem.so "$UPSTREAM_TAG" "$UPSTREAM_SHA256" \
+            "DroidDeck Mali CSF PanVK-kbase v0.1.0-rc3-lowmem (universal)" \
+            "Adapter 0.2.0 (universal Mali) / PanVK-kbase v0.1.0-rc3-lowmem / Mesa 26.3.0-devel"
+          write_kit "$RC3_RELEASE_ASSET" upstream-rc3.so "$RC3_TAG" "$RC3_SHA256" \
+            "DroidDeck Mali CSF PanVK-kbase v0.1.0-rc3 exact BC (universal)" \
+            "Adapter 0.2.0 (universal Mali) / PanVK-kbase v0.1.0-rc3 / Mesa 26.3.0-devel"
 
       - name: Publish
         run: |
           set -euo pipefail
           TAG=$RELEASE_TAG
-          ASSET=$RELEASE_ASSET
           work=$RUNNER_TEMP/publish
           mkdir -p "$work"
-          cp "$ASSET" "$ASSET.sha256" "$work/"
+          cp "$RELEASE_ASSET" "$RELEASE_ASSET.sha256" \
+             "$RC3_RELEASE_ASSET" "$RC3_RELEASE_ASSET.sha256" "$work/"
           if ! gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release create "$TAG" -R "$GITHUB_REPOSITORY" --prerelease \
               --title "DroidDeck Mali PanVK-kbase driver (GPU)" --notes "Replaced by every build."
@@ -164,57 +188,69 @@ jobs:
             sleep 10
           done
           if [ "$uploaded" != 1 ]; then
-            echo "::error::the driver package was built but could not be uploaded to $TAG"
+            echo "::error::the driver packages were built but could not be uploaded to $TAG"
             exit 1
           fi
-          # One zip, the one just built: an asset an older build left is removed, so the release
-          # never offers two things to import. An asset already gone answers 404, and a 404 on a
-          # delete is the outcome wanted, not a reason to fail the build.
+          # Two zips, the ones just built: an asset an older build left is removed, so the
+          # release never offers anything else to import. An asset already gone answers 404, and
+          # a 404 on a delete is the outcome wanted, not a reason to fail the build.
           keep=$(cd "$work" && ls | jq -R . | jq -sc .)
           gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" |
             jq -r --argjson keep "$keep" '.assets[] | select(.name as $n | $keep | index($n) | not) | .id' |
             while IFS= read -r id; do
               gh api --method DELETE "repos/$GITHUB_REPOSITORY/releases/assets/$id" >/dev/null || true
             done
-          if ! gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json assets \
-                 --jq '.assets[].name' | grep -qx "$ASSET"; then
-            echo "::error::$TAG does not offer $ASSET after publishing it"
-            exit 1
-          fi
+          for ASSET in "$RELEASE_ASSET" "$RC3_RELEASE_ASSET"; do
+            if ! gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json assets \
+                   --jq '.assets[].name' | grep -qx "$ASSET"; then
+              echo "::error::$TAG does not offer $ASSET after publishing it"
+              exit 1
+            fi
+          done
           {
-            echo "## DroidDeck Mali PanVK-kbase driver package"
+            echo "## DroidDeck Mali PanVK-kbase driver packages"
             echo
             echo "Mesa PanVK (zenithblue) talking to mali_kbase, with DroidDeck's ICD adapter in"
             echo "front, as one zip the app's Linux driver importer accepts:"
             echo "Components -> GPU drivers -> Advanced -> Runtime driver -> Import."
             echo
-            echo "- [$ASSET]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/download/$TAG/$ASSET)"
-            echo "- [$ASSET.sha256](https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/$ASSET.sha256)"
+            echo "- [$RELEASE_ASSET]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/download/$TAG/$RELEASE_ASSET)"
+            echo "- [$RELEASE_ASSET.sha256](https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/$RELEASE_ASSET.sha256)"
+            echo "- [$RC3_RELEASE_ASSET]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/download/$TAG/$RC3_RELEASE_ASSET)"
+            echo "- [$RC3_RELEASE_ASSET.sha256](https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/$RC3_RELEASE_ASSET.sha256)"
             echo
-            echo "**What it is for:** a session that draws with the Mali GPU. gamescope needs a"
+            echo "**What they are for:** a session that draws with the Mali GPU. gamescope needs a"
             echo "DRM primary node to composite at all, and a driver that reaches the GPU through"
             echo "kbase has none to report - the adapter is what answers for it. The adapter"
             echo "applies to every ARM Mali the driver reports (CSF v9-v13); only the Mali-G615"
             echo "(POCO X6 Pro) is validated end to end, every other Mali is experimental."
             echo
-            echo "**It uses the GPU.** This is not the safe path: selecting it puts real work on"
+            echo "**The two variants:** \`rc3-lowmem\` (the first zip) stores BC textures in an"
+            echo "8 bpp AFRC shadow - 25-33% less texture memory, lossy by design; a game whose"
+            echo "menus or videos come up as colour bars wants the second zip."
+            echo "\`rc3-exactbc\` is plain RC3: BC decoded exact, at lowmem's memory saving's cost."
+            echo "On the lowmem build \`PANVK_BC_AFRC=0\` is not the same path - an X6 Pro rebooted"
+            echo "the device with it (Dark Souls 1, 2026-10-17) - so the exact variant is its own"
+            echo "package, not an environment switch."
+            echo
+            echo "**They use the GPU.** This is not the safe path: selecting one puts real work on"
             echo "the GPU, and an earlier build of this driver froze a phone mid-session. The safe"
             echo "path is the lavapipe package in"
             echo "[software-mode-lavapipe](https://github.com/$GITHUB_REPOSITORY/releases/tag/software-mode-lavapipe),"
             echo "which keeps the GPU out of the guest entirely."
             echo
-            echo "Pinned by checksum in the workflow: the upstream driver"
-            echo "\`$UPSTREAM_ASSET\` ($UPSTREAM_TAG). The adapter is built on every run from"
-            echo "tools/mali-driver/src/droiddeck_mali_icd.c against Vulkan-Headers"
-            echo "$VULKAN_HEADERS_TAG. Both halves are checked to be aarch64 glibc before they"
-            echo "are packaged."
+            echo "Pinned by checksum in the workflow: the upstream drivers"
+            echo "\`$UPSTREAM_ASSET\` ($UPSTREAM_TAG, $RC3_TAG). The adapter is built on every run"
+            echo "from tools/mali-driver/src/droiddeck_mali_icd.c against Vulkan-Headers"
+            echo "$VULKAN_HEADERS_TAG. Every half is checked to be aarch64 glibc before it is"
+            echo "packaged."
             echo
             echo "Built by [this run]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID)"
             echo "from \`${GITHUB_SHA}\`."
           } > "$RUNNER_TEMP/notes.md"
           gh release edit "$TAG" -R "$GITHUB_REPOSITORY" --notes-file "$RUNNER_TEMP/notes.md"
 
-      - name: Upload the zip
+      - name: Upload the zips
         uses: actions/upload-artifact@v4
         with:
           name: DroidDeck-Mali-CSF-PanVK-kbase-universal
@@ -225,8 +261,8 @@ jobs:
         if: always()
         run: |
           {
-            echo "## Mali PanVK-kbase package"
+            echo "## Mali PanVK-kbase packages"
             echo
-            echo "Upstream \`$UPSTREAM_ASSET\` ($UPSTREAM_TAG), adapter built from tools/mali-driver."
+            echo "Upstream \`$UPSTREAM_ASSET\` ($UPSTREAM_TAG + $RC3_TAG), adapter built from tools/mali-driver."
             echo "Published as \`$RELEASE_TAG\` when it got that far."
           } >> "$GITHUB_STEP_SUMMARY"

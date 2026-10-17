@@ -106,14 +106,12 @@ def godot_sentry(game):
         return {"WINEDLLOVERRIDES": ";".join(n + "=d" for n in sentry)}, [], "Godot: Sentry crash handler off"
 
 
-@fix
-def darksouls_exact_bc(game):
-    # Dark Souls 1 draws its menus and videos as TV colour bars over static, and the world black
-    # behind its HUD, on the rc3-lowmem driver's 8 bpp AFRC shadow image (2026-10-17 zip). 0 is
-    # the driver's exact decode, at its pre-lowmem RAM cost; the game page's PANVK_BC_AFRC entry
-    # overrides this one.
-    if game.stem == "darksouls":
-        return {"PANVK_BC_AFRC": "0"}, [], "Dark Souls: exact BC decode (the lowmem AFRC shadow corrupts its textures)"
+# Dark Souls 1 used to get an automatic PANVK_BC_AFRC=0 here, for the colour-bar corruption in
+# the rc3-lowmem AFRC shadow. Reverted on 2026-10-17: with it the X6 Pro went full-black and
+# REBOOTED the device ~90 s into the game (session 2026-10-17-02 - the env: line proves the
+# variable was on). The exact decode on the lowmem build is not a path to auto-enable; the RC3
+# exact-BC driver package is the fix, and the game page's PANVK_BC_AFRC entry stays for
+# experiments.
 
 
 def engine_fixes(exe, args):

@@ -5,6 +5,7 @@
     <string name="drivers_mali_source">Drivers come straight from this repository\'s releases - no Adreno (Turnip) repo is asked.</string>
     <string name="mali_download_panvk_detail">Hardware driver for Mali CSF GPUs (v9-v13) · PanVK-kbase</string>
     <string name="mali_download_lavapipe_detail">CPU software fallback · draws without the GPU</string>
+    <string name="mali_download_panvk_rc3_detail">Hardware driver for Mali CSF (v9-v13) · exact BC textures - try it when a game's videos or menus show colour bars</string>
     <string name="mali_driver_needed">Mali: no imported Linux Vulkan driver. Import the experimental PanVK package under GPU drivers → Advanced → Runtime driver, then select it.</string>
     <string name="mali_integration_hint">Experimental Mali/Immortalis (CSF): download the PanVK driver below and start at 720p or 1280x720. Do not turn "Steam interface on the GPU" on - it restarts the phone on Mali; the dma-buf WSI already gives the store its speed. For games: FPS limiter at 60 or Off, FEX preset PERFORMANCE or PERFORMANCE_TSO, and "Wine sync" at fsync or esync (wineserver is the slow path; with nothing picked the session now puts fsync first by itself). Close background apps - a game past ~2.5 GB gets the session killed by Android, and the new lowmem driver cuts texture memory a quarter to a third. Keep HDR and frame generation off.</string>
 
