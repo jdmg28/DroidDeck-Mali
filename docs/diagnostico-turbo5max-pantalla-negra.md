@@ -613,3 +613,23 @@ paso: **texto/captura del diálogo**; red activa en la sesión (su network.txt: 
    línea de `gamescope`.
 3. Mientras tanto, el **modo Software (lavapipe)** debería arrancar Steam por CPU en ese
    teléfono tal cual está hoy — útil para separar "falla del driver GPU" de "falla del stack".
+
+## Quinta ronda (17-10-2026 tarde): MiSide corre; falta teclado/ratón en pantalla → TouchKeys; DS1 sigue negro (falta confirmar el driver)
+
+**Buena**: MiSide (Unity) arranca y juega al 35-40 fps con texturas y menús perfectos en el
+mismo X6 Pro (capturas 15:16-15:17) — el stack panvk+kbase sostiene un juego moderno. La
+corrupción BC no aparece aquí (pocas BC o el motor evita el camino afectado).
+
+**Pedidos del usuario**: controles estilo Winlator para juegos solo-teclado/ratón. Hecho en
+este commit — **TouchKeys** (`input/TouchKeys.kt`), capa propia del fork junto al mando de
+Steam: botones que aprietan teclas de PC reales (por wl_keyboard, el canal del teclado PC),
+botones de clic izquierdo/derecho (por el puntero de escena) y un **touchpad** relativo
+(`WaylandCompositor.sendPointerDelta`, con click al toque). Se añaden desde el cajón →
+Controlador → "Teclado y ratón en pantalla"; el modo edición arrastra, pellizca el tamaño y
+borra (chip ✕), ✓ guarda. Guardado global como JSON en las preferencias "touch_keys", con
+tests Robolectric (TouchKeysStoreTest).
+
+**DS1**: el usuario dice "sigue igual, negro en partida" pero **sin zip** no hay manera de
+saber si corrió con el paquete RC3 exact-BC o con el lowmem. El reporte de sesión ya imprime
+`Linux driver: <nombre> <versión>` (de meta.json), así que el próximo zip lo dice solo.
+Si confirma RC3-exactbc y sigue negro → siguiente sospechoso D24S8 vía el adaptador ICD.

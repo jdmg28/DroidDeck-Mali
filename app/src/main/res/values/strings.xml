@@ -878,6 +878,26 @@
     <string name="ctrl_steam_button">Steam button</string>
     <string name="ctrl_qam_button">QAM button</string>
     <string name="ctrl_keyboard_button">Keyboard button</string>
+
+    <string name="touchkeys_title">On-screen keyboard and mouse</string>
+
+    <string name="touchkeys_enable">PC key and mouse buttons</string>
+
+    <string name="touchkeys_hint">Buttons that press real PC keys, click the mouse, or move the pointer - for games that only know keyboard and mouse.</string>
+
+    <string name="touchkeys_add">Add</string>
+
+    <string name="touchkeys_add_key">Add a key</string>
+
+    <string name="touchkeys_add_lmb">Add a left-click button</string>
+
+    <string name="touchkeys_add_rmb">Add a right-click button</string>
+
+    <string name="touchkeys_add_touchpad">Add a touchpad</string>
+
+    <string name="touchkeys_edit">Arrange the buttons</string>
+
+    <string name="touchkeys_edit_hint">Drag to move, pinch to resize, ✕ removes. ✓ saves.</string>
     <string name="setup_animations">Animations</string>
     <string name="ctrl_adaptive_hint">Sticks appear where you touch and hide on release</string>
     <string name="ctrl_layout">Layout</string>

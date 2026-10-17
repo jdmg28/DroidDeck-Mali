@@ -219,6 +219,13 @@ class DrawerActions(
     val onOsc: (String) -> Unit,
     /** Edits the Steam touch layout of the game in front, when Steam's controls are up. */
     val onEditSteamTouch: (() -> Unit)? = null,
+    /** The on-screen PC keys / mouse buttons / touchpad (TouchKeys): their toggle and editor. */
+    val touchKeysOn: Boolean = false,
+    val onTouchKeysToggle: (Boolean) -> Unit = {},
+    val onTouchKeysAddKey: () -> Unit = {},
+    val onTouchKeysAddMouse: (Int) -> Unit = {},
+    val onTouchKeysAddTouchpad: () -> Unit = {},
+    val onTouchKeysEdit: () -> Unit = {},
     val controller: com.droiddeck.launcher.input.ControllerPrefs.Settings? = null,
     val onRumble: (Boolean) -> Unit = {},
     val onSteamButton: (Boolean) -> Unit = {},
@@ -445,6 +452,17 @@ internal fun SessionDrawer(open: Boolean, requestedPage: SessionDrawerPage, cont
                                 if (a.steam) ChoiceRow(host, "back-actions", stringResource(R.string.mode_back), null,
                                     listOf(false to stringResource(SessionPrefs.BACK_MENU_THEN_QAM), true to stringResource(SessionPrefs.BACK_QAM_THEN_MENU)),
                                     a.backActionsInverted, chipModifier = focus.track(page, "back-actions"), onPick = a.onBackActionsInverted)
+                                SettingsGroup(stringResource(R.string.touchkeys_title)) {
+                                    ToggleRow(host, "touch-keys", stringResource(R.string.touchkeys_enable), stringResource(R.string.touchkeys_hint),
+                                        a.touchKeysOn, chipModifier = focus.track(page, "touch-keys"), onChange = a.onTouchKeysToggle)
+                                    if (a.touchKeysOn) {
+                                        ActionRow(stringResource(R.string.touchkeys_add_key), null, stringResource(R.string.touchkeys_add), a.onTouchKeysAddKey)
+                                        ActionRow(stringResource(R.string.touchkeys_add_lmb), null, stringResource(R.string.touchkeys_add), { a.onTouchKeysAddMouse(com.droiddeck.launcher.input.PointerGestures.BTN_LEFT) })
+                                        ActionRow(stringResource(R.string.touchkeys_add_rmb), null, stringResource(R.string.touchkeys_add), { a.onTouchKeysAddMouse(com.droiddeck.launcher.input.PointerGestures.BTN_RIGHT) })
+                                        ActionRow(stringResource(R.string.touchkeys_add_touchpad), null, stringResource(R.string.touchkeys_add), a.onTouchKeysAddTouchpad)
+                                        ActionRow(stringResource(R.string.touchkeys_edit), stringResource(R.string.touchkeys_edit_hint), stringResource(R.string.ctrl_edit), a.onTouchKeysEdit)
+                                    }
+                                }
                             }
                             SettingsGroup(stringResource(R.string.drawer_keyboard)) {
                                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth().padding(8.dp)) {

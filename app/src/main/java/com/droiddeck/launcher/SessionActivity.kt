@@ -52,6 +52,8 @@ import com.droiddeck.launcher.input.SessionClipboard
 import com.droiddeck.launcher.input.OnScreenControls
 import com.droiddeck.launcher.input.PadBridge
 import com.droiddeck.launcher.input.PointerGestures
+import com.droiddeck.launcher.input.TouchKeys
+import com.droiddeck.launcher.input.TouchKeysView
 import com.droiddeck.launcher.input.SecondScreenDisplay
 import com.droiddeck.launcher.input.SecondScreenDisplays
 import com.droiddeck.launcher.input.SecondScreenMode
@@ -163,6 +165,7 @@ class SessionActivity : ComponentActivity(), SurfaceHolder.Callback {
     }
     private var watching = true
     private lateinit var touchpad: TouchpadGestures
+    private var touchKeysView: TouchKeysView? = null
     private var touchMode by mutableStateOf(SessionPrefs.TOUCH_AUTO)
     private var cursorPos by mutableStateOf(androidx.compose.ui.geometry.Offset(-100f, -100f))
     private var cursorVisible by mutableStateOf(false)
@@ -392,6 +395,20 @@ class SessionActivity : ComponentActivity(), SurfaceHolder.Callback {
         onScreenControls = OnScreenControls(this, bridge, onKeyboard = ::togglePcKeyboard).also { root.addView(it) }
         keyboard = KeyboardHost(this).also { root.addView(it) }
         touchpad = TouchpadGestures(PointerGestures.slop(this), pointerListener)
+        touchKeysView = TouchKeysView(this).also { tk ->
+            tk.onKey = { code, down -> if (CompositorHost.isStarted) sendGuestKey(code, down) }
+            tk.onMouse = { button, down -> WaylandCompositor.nativeSendSceneInput(3, button, if (down) 1 else 0) }
+            tk.onTouchpadDelta = { dx, dy ->
+                val w = surfaceView.width
+                val h = surfaceView.height
+                if (w > 0 && h > 0) WaylandCompositor.sendPointerDelta(
+                    dx * com.droiddeck.launcher.input.InputSpace.WIDTH / w,
+                    dy * com.droiddeck.launcher.input.InputSpace.HEIGHT / h)
+            }
+            // Below the drawer's host, above the picture: the widgets must not cover the menus.
+            root.addView(tk, maxOf(0, root.indexOfChild(onScreenControls)))
+        }
+        refreshTouchKeys()
         // One arrow, ours: Android draws a system pointer for a mouse over any window, and the
         // session already draws the pointer it is sent.
         val noCursor = android.view.PointerIcon.getSystemIcon(this, android.view.PointerIcon.TYPE_NULL)
@@ -590,6 +607,12 @@ class SessionActivity : ComponentActivity(), SurfaceHolder.Callback {
                         drawerOpen = false
                         steamTouchControls?.startEditing()
                     }) else null,
+                    touchKeysOn = SessionPrefs.touchKeys(this),
+                    onTouchKeysToggle = { on -> SessionPrefs.setTouchKeys(this, on); refreshTouchKeys() },
+                    onTouchKeysAddKey = { showTouchKeyPicker() },
+                    onTouchKeysAddMouse = { button -> addTouchKeyWidget(if (button == PointerGestures.BTN_RIGHT) TouchKeys.MOUSE_RIGHT else TouchKeys.MOUSE_LEFT, 0) },
+                    onTouchKeysAddTouchpad = { addTouchKeyWidget(TouchKeys.TOUCHPAD, 0) },
+                    onTouchKeysEdit = { toggleTouchKeysEdit() },
                     onSuspendPolicy = { policy ->
                         SessionPrefs.setSuspendPolicy(this@SessionActivity, SessionState.mode, policy)
                         suspendPolicy = policy
@@ -815,6 +838,7 @@ class SessionActivity : ComponentActivity(), SurfaceHolder.Callback {
         val nextTouchMode = SessionPrefs.touchMode(this)
         if (touchMode != nextTouchMode) {
             if (::touchpad.isInitialized) touchpad.cancel()
+            touchKeysView?.releaseAll()
             if (CompositorHost.isStarted) {
                 WaylandCompositor.nativeSendTouch(3, -1, 0, 0)
                 listOf(PointerGestures.BTN_LEFT, PointerGestures.BTN_RIGHT, PointerGestures.BTN_MIDDLE).forEach {
@@ -1589,6 +1613,66 @@ class SessionActivity : ComponentActivity(), SurfaceHolder.Callback {
             (getSystemService(VIBRATOR_SERVICE) as? android.os.Vibrator)?.vibrate(15)
         }
     }
+
+    /** The Winlator-style on-screen PC keys / mouse buttons / touchpad (TouchKeys). */
+    private fun refreshTouchKeys() {
+        touchKeysView?.let { tk ->
+            tk.visibility = if (SessionPrefs.touchKeys(this) || tk.isEditing) android.view.View.VISIBLE else android.view.View.GONE
+            tk.reload()
+        }
+    }
+
+    private fun addTouchKeyWidget(kind: Int, code: Int) {
+        val list = TouchKeys.load(this).toMutableList()
+        val label = TouchKeys.defaultLabel(kind, code)
+        val n = list.size
+        list += TouchKeys.Widget(System.currentTimeMillis(), kind, code, label,
+            x = (0.5f + (n % 5) * 0.07f - 0.14f).coerceIn(0.05f, 0.95f),
+            y = if (kind == TouchKeys.TOUCHPAD) 0.72f else 0.85f,
+            scale = 1f)
+        TouchKeys.save(this, list)
+        touchKeysView?.visibility = android.view.View.VISIBLE
+        touchKeysView?.reload()
+    }
+
+    private fun toggleTouchKeysEdit() {
+        val tk = touchKeysView ?: return
+        if (tk.isEditing) tk.stopEditing() else tk.startEditing()
+        refreshTouchKeys()
+    }
+
+    private fun showTouchKeyPicker() {
+        val d = resources.displayMetrics.density
+        val col = android.widget.LinearLayout(this).apply {
+            orientation = android.widget.LinearLayout.VERTICAL
+            setPadding((16 * d).toInt(), (8 * d).toInt(), (16 * d).toInt(), 0)
+        }
+        for (row in TouchKeys.PICKER_ROWS) {
+            val line = android.widget.LinearLayout(this).apply { gravity = android.view.Gravity.CENTER }
+            for ((label, code) in row) {
+                val key = android.widget.Button(this).apply {
+                    text = label
+                    isAllCaps = false
+                    setOnClickListener {
+                        addTouchKeyWidget(TouchKeys.KEY, code)
+                        pickerDialog?.dismiss()
+                    }
+                }
+                line.addView(key, android.widget.LinearLayout.LayoutParams((46 * d).toInt(), (46 * d).toInt())
+                    .apply { setMargins((2 * d).toInt(), (2 * d).toInt(), (2 * d).toInt(), (2 * d).toInt()) })
+            }
+            col.addView(line, android.widget.LinearLayout.LayoutParams(
+                android.view.ViewGroup.LayoutParams.WRAP_CONTENT, android.view.ViewGroup.LayoutParams.WRAP_CONTENT))
+        }
+        val scroll = android.widget.ScrollView(this).apply { addView(col) }
+        pickerDialog = android.app.AlertDialog.Builder(this)
+            .setTitle(R.string.touchkeys_add_key)
+            .setView(scroll)
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
+    }
+
+    private var pickerDialog: android.app.AlertDialog? = null
 
     private fun movePointer(x: Float, y: Float) {
         val rect = drawnRect() ?: return

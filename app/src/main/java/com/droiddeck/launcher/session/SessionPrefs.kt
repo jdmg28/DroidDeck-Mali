@@ -139,6 +139,13 @@ object SessionPrefs {
         prefs(context).edit().putString("touch", mode).apply()
     }
 
+    /** The on-screen PC keys / mouse buttons / touchpad (input/TouchKeys), Winlator-style. */
+    fun touchKeys(context: Context): Boolean = prefs(context).getBoolean("touchKeys", false)
+
+    fun setTouchKeys(context: Context, on: Boolean) {
+        prefs(context).edit().putBoolean("touchKeys", on).apply()
+    }
+
     const val SHAPE_AUTO = "auto"
     const val SHAPE_WIDE = "16:9"
     const val SHAPE_EXACT = "exact"
