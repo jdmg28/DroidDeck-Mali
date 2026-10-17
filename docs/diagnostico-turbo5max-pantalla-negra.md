@@ -644,11 +644,31 @@ salida de la app). **Con BC exacto el mundo sigue negro en partida** → la caus
 AFRC/BC (esa era la de las barras de los menús/vídeos). El usuario no dejó captura de DS1: falta
 saber si los menús/vídeos se arreglaron con RC3-exactbc (para separar BC-render de profundidad).
 
-Siguiente hipótesis (única en pie): **el camino de profundidad D24S8** (el juego pide
-D16S8→DXVK lo mapea a D24S8; "Auto Depth Stencil: false") o el render-target del frame final.
-Prueba A/B sin driver nuevo: en la página del juego, "Entorno" → activar
-**PROTON_USE_WINED3D** (DXVK→wined3d/GL). Si con wined3d el mundo se dibuja, es del formato de
-profundidad en panvk y se ataca en el adaptador ICD (D24S8→D32S8 interno).
+### Séptima ronda — el log de d3d9 condena D24S8 (minado del zip 16-steam)
+
+`steam/DARKSOULS_d3d9.log` (DXVK v3.1.1-27-g25ca63f, Mali-G615 MC6, panvk 26.2.99):
+
+- `D3D9: VK_FORMAT_D16_UNORM_S8_UINT -> VK_FORMAT_D24_UNORM_S8_UINT` — a panvk le falló el check
+  de D16S8 (Mali no tiene D16S8 empaquetado) y el fallback elegido fue **D24S8**, o sea que panvk
+  anuncia D24S8 con DEPTH_STENCIL_ATTACHMENT + SAMPLED_IMAGE. Toda la profundidad de DS1 va por
+  D24S8 (el propio juego pasa `Auto Depth Stencil: false` con `D3D9Format::D24S8` y crea la
+  superficie a mano).
+- El presenter está sano (1280x720, BG8A8, PRESENT_IMMEDIATE, 4 imágenes, 119.7 Hz) — otra vez,
+  el negro no es del swapchain.
+- En `docs/panprobe-dxvk-coverage.md` del repositorio del driver, los autores dejan escrito que
+  **D24/D16/D32S8 solo tienen cobertura QUERY (propiedades de formato), sin validación de
+  ejecución ni stencil** en este stack. Menús bien + mundo negro en DS1 (que lee la profundidad
+  como textura para la niebla/DoF) es exactamente la firma de un D24S8 roto al ejecutar.
+
+El fallback ya existe en DXVK (stock, commit 25ca63f, `d3d9_format.cpp:550-554`): si D24S8 no se
+anuncia soportado, D24S8→**D32_SFLOAT_S8_UINT** (nativo de Mali) y D16S8→D32S8. Y hay opción de
+config **sin recompilar nada**: `d3d9.useD32forD24 = True` (d3d9_format.cpp:498).
+
+**Prueba A/B (hoy, sin APK ni driver nuevo):** página del juego DS1 → Entorno → DXVK_CONFIG →
+`d3d9.useD32forD24 = True` → relanzar. Si el mundo se dibuja, D24S8 de panvk queda condenado y
+se hornea en el driver (tabla de formatos sin D24S8 → todos los D3D9 van por D32S8; el camino
+DXGI ya cae solo a D32S8 cuando el formato no se anuncia). PROTON_USE_WINED3D queda como segunda
+opción (en este runtime no hay GL, puede no arrancar).
 
 ## El mando táctil gana controles de teclado/ratón (rehecho tras el rechazo del apartado separado)
 
