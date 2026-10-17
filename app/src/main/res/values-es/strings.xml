@@ -901,6 +901,18 @@
     <string name="touchkeys_add_rmb">Añadir clic derecho</string>
 
     <string name="touchkeys_add_touchpad">Añadir un touchpad</string>
+    <string name="ctrl_profile_default">Por defecto</string>
+    <string name="ctrl_layout_pick">Elegir disposición</string>
+    <string name="ctrl_layout_new">Nueva disposición</string>
+    <string name="ctrl_layout_rename">Renombrar</string>
+    <string name="ctrl_layout_remove">Quitar</string>
+    <string name="ctrl_layout_name">Nombre de la disposición</string>
+    <string name="ctrl_layout_remove_hint">Se elimina la disposición con sus controles y vuelve el mando por defecto.</string>
+    <string name="ctrl_layout_imported">Añadidos</string>
+    <string name="ctrl_pick_stick_l">Joystick izquierdo</string>
+    <string name="ctrl_pick_stick_r">Joystick derecho</string>
+    <string name="ctrl_pick_dpad">Cruceta</string>
+    <string name="ctrl_untitled">Control</string>
     <string name="setup_animations">Animaciones</string>
     <string name="ctrl_adaptive_hint">Los sticks aparecen donde tocas y se ocultan al soltar</string>
     <string name="ctrl_layout">Disposición</string>

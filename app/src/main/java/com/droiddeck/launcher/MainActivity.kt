@@ -824,7 +824,30 @@ class MainActivity : ComponentActivity() {
                             onKeyboardButton = { on -> ControllerPrefs.setKeyboardButton(this, on); refreshController() },
                             onEditLayout = { startActivity(Intent(this, ControllerEditorActivity::class.java)) },
                             onResetLayout = { ControllerPrefs.resetAllLayouts(this); refreshController() },
-                            onAddControl = { com.droiddeck.launcher.input.ControllerCustoms.showAdd(this) },
+                            onPickLayout = { id -> ControllerPrefs.setActiveLayout(this, id); refreshController() },
+                            onNewLayout = { com.droiddeck.launcher.input.ControllerCustoms.prompt(this, R.string.ctrl_layout_name, null) { name ->
+                                ControllerPrefs.setActiveLayout(this, ControllerPrefs.newLayout(this, name).id)
+                                refreshController()
+                            } },
+                            onRenameLayout = {
+                                val id = ControllerPrefs.activeLayoutId(this)
+                                if (id != ControllerPrefs.LAYOUT_DEFAULT) {
+                                    val name = ControllerPrefs.layoutById(this, id)?.name
+                                    com.droiddeck.launcher.input.ControllerCustoms.prompt(this, R.string.ctrl_layout_name, name) { next ->
+                                        ControllerPrefs.renameLayout(this, id, next)
+                                        refreshController()
+                                    }
+                                }
+                            },
+                            onRemoveLayout = {
+                                val id = ControllerPrefs.activeLayoutId(this)
+                                if (id != ControllerPrefs.LAYOUT_DEFAULT) {
+                                    com.droiddeck.launcher.input.ControllerCustoms.confirm(this, R.string.ctrl_layout_remove_hint) {
+                                        ControllerPrefs.removeLayout(this, id)
+                                        refreshController()
+                                    }
+                                }
+                            },
                             onMapping = { settingsMode = null; showPerformance = false; showProtons = false; showComponents = false; showMapping = true },
                             onResetAll = { ControllerPrefs.resetAll(this); refreshController() },
                         ),

@@ -670,18 +670,25 @@ se hornea en el driver (tabla de formatos sin D24S8 → todos los D3D9 van por D
 DXGI ya cae solo a D32S8 cuando el formato no se anuncia). PROTON_USE_WINED3D queda como segunda
 opción (en este runtime no hay GL, puede no arrancar).
 
-## El mando táctil gana controles de teclado/ratón (rehecho tras el rechazo del apartado separado)
+## El mando táctil gana perfiles de HUD (estilo Winlator)
 
-El usuario rechazó la capa aparte (commit b3ac670): quería editar **el mando de siempre** desde
-**Configuración → Mando → Disposición**. Rehecho: `ControllerPrefs.Custom` (tecla de PC / clic
-izq-der / **joystick que aprieta WASD** / touchpad relativo, con **forma** círculo↔cuadrado) —
+Tras el rechazo del apartado separado (b3ac670) y del lienzo único con extras (8711021), el
+usuario pidió lo que Winlator tiene: **perfiles de HUD nombrados**. Hecho así en `ControllerPrefs`
+(layouts) + `OnScreenControls` + `ControllerCustoms`:
 
-- **Configuración → Mando → Disposición → "Añadir"**: abre el selector (ControllerCustoms);
-  "Editar" (el editor de siempre, ControllerEditorActivity) también tiene el botón Añadir y
-  arrastra los controles nuevos como cualquier otro; cada control añadido tiene Forma y Quitar.
-- En juego se ven y funcionan con **Controles en pantalla: Siempre** (OSC_ALWAYS muestra el
-  mando clásico también en sesiones Steam). Teclas por wl_keyboard (sendGuestKey), clics por el
-  puntero de escena, touchpad por sendPointerDelta (los canales existentes).
-- WASD: stick virtual cuyo knob mantiene las teclas (TouchKeys.wasdKeys, zona muerta 0.35,
-  diagonales incluidas; probado en ControllerCustomsTest).
-- La capa TouchKeysView separada y su apartado en el cajón de sesión: eliminados.
+- **Disposición** (Configuración → Mando) es un selector: "**Por defecto**" (el mando ajustado a
+  la pantalla de la app) más los perfiles que cree el usuario. "Nueva disposición" crea un perfil
+  **vacío** (lienzo en blanco); "Editar" abre el editor sobre el activo; "Renombrar"/"Quitar"
+  gestionan la lista (quitar borra el perfil con sus controles, confirmado).
+- Dentro del editor, "**Añadir**" ofrece **todo**: joystick izquierdo/derecho, **cruceta** (las
+  4 flechas que se arrastran juntas), A/B/X/Y, LB/RB/LT/RT, L3/R3, Vista/Menú, Steam/QAM,
+  **cualquier tecla de PC** (grilla), clics izq/der del ratón, **joystick WASD** y touchpad
+  relativo. Cada control tiene **Forma** (círculo → redondeado → cuadrado) y **Quitar** en
+  "Gestionar". Se arrastra como cualquier botón.
+- **Las posiciones viven dentro del perfil** (x/y normalizados), así que cambiar de perfil
+  cambia el HUD completo — uno por juego, se elige en Disposición antes de lanzar (Winlator lo
+  ata al contenedor; aquí v1 es global, pendiente atarlo por juego si el usuario lo pide).
+- KIND_GAMEPAD_BTN (6) = pieza del mando virtual (target: "a"..."ls","rs","up"...). Los sticks
+  escritos por perfiles no tocan ejes salvo los del propio mando; los adaptativos solo ocultan
+  los del mando base (los del usuario siempre se ven). Migración: los extras de R18
+  ("customControls") entran como un perfil "Añadidos".

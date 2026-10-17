@@ -87,6 +87,9 @@ class OnScreenControls(
 
     private val controls = mutableListOf<Control>()
 
+    /** The active custom layout's records, re-read with [rebuild]; empty for the fitted pad. */
+    private var storedLayout: List<ControllerPrefs.Custom> = emptyList()
+
     private val groups: List<String> get() = controls.map { it.group }.distinct()
 
     private fun baseControls() = listOf(
@@ -110,30 +113,61 @@ class OnScreenControls(
         Control("qam", "qam", -1, 22f, 0f, 0f),
     )
 
-    /** Re-reads the custom controls (the editor or the settings page changed them). */
+    /** True while the HUD being drawn is a user-built layout, not the fitted pad. */
+    private fun customLayoutMode() = ControllerPrefs.activeLayoutId(context) != ControllerPrefs.LAYOUT_DEFAULT
+
+    /** Re-reads the active layout (the editor or the settings page changed it). */
     fun rebuild() {
         releaseAll()
         controls.clear()
-        controls += baseControls()
-        for (c in ControllerPrefs.customs(context)) {
-            controls += Control(c.id, c.id,
-                if (c.kind == ControllerPrefs.KIND_WASD) 0 else -1,
-                when (c.kind) {
-                    ControllerPrefs.KIND_WASD -> 46f
-                    ControllerPrefs.KIND_TOUCHPAD -> 30f
-                    else -> 22f
-                }, 0f, 0f,
-                kind = c.kind,
-                code = when (c.kind) {
-                    ControllerPrefs.KIND_MOUSE_LEFT -> PointerGestures.BTN_LEFT
-                    ControllerPrefs.KIND_MOUSE_RIGHT -> PointerGestures.BTN_RIGHT
-                    ControllerPrefs.KIND_MOUSE_MIDDLE -> PointerGestures.BTN_MIDDLE
-                    else -> c.code
-                },
-                shape = c.shape, labelOverride = c.label,
-                wideOverride = c.kind == ControllerPrefs.KIND_TOUCHPAD)
-        }
+        val id = ControllerPrefs.activeLayoutId(context)
+        storedLayout = if (id == ControllerPrefs.LAYOUT_DEFAULT) emptyList()
+        else ControllerPrefs.layoutById(context, id)?.controls ?: emptyList()
+        // The fitted pad is the default layout; a custom one draws only what it holds - an empty
+        // profile is an empty canvas, not the pad again.
+        if (storedLayout.isEmpty()) {
+            if (!customLayoutMode()) controls += baseControls()
+        } else for (c in storedLayout) controls += customControl(c)
         if (width > 0) relayout() else invalidate()
+    }
+
+    /** One stored control becomes drawable: a pad piece, a PC key, a mouse click, WASD, a touchpad. */
+    private fun customControl(c: ControllerPrefs.Custom): Control {
+        val gamepad = c.kind == ControllerPrefs.KIND_GAMEPAD_BTN
+        val stick = if (c.kind == ControllerPrefs.KIND_WASD) 0
+            else if (gamepad && c.target == "ls") 0
+            else if (gamepad && c.target == "rs") 1
+            else -1
+        // A stored d-pad is four controls in one group; the cross comes from the same offsets the
+        // fitted pad's d-pad has, so dragging the group keeps its shape.
+        val (offsetX, offsetY) = when {
+            gamepad && c.target == "up" -> 0f to -30f
+            gamepad && c.target == "down" -> 0f to 30f
+            gamepad && c.target == "left" -> -30f to 0f
+            gamepad && c.target == "right" -> 30f to 0f
+            else -> 0f to 0f
+        }
+        val control = Control(c.id, c.group.ifEmpty { c.id }, stick,
+            when {
+                c.kind == ControllerPrefs.KIND_WASD -> 46f
+                c.kind == ControllerPrefs.KIND_TOUCHPAD -> 30f
+                gamepad && c.target == "ls" || gamepad && c.target == "rs" -> 48f
+                gamepad && c.target in shoulderIds -> 24f
+                gamepad && c.target in directions -> 26f
+                gamepad -> 22f
+                else -> 22f
+            }, offsetX, offsetY,
+            kind = c.kind,
+            code = when (c.kind) {
+                ControllerPrefs.KIND_MOUSE_LEFT -> PointerGestures.BTN_LEFT
+                ControllerPrefs.KIND_MOUSE_RIGHT -> PointerGestures.BTN_RIGHT
+                ControllerPrefs.KIND_MOUSE_MIDDLE -> PointerGestures.BTN_MIDDLE
+                else -> c.code
+            },
+            shape = c.shape, labelOverride = c.label,
+            wideOverride = c.kind == ControllerPrefs.KIND_TOUCHPAD || gamepad && c.target in shoulderIds)
+        if (gamepad) control.target = c.target.ifEmpty { c.id }
+        return control
     }
 
     private var buttonsOnly = false
@@ -191,7 +225,7 @@ class OnScreenControls(
     }
 
     private fun applySettings() {
-        for (control in controls) control.target = settings.mapping[control.id] ?: control.id
+        for (control in controls) if (control.kind == KIND_GAMEPAD) control.target = settings.mapping[control.id] ?: control.id
         val tint = settings.tint
         val alpha = settings.opacity / 100f
         fun shade(a: Int, f: Float) = Color.argb((a * alpha).toInt(), (Color.red(tint) * f).toInt(), (Color.green(tint) * f).toInt(), (Color.blue(tint) * f).toInt())
@@ -252,9 +286,20 @@ class OnScreenControls(
             val inset = dp(44f)
             put("guide", safe.left + inset, height - safe.bottom - inset)
             put("qam", width - safe.right - inset, height - safe.bottom - inset)
+        } else if (customLayoutMode() && !ignoreSaved) {
+            val placed = HashSet<String>()
+            for (custom in storedLayout) {
+                val group = custom.group.ifEmpty { custom.id }
+                if (group in placed) continue
+                if (custom.x >= 0f && custom.y >= 0f) {
+                    put(group, custom.x * width, custom.y * height)
+                    placed += group
+                }
+            }
+            placeCustomsDefaults(width.toFloat(), placed)
         } else {
             placeAuto(width.toFloat(), height.toFloat())
-            placeCustomsDefaults(width.toFloat())
+            placeCustomsDefaults(width.toFloat(), ControllerPrefs.layout(context, width, height).keys)
             if (!ignoreSaved) for ((group, pos) in ControllerPrefs.layout(context, width, height)) {
                 if (group in groups) put(group, pos.first * width, pos.second * height)
             }
@@ -389,6 +434,14 @@ class OnScreenControls(
 
     fun saveLayout() {
         if (width <= 0 || height <= 0) return
+        val id = ControllerPrefs.activeLayoutId(context)
+        if (id != ControllerPrefs.LAYOUT_DEFAULT) {
+            ControllerPrefs.setLayoutPositions(context, id, groups.associateWith { group ->
+                val (x, y) = centre(group)
+                x / width to y / height
+            })
+            return
+        }
         if (ignoreSaved) { ControllerPrefs.resetLayout(context, width, height); return }
         ControllerPrefs.setLayout(context, width, height, groups.associateWith { group ->
             val (x, y) = centre(group)
@@ -397,17 +450,23 @@ class OnScreenControls(
     }
 
     fun resetLayout() {
+        val id = ControllerPrefs.activeLayoutId(context)
+        if (id != ControllerPrefs.LAYOUT_DEFAULT) {
+            ControllerPrefs.clearLayoutPositions(context, id)
+            selected = null
+            relayout()
+            return
+        }
         ControllerPrefs.resetLayout(context, width, height)
         ignoreSaved = true
         selected = null
         relayout()
     }
 
-    /** Customs nobody positioned yet: a column inside the right edge, under the face group. */
-    private fun placeCustomsDefaults(w: Float) {
+    /** Controls nobody positioned yet: a column inside the right edge, under the face group. */
+    private fun placeCustomsDefaults(w: Float, taken: Set<String>) {
         val known = setOf("dpad", "ls", "rs", "face", "lb", "lt", "rb", "rt", "select", "start", "guide", "qam")
-        val saved = ControllerPrefs.layout(context, width, height).keys
-        val fresh = controls.map { it.group }.distinct().filter { it !in known && it !in saved }
+        val fresh = controls.map { it.group }.distinct().filter { it !in known && it !in taken }
         fresh.forEachIndexed { index, group ->
             val r = members(group).maxOf { it.radius }
             put(group, w - safe.right - r - dp(10f), safe.top + dp(110f) + index * (2 * r + dp(14f)))
@@ -429,7 +488,7 @@ class OnScreenControls(
     override fun onDraw(canvas: Canvas) {
         if (!quickHidden) for (control in controls) {
             if (!isVisible(control)) continue
-            if (control.stick >= 0 && settings.adaptiveSticks && !editing && control.pressedBy == -1) continue
+            if (control.stick >= 0 && control.kind == KIND_GAMEPAD && settings.adaptiveSticks && !editing && control.pressedBy == -1) continue
             val held = control.pressedBy != -1
             val radius = control.radius
             if (control.stick >= 0) {
@@ -708,6 +767,7 @@ class OnScreenControls(
         if (!settings.adaptiveSticks || editing || buttonsOnly || quickHidden) return null
         if (x < safe.left || x >= width - safe.right || y < safe.top || y >= height - safe.bottom) return null
         if (controls.any { it.stick < 0 && isVisible(it) && it.contains(x, y, it.radius, 5f) }) return null
+        // Custom sticks stay drawn while idle, but a near-touch still grabs them like the pad's.
         return controls.filter {
             val dx = x - it.cx
             val dy = y - it.cy
@@ -730,7 +790,7 @@ class OnScreenControls(
     private fun apply() {
         val bridge = pad
         if (bridge == null || editing) { invalidate(); return }
-        val qamHeld = controls.any { it.id == "qam" && it.pressedBy != -1 }
+        val qamHeld = controls.any { (it.id == "qam" || it.target == "qam") && it.pressedBy != -1 }
         if (buttonsOnly) {
             bridge.setSystemButtons(controls.any { it.id == "guide" && it.pressedBy != -1 }, qamHeld)
         } else {
@@ -742,14 +802,16 @@ class OnScreenControls(
                     when {
                         control.stick >= 0 -> {
                             val click = if (control.stick == 0) "l3" else "r3"
-                            if (control.kind == KIND_GAMEPAD) {
+                            val gamepadStick = control.kind == KIND_GAMEPAD || control.kind == ControllerPrefs.KIND_GAMEPAD_BTN
+                            if (gamepadStick) {
                                 if (settings.stickClick) used.add(click)
                                 if (control.clicked) held.add(click)
-                            }
-                            if (!control.dirty) continue
-                            if (control.stick == 0) { state.leftX = control.kx / control.radius; state.leftY = control.ky / control.radius }
-                            else { state.rightX = control.kx / control.radius; state.rightY = control.ky / control.radius }
-                            control.dirty = false
+                                if (control.dirty) {
+                                    if (control.stick == 0) { state.leftX = control.kx / control.radius; state.leftY = control.ky / control.radius }
+                                    else { state.rightX = control.kx / control.radius; state.rightY = control.ky / control.radius }
+                                    control.dirty = false
+                                }
+                            } else control.dirty = false
                         }
                         control.id == "qam" || control.target == ControllerPrefs.OFF -> {}
                         else -> {

@@ -1,6 +1,7 @@
 package com.droiddeck.launcher.input
 
 import android.content.Context
+import com.droiddeck.launcher.R
 import org.junit.Assert.*
 import org.junit.Before
 import org.junit.Test
@@ -10,8 +11,9 @@ import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
 
 /**
- * The on-screen controller's custom controls (the keyboard-and-mouse ones): the store's JSON
- * round-trip, add's id collisions, and the WASD mapping a stick drives keys with.
+ * The controller's HUD layouts (Winlator-style profiles): the JSON round-trip, switching the
+ * active one, adding controls with collision-safe ids, the shared-group d-pad, and the R18
+ * extras' migration into a layout of their own.
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [28], manifest = Config.NONE)
@@ -20,30 +22,78 @@ class ControllerCustomsTest {
 
     @Before fun setUp() {
         context = RuntimeEnvironment.getApplication()
-        ControllerPrefs.setCustoms(context, emptyList())
+        ControllerPrefs.prefs(context).edit().clear().commit()
     }
 
-    @Test fun roundTripKeepsEveryFieldAndDropsJunk() {
-        val list = listOf(
-            ControllerPrefs.Custom("key17", ControllerPrefs.KIND_KEY, 17, "W"),
-            ControllerPrefs.Custom("mouseL", ControllerPrefs.KIND_MOUSE_LEFT, 0, "L", ControllerPrefs.SHAPE_ROUNDED),
-            ControllerPrefs.Custom("wasd", ControllerPrefs.KIND_WASD, 0, "WASD", ControllerPrefs.SHAPE_SQUARE),
-        )
-        ControllerPrefs.setCustoms(context, list)
-        assertEquals(list, ControllerPrefs.customs(context))
-        // Junk is decoded away, not crashed on.
-        ControllerPrefs.setCustoms(context, emptyList())
-        ControllerPrefs.prefs(context).edit().putString("customControls", "[{\"id\":\"x\",\"kind\":99,\"code\":0,\"label\":\"?\"},\"junk\"]").commit()
-        assertTrue(ControllerPrefs.customs(context).isEmpty())
+    @Test fun layoutsRoundTripAndSwitch() {
+        val made = ControllerPrefs.newLayout(context, "Teclas")
+        assertEquals("Teclas", ControllerPrefs.layoutById(context, made.id)?.name)
+        assertTrue(ControllerPrefs.layouts(context).none { it.id == ControllerPrefs.LAYOUT_DEFAULT })
+        ControllerPrefs.setActiveLayout(context, made.id)
+        assertEquals(made.id, ControllerPrefs.activeLayoutId(context))
+        // An unknown active id falls back to the default, never to a dead profile.
+        ControllerPrefs.setActiveLayout(context, "gone")
+        assertEquals(ControllerPrefs.LAYOUT_DEFAULT, ControllerPrefs.activeLayoutId(context))
+        ControllerPrefs.renameLayout(context, made.id, "Ratón")
+        assertEquals("Ratón", ControllerPrefs.layoutById(context, made.id)?.name)
+        ControllerPrefs.removeLayout(context, made.id)
+        assertNull(ControllerPrefs.layoutById(context, made.id))
     }
 
-    @Test fun addNeverCollidesAndLabelsTheKey() {
-        ControllerPrefs.addCustom(context, ControllerPrefs.KIND_KEY, 17)
-        ControllerPrefs.addCustom(context, ControllerPrefs.KIND_KEY, 17)
-        val ids = ControllerPrefs.customs(context).map { it.id }
-        assertEquals(listOf("key17", "key17-2"), ids)
-        assertEquals("W", ControllerPrefs.customs(context)[0].label)
+    @Test fun addedControlsKeepEveryFieldAndNeverCollide() {
+        val made = ControllerPrefs.newLayout(context, "Mezcla")
+        ControllerPrefs.addControl(context, made.id, ControllerPrefs.KIND_KEY, 17, target = "")
+        ControllerPrefs.addControl(context, made.id, ControllerPrefs.KIND_KEY, 17, target = "")
+        ControllerPrefs.addControl(context, made.id, ControllerPrefs.KIND_GAMEPAD_BTN, 0, "ls")
+        val controls = ControllerPrefs.layoutById(context, made.id)!!.controls
+        assertEquals(listOf("key17", "key17-2", "ls"), controls.map { it.id })
+        assertEquals("W", controls[0].label)
+        assertEquals(ControllerPrefs.KIND_GAMEPAD_BTN, controls[2].kind)
+        assertEquals("ls", controls[2].target)
         assertEquals(TouchKeys.keyName(59), "F1")
+        // Adding to the fitted pad does nothing: the default is the built-in layout only.
+        assertTrue(ControllerPrefs.addControl(context, ControllerPrefs.LAYOUT_DEFAULT, ControllerPrefs.KIND_KEY, 17).isEmpty())
+    }
+
+    @Test fun positionsAreStoredPerLayoutAndCanBeCleared() {
+        val made = ControllerPrefs.newLayout(context, "Lugares")
+        ControllerPrefs.addControl(context, made.id, ControllerPrefs.KIND_MOUSE_LEFT, 0)
+        ControllerPrefs.setLayoutPositions(context, made.id, mapOf("mouseL" to (0.25f to 0.75f)))
+        var stored = ControllerPrefs.layoutById(context, made.id)!!.controls.single()
+        assertEquals(0.25f, stored.x, 0f)
+        assertEquals(0.75f, stored.y, 0f)
+        // A second layout keeps its own, so switching swaps the whole HUD.
+        val other = ControllerPrefs.newLayout(context, "Otra")
+        ControllerPrefs.addControl(context, other.id, ControllerPrefs.KIND_MOUSE_LEFT, 0)
+        assertTrue(ControllerPrefs.layoutById(context, other.id)!!.controls.single().x < 0f)
+        ControllerPrefs.clearLayoutPositions(context, made.id)
+        stored = ControllerPrefs.layoutById(context, made.id)!!.controls.single()
+        assertTrue(stored.x < 0f && stored.y < 0f)
+    }
+
+    @Test fun theDpadAddsFourControlsThatMoveAsOne() {
+        val made = ControllerPrefs.newLayout(context, "Pad")
+        ControllerPrefs.addDpad(context, made.id)
+        val controls = ControllerPrefs.layoutById(context, made.id)!!.controls
+        assertEquals(listOf("up", "right", "down", "left"), controls.map { it.target })
+        assertEquals(4, controls.map { it.group }.distinct().size)
+        // Removing one arrow takes the whole cross: they drag and live together.
+        ControllerPrefs.removeControl(context, made.id, controls[0].id)
+        assertTrue(ControllerPrefs.layoutById(context, made.id)!!.controls.isEmpty())
+    }
+
+    @Test fun theOldExtraControlsMigrateIntoTheirOwnLayout() {
+        val legacy = "[{\"id\":\"key17\",\"kind\":0,\"code\":17,\"label\":\"W\",\"shape\":1}," +
+            "{\"id\":\"wasd\",\"kind\":4,\"code\":0,\"label\":\"WASD\"}]"
+        ControllerPrefs.prefs(context).edit().putString("customControls", legacy).commit()
+        val layouts = ControllerPrefs.layouts(context)
+        assertEquals(1, layouts.size)
+        assertEquals(context.getString(R.string.ctrl_layout_imported), layouts[0].name)
+        assertEquals(listOf("key17", "wasd"), layouts[0].controls.map { it.id })
+        assertEquals(ControllerPrefs.SHAPE_ROUNDED, layouts[0].controls[0].shape)
+        assertFalse(ControllerPrefs.prefs(context).contains("customControls"))
+        // A second look must not stack another copy.
+        assertEquals(1, ControllerPrefs.layouts(context).size)
     }
 
     @Test fun wasdMappingHoldsDiagonalsAndRespectsTheDeadZone() {

@@ -903,6 +903,18 @@
     <string name="touchkeys_add_rmb">Add a right-click button</string>
 
     <string name="touchkeys_add_touchpad">Add a touchpad</string>
+    <string name="ctrl_profile_default">Default</string>
+    <string name="ctrl_layout_pick">Choose a layout</string>
+    <string name="ctrl_layout_new">New layout</string>
+    <string name="ctrl_layout_rename">Rename</string>
+    <string name="ctrl_layout_remove">Remove</string>
+    <string name="ctrl_layout_name">Layout name</string>
+    <string name="ctrl_layout_remove_hint">This deletes the layout with its controls; the default pad comes back.</string>
+    <string name="ctrl_layout_imported">Added</string>
+    <string name="ctrl_pick_stick_l">Left joystick</string>
+    <string name="ctrl_pick_stick_r">Right joystick</string>
+    <string name="ctrl_pick_dpad">D-pad</string>
+    <string name="ctrl_untitled">Control</string>
     <string name="setup_animations">Animations</string>
     <string name="ctrl_adaptive_hint">Sticks appear where you touch and hide on release</string>
     <string name="ctrl_layout">Layout</string>
