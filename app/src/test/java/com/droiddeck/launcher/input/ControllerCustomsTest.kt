@@ -76,7 +76,8 @@ class ControllerCustomsTest {
         ControllerPrefs.addDpad(context, made.id)
         val controls = ControllerPrefs.layoutById(context, made.id)!!.controls
         assertEquals(listOf("up", "right", "down", "left"), controls.map { it.target })
-        assertEquals(4, controls.map { it.group }.distinct().size)
+        // One shared group is the point: the cross drags as a single thing.
+        assertEquals(1, controls.map { it.group }.distinct().size)
         // Removing one arrow takes the whole cross: they drag and live together.
         ControllerPrefs.removeControl(context, made.id, controls[0].id)
         assertTrue(ControllerPrefs.layoutById(context, made.id)!!.controls.isEmpty())
