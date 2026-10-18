@@ -2,7 +2,7 @@
 <resources>
     <string name="gpuinfo_mali_experimental">Experimental Mali-G615 integration: import the PanVK Linux driver; Steam on this device is not validated</string>
     <string name="mali_display_driver">System Vulkan (Mali)</string>
-    <string name="drivers_mali_source">Drivers come straight from this repository\'s releases - no Adreno (Turnip) repo is asked.</string>
+    <string name="drivers_mali_source">Drivers come straight from this repository\'s releases.</string>
     <string name="mali_download_panvk_detail">Hardware driver for Mali CSF GPUs (v9-v13) · PanVK-kbase</string>
     <string name="mali_download_lavapipe_detail">CPU software fallback · draws without the GPU</string>
     <string name="mali_download_panvk_rc3_detail">Hardware driver for Mali CSF (v9-v13) · exact BC textures - try it when videos or menus of a game show colour bars</string>

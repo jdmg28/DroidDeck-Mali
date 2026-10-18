@@ -73,7 +73,7 @@ object Themes {
     fun byId(id: String): Palette = all.firstOrNull { it.id == id } ?: all[0]
 }
 
-val LocalPalette = staticCompositionLocalOf { Themes.byId(Themes.GRAPHITE) }
+val LocalPalette = staticCompositionLocalOf { Themes.byId(Themes.STEAM_PURPLE) }
 
 /**
  * Text and icons drawn on a [Palette.signal] fill: near-black where the blue is light enough that

@@ -27,10 +27,7 @@ object GameEnvironmentOptions {
         Option("ZINK_DESCRIPTORS", "auto", 0, Type.CHOICE, listOf("auto", "lazy", "cached", "notemplates")),
         Option("ZINK_DEBUG", "nir", 0, Type.MULTIPLE, listOf("nir", "spirv", "tgsi", "validation", "sync", "compact", "noreorder")),
         Option("SteamDeck", "0", 0, Type.TOGGLE, listOf("0", "1")),
-        Option("FD_DEV_FEATURES", "enable_tp_ubwc_flag_hint=1", 0, Type.MULTIPLE, listOf("enable_tp_ubwc_flag_hint=1", "storage_8bit=1")),
-        Option("TU_DEBUG", "forcecb", 0, Type.MULTIPLE, listOf("forcecb", "nocb", "startup", "deck_emu", "nir", "nobin", "sysmem", "gmem", "forcebin", "layout", "noubwc", "nomultipos", "nolrz", "nolrzfc", "perf", "perfc", "flushall", "syncdraw", "push_consts_per_stage", "rast_order", "unaligned_store", "log_skip_gmem_ops", "dynamic", "bos", "3d_load", "fdm", "noconform", "rd")),
-        Option("IR3_SHADER_DEBUG", "nouboopt", 0, Type.MULTIPLE, listOf("nouboopt", "nopreamble", "noearlypreamble")),
-        Option("MESA_EXTENSION_MAX_YEAR", "", 0, Type.TEXT),
+                                Option("MESA_EXTENSION_MAX_YEAR", "", 0, Type.TEXT),
         // The Mali driver's own switches; nothing applied until one is picked. no_crc renders
         // without the render-target checksums, the likeliest lever when a game's world draws
         // black while its menus draw fine.

@@ -555,6 +555,8 @@ class MainActivity : ComponentActivity() {
         storesShowMature = SessionPrefs.storesShowMature(this)
         applyLauncherFullscreen()
         updates.start()
+        // The driver a Mali phone came for, installed and set before anything asks for it.
+        com.droiddeck.launcher.gpu.MaliAutoSetup.ensure(this)
         setContent {
             DroidDeckTheme(theme, appScale = appScale) {
             com.droiddeck.launcher.ui.FocusGlideHost(androidx.compose.ui.Modifier.fillMaxSize().exposeTestTags()) {

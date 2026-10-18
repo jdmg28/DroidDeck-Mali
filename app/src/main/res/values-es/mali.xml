@@ -2,7 +2,7 @@
 <resources>
     <string name="gpuinfo_mali_experimental">Integración Mali-G615 experimental: importa el controlador Linux PanVK; Steam aún no está validado en este dispositivo</string>
     <string name="mali_display_driver">Vulkan del sistema (Mali)</string>
-    <string name="drivers_mali_source">Los controladores vienen directo de las releases de este repositorio: no se consulta ningún repo de Adreno (Turnip).</string>
+    <string name="drivers_mali_source">Los controladores vienen directo de las releases de este repositorio</string>
     <string name="mali_download_panvk_detail">Controlador de hardware para GPU Mali CSF (v9-v13) · PanVK-kbase</string>
     <string name="mali_download_lavapipe_detail">Respaldo por software en la CPU · dibuja sin la GPU</string>
     <string name="mali_download_panvk_rc3_detail">Controlador de hardware para Mali CSF (v9-v13) · texturas BC exactas: pruébalo cuando los vídeos o menús de un juego muestran barras de color</string>

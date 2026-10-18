@@ -25,8 +25,12 @@ object DeviceSupport {
         File("/vendor/lib64/hw/vulkan.mali.so").exists() ||
         File("/vendor/lib64/egl/libGLES_mali.so").exists())
 
-    /** The Mali-G615 experiment targets Android 15/16; other non-Adreno devices remain refused. */
-    fun canTry(): Boolean = adreno() || (Build.VERSION.SDK_INT >= 35 && mali())
+    /**
+     * Every Mali device the driver could serve, not one SoC or one Android release: the session
+     * draws through the imported PanVK ICD either way, and an unsupported generation is the
+     * session's clean error to give, not a locked app.
+     */
+    fun canTry(): Boolean = adreno() || mali()
 
     /** The chip as the device names it, for the card that explains the refusal. */
     fun gpuName(context: Context): String {
