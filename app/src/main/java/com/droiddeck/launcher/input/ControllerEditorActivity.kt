@@ -45,9 +45,29 @@ class ControllerEditorActivity : ComponentActivity() {
     }
 
     private lateinit var controls: OnScreenControls
+    private lateinit var barView: ComposeView
 
     /** The group the finger last picked in the view; the bar's Quitar/Ajustes act on it. */
     private var selected by mutableStateOf<String?>(null)
+
+    /** The pill out of the way while a button is being placed under it. */
+    private var barVisible by mutableStateOf(true)
+
+    /** Recentres the pill, or parks a small "Mostrar" chip in a corner. */
+    private fun setBarExpanded(expanded: Boolean) {
+        barVisible = expanded
+        if (!::barView.isInitialized) return
+        val d = resources.displayMetrics.density
+        val lp = barView.layoutParams as FrameLayout.LayoutParams
+        if (expanded) {
+            lp.gravity = Gravity.CENTER
+            lp.setMargins(0, 0, 0, 0)
+        } else {
+            lp.gravity = Gravity.TOP or Gravity.END
+            lp.setMargins((12 * d).toInt(), (12 * d).toInt(), (12 * d).toInt(), 0)
+        }
+        barView.layoutParams = lp
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -65,6 +85,7 @@ class ControllerEditorActivity : ComponentActivity() {
             }
         }
         root.addView(bar, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.CENTER))
+        barView = bar
         setContentView(root)
     }
 
@@ -73,6 +94,10 @@ class ControllerEditorActivity : ComponentActivity() {
         val activity = this
         val custom = layoutId != ControllerPrefs.LAYOUT_DEFAULT
         val name = if (custom) ControllerPrefs.layoutById(activity, layoutId)?.name ?: "" else stringResource(R.string.ctrl_profile_default)
+        if (!barVisible) {
+            EditorButton(stringResource(R.string.common_show), false) { setBarExpanded(true) }
+            return
+        }
         Row(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -100,6 +125,7 @@ class ControllerEditorActivity : ComponentActivity() {
                 controls.saveLayout()
                 finish()
             }
+            EditorButton(stringResource(R.string.common_hide), false) { setBarExpanded(false) }
         }
     }
 

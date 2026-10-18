@@ -146,10 +146,10 @@ class OnScreenControls(
         // A stored d-pad is four controls in one group; the cross comes from the same offsets the
         // fitted pad's d-pad has, so dragging the group keeps its shape.
         val (offsetX, offsetY) = when {
-            gamepad && c.target == "up" -> 0f to -30f
-            gamepad && c.target == "down" -> 0f to 30f
-            gamepad && c.target == "left" -> -30f to 0f
-            gamepad && c.target == "right" -> 30f to 0f
+            gamepad && c.target == "up" -> 0f to -52f
+            gamepad && c.target == "down" -> 0f to 52f
+            gamepad && c.target == "left" -> -52f to 0f
+            gamepad && c.target == "right" -> 52f to 0f
             else -> 0f to 0f
         }
         val control = Control(c.id, c.group.ifEmpty { c.id }, stick,
@@ -161,7 +161,7 @@ class OnScreenControls(
                 gamepad && c.target in directions -> 26f
                 gamepad -> 22f
                 else -> 22f
-            }, offsetX, offsetY,
+            }, offsetX * c.scale, offsetY * c.scale,
             kind = c.kind,
             code = when (c.kind) {
                 ControllerPrefs.KIND_MOUSE_LEFT -> PointerGestures.BTN_LEFT
@@ -522,9 +522,12 @@ class OnScreenControls(
                 canvas.drawRoundRect(box, corner, corner, fill)
                 stroke.color = if (held) heldStroke else idleStroke
                 canvas.drawRoundRect(box, corner, corner, stroke)
-                text.color = if (held) Color.WHITE else idleText
-                text.textSize = control.halfH * 0.8f
-                canvas.drawText(label(control), control.cx, control.cy + text.textSize * 0.35f, text)
+                // The touchpad stays blank: at its scale the word covered half the screen.
+                if (control.kind != ControllerPrefs.KIND_TOUCHPAD) {
+                    text.color = if (held) Color.WHITE else idleText
+                    text.textSize = control.halfH * 0.8f
+                    canvas.drawText(label(control), control.cx, control.cy + text.textSize * 0.35f, text)
+                }
             } else {
                 fill.color = if (held) heldFill else idleFill
                 stroke.color = if (held) heldStroke else idleStroke
