@@ -13,7 +13,7 @@
 
 <p align="center">
   <a href="https://github.com/jdmg28/DroidDeck-Mali/releases/latest"><img src="https://img.shields.io/github/v/release/jdmg28/DroidDeck-Mali?include_prereleases&amp;label=Latest%20Release&amp;color=2ea44f" alt="Latest Release"></a>
-  <a href="https://github.com/jdmg28/DroidDeck-Mali/actions"><img src="https://img.shields.io/badge/Build-44%20(v0.3.2--exp1)-blue" alt="Build 44"></a>
+  <a href="https://github.com/jdmg28/DroidDeck-Mali/actions"><img src="https://img.shields.io/badge/Build-45%20(v0.4.0--beta.1)-blue" alt="Build 45"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-GPL--3.0-orange" alt="License GPL-3.0"></a>
 </p>
 
@@ -33,34 +33,17 @@ Upstream DroidDeck targets Qualcomm Adreno GPUs (`kgsl` + Mesa Turnip) and block
 
 ---
 
-## 📸 Screenshots / Pruebas en Hardware Real (Mali-G615 MC6)
+## 📸 Galería / Gallery — v0.4.0-beta.1 en el POCO X6 Pro (Mali-G615 MC6)
 
-### 1. In-game execution — *Clicker Heroes* (DirectX 11 → DXVK → PanVK-kbase on Mali-G615) Game menu running in Steam's game mode with errors at **29 FPS** (`29 fps` counter in the top-right corner):
+Todo el álbum de esta versión en una sola tabla: los títulos probados con el mando virtual y el
+HUD personalizable dibujándose en juego. HUD/Fps/RAM es la capa del propio fork.
 
-<p align="center">
-  <img src="docs/screenshots/Screenshot_2026-10-11-15-54-01-776_com.droiddeck.launcher.mali.g615.jpg" width="90%" alt="Clicker Heroes running at 29 FPS on Mali-G615 in DroidDeck">
-</p>
-
-### 2. Steam Gaming Mode (Big Picture / Deck UI on Gamescope)
-Full SteamOS Big Picture interface running inside `gamescope` on the phone:
-
-<p align="center">
-  <img src="docs/screenshots/Screenshot_2026-10-12-18-04-19-842_com.droiddeck.launcher.mali.g615.jpg" width="90%" alt="Steam Gaming Mode Library on DroidDeck Mali-G615">
-</p>
-
-### 3. KDE Plasma 6.7.5 Desktop Mode (`Mali-G615 MC6` Detected)
-Full Arch Linux ARM64 KDE Plasma 6.7.5 Wayland desktop session detecting **`Mali-G615 MC6 (Integrated)`** as the graphics processor:
-
-<p align="center">
-  <img src="docs/screenshots/Screenshot_2026-10-12-18-06-39-734_com.droiddeck.launcher.mali.g615.jpg" width="90%" alt="KDE Plasma 6.7.5 Desktop Mode showing Mali-G615 MC6 Integrated">
-</p>
-
-### 4. In-App GPU Drivers &amp; Components Manager (`Controladores de GPU`)
-Selecting the **`Controlador Mali (experimental)`** mode and the imported **`DroidDeck Mali-G615 PanVK-kbase`** runtime driver alongside the native Android **`Vulkan del sistema (Mali)`** display presenter:
-
-<p align="center">
-  <img src="docs/screenshots/Screenshot_2026-10-12-19-33-36-765_com.droiddeck.launcher.mali.g615.jpg" width="90%" alt="DroidDeck GPU Drivers screen showing Mali experimental mode and PanVK-kbase driver">
-</p>
+| | |
+|---|---|
+| <img src="docs/screenshots/release/karlson.jpg" width="100%" alt="Karlson"> **Karlson** — 36 fps, acelerado por la GPU Mali | <img src="docs/screenshots/release/hollow-knight.jpg" width="100%" alt="Hollow Knight"> **Hollow Knight** — 28 fps con el mando virtual |
+| <img src="docs/screenshots/release/hollow-knight-menu.jpg" width="100%" alt="Hollow Knight menu"> **Hollow Knight** — menú, 31 fps | <img src="docs/screenshots/release/miside.jpg" width="100%" alt="MiSide"> **MiSide** — 23 fps en partida |
+| <img src="docs/screenshots/release/miside-menu.jpg" width="100%" alt="MiSide menu"> **MiSide** — menú principal, 30 fps | <img src="docs/screenshots/release/craft-sell-mando.jpg" width="100%" alt="Mando virtual"> **Mando virtual completo** en juego 2D — 28 fps |
+| <img src="docs/screenshots/release/dark-souls-menu.jpg" width="100%" alt="Dark Souls"> **Dark Souls** — menús e inventario OK (mundo en negro: error conocido) | |
 
 ---
 
@@ -82,24 +65,48 @@ Download the latest release from **[Releases](https://github.com/jdmg28/DroidDec
 
 ### Step-by-Step Setup / Pasos de Configuración
 
-1. **Install the APK:**
-   Download and install **`DroidDeck-Mali-G615-debug.apk`** (`versionCode 44`, `v0.3.2-exp1`).
+1. **Install the APK / Instala el APK:**
+   Download and install **`DroidDeck-Mali-G615-debug.apk`** (`versionCode 45`, `v0.4.0-beta.1`). It installs over the previous build without losing data.
 2. **Disable Android Phantom Process Killer:**
    In Android **Developer options**, enable **Disable child process restrictions** (*Desactivar las restricciones de procesos secundarios*).
-3. **Install the Linux Runtime:**
-   Open DroidDeck and install the **Linux Runtime** (~3 GB) and optionally **Desktop & apps** (~1.1 GB).
-4. **Import the GPU Driver `.zip` (Do NOT unzip it):**
-   - Go to **`Components` → `GPU drivers` → `Import`** (or `Advanced` → `Runtime driver` → `Import`).
-   - Select **`DroidDeck-Mali-G615-PanVK-kbase-beta18.zip`** for hardware GPU acceleration on Mali-G615 (`panvk-kbase-v0.1.0-rc3`).
-   - *(Optional)* You can also import **`DroidDeck-Software-Vulkan-lavapipe.zip`** if you want a pure CPU software rendering profile.
-5. **Enable Experimental Direct GPU Mode for Mali-G615:**
-   - When launching **Steam Mode** or **Desktop Mode**, enable **Experimental direct GPU (`/dev/mali0`)** in the mode settings dialog so the container binds `/dev/mali0` and uses `PanVK-kbase`.
+3. **Open the app — the Mali driver sets itself up:**
+   On any device with a Mali GPU (CSF v9–v13: G57/G610/G615/G715/G720/G925…), the **first start downloads the PanVK-kbase universal driver from this repository's releases, installs it and leaves it selected on its own** — no manual import, no supported-device list. (It needs internet for a moment; the drivers tab still offers every package by hand, including the RC3 exact-BC build and the lavapipe CPU fallback.)
+4. **Install the Linux Runtime:**
+   The app prompts for the **Linux Runtime** (~3 GB) and optionally **Desktop & apps** (~1.1 GB).
+5. **Play:**
+   Sign in to Steam and launch a game — or import your own (next section). If a specific GPU turns out to be unsupported by the driver, the session says so with its own error instead of the app refusing to run.
+
+> ⚠️ **Drivers are separate `.zip` files — never unzip them / Los drivers son `.zip` separados: nunca los descomprimas.**
+> If you import one by hand (**Components → GPU drivers → Import**), select the `.zip` **as downloaded**.
+
+---
+
+## ✨ Qué hay de nuevo en v0.4.0-beta.1 / What's new
+
+*(EN summary: first beta where games actually run on Mali — full Winlator-style on-screen controller with HUD profiles, camera stick, external-game import, automatic driver setup on every Mali GPU, Steam-purple theme; known bugs listed in the release notes.)*
+
+- **HUD personalizable (estilo Winlator).** El mando en pantalla ahora se edita con un panel de perfiles con nombre: duplica, añade, elimina y cambia entre perfiles para cada juego. En el editor, cada control tiene **forma** (círculo, redondeado, cuadrado) y **tamaño del 40 % al 250 %**; el d-pad se separa en flechas al agrandarlo; el touchpad queda sin etiqueta; la barra superior se puede **ocultar** y recuperar; los controles ya colocados **no se mueven** al añadir otros y todo se guarda automáticamente al soltar.
+- **Joystick de cámara (ratón).** Nuevo control para juegos 3D: mantén pulsado fuera del centro y mueve la cámara; cuanto más grande lo pongas, más rápido gira.
+- **Los juegos ya se ejecutan.** Ya no se quedan en el logo. Pueden tener caídas de fps, pero son mucho más estables.
+- **Importación de juegos externos.** Además de Steam puedes traer tus propios juegos a `Download/DroidDeck-Games`.
+- **Funciona en cualquier Mali.** La app ya no exige Android 15 ni una lista de dispositivos: si detecta un Mali CSF (G57/G610/G615/G715/G720/G925…), ofrece probarlo, y **el primer arranque descarga, instala y selecciona el driver PanVK universal por sí sola**. Si tu GPU concreta no la soporta el driver, lo dirá con un error limpio en la sesión, no con la app bloqueada.
+- **Tema morado Steam.** La interfaz usa por defecto la paleta del logo de Steam (negro con bordes y selecciones en morado).
+- **Más opciones Mali.** Bandera `PANVK_DEBUG` para depurar el driver (no_crc, wsi_no_afbc, no_bc_emul…) en **Entorno del juego**; se quitaron las opciones de Adreno que ya no aplican.
+- **Errores conocidos de esta beta:** error visual en cinemáticas dentro de los juegos; los juegos importados no siempre se ejecutan (ver nota de almacenamiento); la **tienda de Steam va lenta** porque se dibuja en la CPU — con la GPU provoca reinicios del dispositivo.
+
+### Títulos probados en esta beta (POCO X6 Pro)
+
+| Estado | Títulos |
+|---|---|
+| ✅ Ejecutan | **Craft Sell, MiSide, Hollow Knight, Karlson** |
+| ⚠️ Con errores | **Dark Souls** — pantalla negra dentro de la partida (los menús van bien) |
+| ❌ Aún no arranca | **Assassin's Creed** (Liberation HD) — por el directorio de la carpeta (almacenamiento noexec), no por el juego |
 
 ---
 
 ## 🔧 Key Engineering Changes in This Fork
 
-| Subsystem | Problem on Mali-G615 Android | Solution Implemented in Build 44 |
+| Subsystem | Problem on Mali-G615 Android | Solution implemented in this fork |
 |---|---|---|
 | **Gamescope + `/dev/mali0`** | `gamescope` requires `VK_EXT_physical_device_drm` with a primary DRM node, which `mali_kbase` (`/dev/mali0`) does not expose. | Custom ICD adapter (`libvulkan_mali_g615_stub.so`) wraps `libpanvk_backend.so` (`panvk-kbase-v0.1.0-rc3`) and synthesizes `VK_EXT_physical_device_drm` from `/dev/mali0`'s `st_rdev`. |
 | **DXVK UMA Heap Exhaustion** | `PanVK` reports `60%` of system RAM (`~6.6 GiB`) as `DEVICE_LOCAL`, causing DXVK to allocate `256 MiB` chunks and fail with `VK_ERROR_OUT_OF_DEVICE_MEMORY`. | Sets `heap_memory_percent=0.12` (`878 MiB` `< 896 MiB` threshold) so DXVK uses `64 MiB` chunks, paired with `dxvk.maxMemoryBudget=384`, `dxvk.enableMemoryDefrag=False`, and `dxvk.trackPipelineLifetime=False`. |
