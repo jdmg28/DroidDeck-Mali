@@ -713,3 +713,51 @@ usuario pidió lo que Winlator tiene: **perfiles de HUD nombrados**. Hecho así 
   escritos por perfiles no tocan ejes salvo los del propio mando; los adaptativos solo ocultan
   los del mando base (los del usuario siempre se ven). Migración: los extras de R18
   ("customControls") entran como un perfil "Añadidos".
+
+## Sesión 2026-10-18-13-steam — por qué no abren la copia de DS1 y AC Liberation HD
+
+Zip minado (el último de los dos subidos; el 12-steam se ignora). El driver sigue siendo
+RC3-exactbc (DD_MALI_ICD_LOAD_OK), BC emulation on.
+
+**DS1 copia de PC (`DARK SOULS Prepare To Die E`, no-Steam):** el juego ARRANCA (menús, 800x450,
+dxvk-submit/queue/cs vivos) y **revienta a los ~4 min** con page fault (0x302F3061). La causa está
+justo antes del crash:
+
+```
+vkd3d_shader_verror: E5017: Aborting due to not yet implemented feature:
+  Writing fx_2_0 sampler objects initializers is not implemented.
+vkd3d_shader_verror: E5017: Aborting due to not yet implemented feature: Write pass assignments.
+```
+
+Wine no encontró `d3dx9_43.dll` nativa y usó la suya (builtin, compilada con vkd3d-shader HLSL),
+que **todavía no implementa los efectos fx_2_0** que DS1 usa (DoF/bloom de Dark Souls). Sin el
+efecto, el juego sigue con un puntero nulo y muere. La copia de Steam no sufre esto porque Steam
+instala el redistributable de DirectX (d3dx9_43) — la copia cruda de PC no lo trae.
+
+**Arreglo para el usuario:** copiar `d3dx9_43.dll` (la de 32 bits, de `C:\Windows\SysWOW64` de la
+PC) junto a `DARKSOULS.exe`, y añadir en Entorno del juego `WINEDLLOVERRIDES =
+d3dx9_43=native,builtin`. Vía alternativa: instalar el DirectX redist de junio de 2010 dentro del
+prefix. Pendiente de nosotros: que el seeder de redists (droiddeck-seed-redists) ofrezca d3dx9
+desde los paquetes del runtime si existe en ellos.
+
+**AC Liberation HD (`ac3lhd_32.exe`):** ni arranca:
+
+```
+err:virtual:map_image_into_view failed to set 60000020 protection on binkw32.dll section BINKY16,
+  noexec filesystem?
+err:module:loader_init "uplay_r1_loader.dll" failed to initialize, aborting (c0000005)
+```
+
+El juego vive en `Download/DroidDeck-Games` (bind de almacenamiento compartido, **noexec**):
+Wine no puede mapear la sección ejecutable de `binkw32.dll`, y el cargador de Uplay aborta.
+Hollow Knight corre porque no mapea DLLs ejecutables nuevas desde su carpeta en caliente.
+**Arreglo corto para el usuario:** mover/copiar la carpeta del juego adentro del árbol del runtime
+(almacenamiento privado de la app, que sí es ejecutable), igual que las tiendas instalan en
+`root/Games/Stores`. **Arreglo nuestro (propuesto, próxima ronda):** una opción "copiar al
+almacenamiento interno" en la importación/agregar juego (GameImport hoy copia siempre a
+Download/DroidDeck-Games). Nota aparte: AC Liberation HD exige Uplay; aun con exec arreglado el
+DRM puede pedir más.
+
+**La cámara de DS1 (touchpad lento):** añadido el **joystick de cámara** (KIND_MOUSE_STICK): stick
+que panea el puntero cada 16 ms mientras se mantiene inclinado (a mayor tamaño, más velocidad; el
+touchpad queda para apuntar/UI, el stick para la cámara de juegos 3D).
