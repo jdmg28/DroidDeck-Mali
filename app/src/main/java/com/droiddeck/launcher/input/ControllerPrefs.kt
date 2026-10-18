@@ -162,6 +162,8 @@ object ControllerPrefs {
     const val KIND_TOUCHPAD = 5
     /** A piece of the virtual gamepad itself; [Custom.target] names it ("a", "ls", "up", ...). */
     const val KIND_GAMEPAD_BTN = 6
+    /** A camera stick: deflection pans the mouse pointer, for 3D games' camera look. */
+    const val KIND_MOUSE_STICK = 7
 
     /** 0 circle (the default), 1 rounded square, 2 square. */
     const val SHAPE_CIRCLE = 0
@@ -191,7 +193,7 @@ object ControllerPrefs {
 
     private fun decodeCustoms(o: org.json.JSONObject): Custom? {
         val kind = runCatching { o.getInt("kind") }.getOrNull() ?: return null
-        if (kind !in KIND_KEY..KIND_GAMEPAD_BTN) return null
+        if (kind !in KIND_KEY..KIND_MOUSE_STICK) return null
         val shape = runCatching { o.optInt("shape", 0) }.getOrDefault(0).coerceIn(0, 2)
         return Custom(
             id = runCatching { o.getString("id") }.getOrNull() ?: return null,
@@ -326,6 +328,7 @@ object ControllerPrefs {
             KIND_MOUSE_MIDDLE -> "mouseM"
             KIND_WASD -> "wasd"
             KIND_TOUCHPAD -> "pad"
+            KIND_MOUSE_STICK -> "cam"
             else -> if (target.isNotEmpty()) target else "pad"
         }
         val label = when (kind) {
@@ -335,6 +338,7 @@ object ControllerPrefs {
             KIND_MOUSE_MIDDLE -> "M"
             KIND_WASD -> "WASD"
             KIND_TOUCHPAD -> "TOUCH"
+            KIND_MOUSE_STICK -> "CAM"
             else -> ""
         }
         return insert(context, layoutId, listOf(Custom(base, kind, code, label, target = target)))

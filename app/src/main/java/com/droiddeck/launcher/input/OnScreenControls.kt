@@ -139,7 +139,7 @@ class OnScreenControls(
     /** One stored control becomes drawable: a pad piece, a PC key, a mouse click, WASD, a touchpad. */
     private fun customControl(c: ControllerPrefs.Custom): Control {
         val gamepad = c.kind == ControllerPrefs.KIND_GAMEPAD_BTN
-        val stick = if (c.kind == ControllerPrefs.KIND_WASD) 0
+        val stick = if (c.kind == ControllerPrefs.KIND_WASD || c.kind == ControllerPrefs.KIND_MOUSE_STICK) 0
             else if (gamepad && c.target == "ls") 0
             else if (gamepad && c.target == "rs") 1
             else -1
@@ -154,7 +154,7 @@ class OnScreenControls(
         }
         val control = Control(c.id, c.group.ifEmpty { c.id }, stick,
             when {
-                c.kind == ControllerPrefs.KIND_WASD -> 46f
+                c.kind == ControllerPrefs.KIND_WASD || c.kind == ControllerPrefs.KIND_MOUSE_STICK -> 46f
                 c.kind == ControllerPrefs.KIND_TOUCHPAD -> 30f
                 gamepad && c.target == "ls" || gamepad && c.target == "rs" -> 48f
                 gamepad && c.target in shoulderIds -> 24f
@@ -480,6 +480,30 @@ class OnScreenControls(
             put(group, w - safe.right - r - dp(10f), y + r)
             y += 2 * r + dp(12f)
         }
+    }
+
+    /**
+     * The camera stick pans while the finger holds it off-centre - not only while it moves, so a
+     * ticker, not the touch stream, drives it: deflection is pointer pixels per frame, and a
+     * bigger stick (the size slider) pans faster because its deflection range is wider.
+     */
+    private var cameraTicker: Runnable? = null
+
+    private fun startCameraTicker() {
+        if (cameraTicker != null) return
+        val r = object : Runnable {
+            override fun run() {
+                val held = controls.filter { it.kind == ControllerPrefs.KIND_MOUSE_STICK && it.pressedBy != -1 }
+                for (s in held) {
+                    val dx = s.kx * CAMERA_STICK_GAIN
+                    val dy = s.ky * CAMERA_STICK_GAIN
+                    if (dx != 0f || dy != 0f) onPadDelta?.invoke(dx, dy)
+                }
+                if (held.isEmpty()) cameraTicker = null else postDelayed(this, 16L)
+            }
+        }
+        cameraTicker = r
+        postDelayed(r, 16L)
     }
 
     private fun label(control: Control): String = when {
@@ -861,6 +885,7 @@ class OnScreenControls(
                         control.heldKeys.clear()
                         control.heldKeys += target
                     }
+                    ControllerPrefs.KIND_MOUSE_STICK -> if (control.pressedBy != -1) startCameraTicker()
                 }
             }
         }
@@ -892,6 +917,9 @@ class OnScreenControls(
     fun releaseAll() {
         quickPressedBy = -1
         keyboardPressedBy = -1
+        // The camera stick's ticker stops itself once nothing is held; the next apply() starts it.
+        cameraTicker?.let { removeCallbacks(it) }
+        cameraTicker = null
         invalidate()
         if (controls.none { it.pressedBy != -1 || it.clicked || it.sinkDown || it.heldKeys.isNotEmpty() } && !buttonsOnly) return
         controls.forEach {
@@ -916,6 +944,8 @@ class OnScreenControls(
     private companion object {
         const val KIND_GAMEPAD = -1
         const val DOUBLE_TAP_MS = 300L
+        /** Camera-stick gain: knob pixels to pointer pixels per 16 ms tick at full deflection. */
+        const val CAMERA_STICK_GAIN = 0.45f
         const val MIN_FACE_MM = 9.5f
         const val FULL_SIZE_HEIGHT_MM = 85f
         const val BOTTOM_MARGIN_MM = 5f

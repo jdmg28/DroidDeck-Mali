@@ -56,6 +56,7 @@ object ControllerCustoms {
         row(col, activity.getString(R.string.touchkeys_add_lmb)) { ControllerPrefs.addControl(activity, layout, ControllerPrefs.KIND_MOUSE_LEFT, 0) }
         row(col, activity.getString(R.string.touchkeys_add_rmb)) { ControllerPrefs.addControl(activity, layout, ControllerPrefs.KIND_MOUSE_RIGHT, 0) }
         row(col, activity.getString(R.string.touchkeys_joystick_wasd)) { ControllerPrefs.addControl(activity, layout, ControllerPrefs.KIND_WASD, 0) }
+        row(col, activity.getString(R.string.ctrl_add_camera_stick)) { ControllerPrefs.addControl(activity, layout, ControllerPrefs.KIND_MOUSE_STICK, 0) }
         row(col, activity.getString(R.string.touchkeys_add_touchpad)) { ControllerPrefs.addControl(activity, layout, ControllerPrefs.KIND_TOUCHPAD, 0) }
         if (ControllerPrefs.layoutById(activity, layout)?.controls?.isNotEmpty() == true) {
             row(col, activity.getString(R.string.touchkeys_manage)) { showManage(activity, onChanged) }

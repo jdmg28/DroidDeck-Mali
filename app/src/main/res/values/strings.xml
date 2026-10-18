@@ -927,6 +927,7 @@
     <string name="ctrl_mapping_default">Every button sends its own input</string>
     <string name="ctrl_mapping_count">%1$d of %2$d buttons remapped</string>
     <string name="ctrl_configure">Configure</string>
+    <string name="ctrl_add_camera_stick">Add a camera stick (mouse)</string>
     <string name="ctrl_settings">Settings</string>
     <string name="ctrl_shape_circle">Circle</string>
     <string name="ctrl_shape_rounded">Rounded</string>

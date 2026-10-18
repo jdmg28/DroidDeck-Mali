@@ -925,6 +925,7 @@
     <string name="ctrl_mapping_default">Cada botón envía su propia entrada</string>
     <string name="ctrl_mapping_count">%1$d de %2$d botones reasignados</string>
     <string name="ctrl_configure">Configurar</string>
+    <string name="ctrl_add_camera_stick">Añadir un joystick de cámara (ratón)</string>
     <string name="ctrl_settings">Ajustes</string>
     <string name="ctrl_shape_circle">Círculo</string>
     <string name="ctrl_shape_rounded">Redondeado</string>
