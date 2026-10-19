@@ -91,6 +91,25 @@ jobs:
           PY
           grep -n -A1 "uint64_t fn_addr" "$file"
 
+      - name: Keep the CLC front end out of this build
+        run: |
+          set -euo pipefail
+          # mesa-clc is a SPIR-V OpenCL compiler and drags LLVM, libclc and SPIRV-Tools in. Mesa
+          # lists panvk among the drivers that "use CL", but nothing under src/panfrost/vulkan
+          # references it - PanVK compiles its own NIR - so the flag is what costs a whole LLVM
+          # toolchain here and nothing else. Removing panvk from that one list builds without it.
+          python3 - <<'PY'
+          import sys
+          path = "work/mesa/meson.build"
+          text = open(path).read()
+          old = "  with_gallium_panfrost, with_panfrost_vk,"
+          new = "  with_gallium_panfrost,  # panvk needs no CLC: nothing under src/panfrost/vulkan uses it"
+          if text.count(old) != 1:
+              sys.exit("the CLC driver list is not where the build expects it")
+          open(path, "w").write(text.replace(old, new))
+          PY
+          grep -n "needs no CLC" work/mesa/meson.build
+
       - name: Configure
         run: |
           set -euo pipefail
@@ -101,7 +120,7 @@ jobs:
             -Dgallium-drivers= \
             -Dvulkan-drivers=panfrost \
             -Dpanfrost-kmds=kbase \
-            -Dllvm=disabled -Dmesa-clc=disabled -Dprecomp-compiler=disabled \
+            -Dllvm=disabled \
             -Degl=disabled -Dgles1=disabled -Dgles2=disabled -Dopengl=false \
             -Dglx=disabled -Dgbm=disabled -Dzstd=disabled -Dlibunwind=disabled \
             > /tmp/configure.log 2>&1; then
