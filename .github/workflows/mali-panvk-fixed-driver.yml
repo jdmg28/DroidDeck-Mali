@@ -96,28 +96,32 @@ jobs:
         run: |
           set -euo pipefail
           # mesa-clc is a SPIR-V OpenCL compiler and drags LLVM, libclc and SPIRV-Tools in. Mesa
-          # lists panvk among the drivers that "use CL", but nothing under src/panfrost/vulkan
-          # references it - PanVK compiles its own NIR - so the flag is what costs a whole LLVM
-          # toolchain here and nothing else. Removing panvk from that one list builds without it.
+          # lists panvk among the drivers that "use CL" and in the CL polyfill list, but nothing
+          # under src/panfrost/vulkan references either - PanVK compiles its own NIR - so taking
+          # panvk out of those two lists is what avoids a whole LLVM toolchain on the runner.
           python3 - <<'PY'
+          import re
           import sys
+
           path = "work/mesa/meson.build"
           text = open(path).read()
-          old = "  with_gallium_panfrost, with_panfrost_vk,"
-          new = "  with_gallium_panfrost,  # panvk needs no CLC: nothing under src/panfrost/vulkan uses it"
-          if text.count(old) != 1:
-              sys.exit("the CLC driver list is not where the build expects it")
-          text = text.replace(old, new)
-          # The polyfill subdir (src/poly/cl) is built when with_poly is true, and that list also
-          # counts panvk - but nothing in panvk links the polyfills; it is only there for the CL
-          # front end. Take panvk out of it as well.
-          old = "  with_kosmickrisp_vk,\n  with_panfrost_vk,\n].contains(true)"
-          new = "  with_kosmickrisp_vk,\n].contains(true)"
-          if text.count(old) != 1:
-              sys.exit("the polyfill list is not where the build expects it")
-          open(path, "w").write(text.replace(old, new))
+
+          def drop_panvk(text, name):
+              match = re.search(name + r"\s*=\s*\[(.*?)\]\.contains\(true\)", text, re.S)
+              if not match:
+                  sys.exit("cannot find " + name + " in meson.build")
+              block = match.group(1)
+              if "with_panfrost_vk" not in block:
+                  sys.exit(name + " does not list panvk")
+              new_block = re.sub(r"[ \t]*with_panfrost_vk,[ \t]*\n?", "", block)
+              return text[:match.start(1)] + new_block + text[match.end(1):]
+
+          text = drop_panvk(text, "with_driver_using_cl")
+          text = drop_panvk(text, "with_poly")
+          open(path, "w").write(text)
+          print("panvk removed from with_driver_using_cl and with_poly")
           PY
-          grep -n "needs no CLC" work/mesa/meson.build
+          sed -n '/with_driver_using_cl = \[/,/contains(true)/p' work/mesa/meson.build
           sed -n '/with_poly = \[/,/contains(true)/p' work/mesa/meson.build
 
       - name: Configure
