@@ -1,0 +1,181 @@
+name: Mali PanVK-kbase driver with the Steam-UI fix (built here)
+
+# Builds the Linux-runtime PanVK-kbase driver OURSELVES, from zenithblue's rc3 sources plus the
+# provoking-vertex address fix (driver-patches/0001), and publishes it next to the two imported
+# upstream builds on the mali-panvk-latest release.
+#
+# Why now: the store on the GPU died on a Mali-G615 with the device restarting, and upstream
+# (wonderkast02/panvk-g720-kbase-csf issue #9) found a one-line 32-bit truncation that makes the
+# firmware fault exactly on the path Chromium's renderer takes through Zink. Upstream has not
+# released a build with the fix, so this workflow produces one from their own sources and patch
+# series - same Mesa commit, same csf-v11 profile, one line different.
+#
+# The runner is arm64 on purpose: the Linux runtime is glibc/aarch64 and upstream's build-glibc.sh
+# builds natively when uname -m is aarch64. No cross sysroot, no qemu.
+on:
+  push:
+    branches: [ mali-g615-experimental, 'arena/**' ]
+    paths:
+      - .github/workflows/mali-panvk-fixed-driver.yml
+      - driver-patches/**
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: mali-panvk-fixed
+  cancel-in-progress: true
+
+env:
+  GH_TOKEN: ${{ github.token }}
+  UPSTREAM_REPO: https://github.com/zenithblue-oss/panvk-kbase-android
+  UPSTREAM_TAG: panvk-kbase-v0.1.0-rc3
+  PROFILE: g615-v11-csf
+  KIT_ZIP: DroidDeck-Mali-G615-driver-0.1.0.zip
+  ADAPTER_NAME: libvulkan_droiddeck_mali.so
+  VULKAN_HEADERS_TAG: v1.4.363
+  RELEASE_TAG: mali-panvk-latest
+  RELEASE_ASSET: DroidDeck-Mali-CSF-PanVK-kbase-r7-fn64.zip
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Build dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends \
+            build-essential clang lld binutils zip unzip jq pkg-config git python3-pip \
+            libx11-dev libx11-xcb-dev libxcb1-dev libxcb-dri2-0-dev libxcb-dri3-dev \
+            libxcb-present-dev libxcb-sync-dev libxcb-xfixes0-dev libxcb-randr0-dev \
+            libxcb-shm0-dev libxshmfence-dev libwayland-dev wayland-protocols \
+            libzstd-dev libexpat1-dev libudev-dev bison flex
+          # Mesa 26.3 wants a newer meson than 24.04 ships; pip's is the one it tests with.
+          python3 -m pip install --quiet --break-system-packages \
+            'meson>=1.4' ninja mako 'pyyaml' packaging
+          meson --version; ninja --version; clang --version | head -1
+
+      - name: Fetch the upstream driver tree and its pinned Mesa
+        run: |
+          set -euo pipefail
+          git clone --quiet --depth 1 --branch "$UPSTREAM_TAG" "$UPSTREAM_REPO" upstream
+          # fetch-mesa.sh takes the work directory positionally (its usage line lies).
+          ./upstream/scripts/fetch-mesa.sh "$PWD/work"
+          git -C work/mesa rev-parse HEAD
+
+      - name: Apply the g615-v11-csf kbase patch series
+        run: ./upstream/scripts/apply-patches.sh --profile "$PROFILE" --mesa "$PWD/work/mesa"
+
+      - name: Apply this repository's provoking-vertex address fix
+        run: |
+          set -euo pipefail
+          file=work/mesa/src/panfrost/vulkan/csf/panvk_vX_cmd_draw.c
+          python3 - "$file" <<'PY'
+          import sys
+          path = sys.argv[1]
+          text = open(path).read()
+          old = ("         uint32_t fn_addr =\n"
+                 "            dev->draw_ctx->fns_bo->addr.dev + fn_idx * fn_stride;")
+          new = ("         uint64_t fn_addr =\n"
+                 "            dev->draw_ctx->fns_bo->addr.dev + fn_idx * fn_stride;")
+          if text.count(old) != 1:
+              sys.exit("the provoking-vertex helper address is not where the fix expects it")
+          open(path, "w").write(text.replace(old, new))
+          PY
+          grep -n -A1 "uint64_t fn_addr" "$file"
+
+      - name: Configure
+        run: |
+          set -euo pipefail
+          meson setup build work/mesa \
+            --native-file upstream/meson/linux-aarch64-native.ini \
+            -Dbuildtype=release \
+            -Dplatforms=x11,wayland \
+            -Dgallium-drivers= \
+            -Dvulkan-drivers=panfrost \
+            -Dpanfrost-kmds=kbase \
+            -Dllvm=disabled \
+            -Degl=disabled -Dgles1=disabled -Dgles2=disabled -Dopengl=false \
+            -Dglx=disabled -Dgbm=disabled -Dzstd=disabled -Dlibunwind=disabled
+
+      - name: Build
+        run: ninja -C build -j"$(nproc)"
+
+      - name: Verify the built ICD
+        run: |
+          set -euo pipefail
+          SO=$(find build -name libvulkan_panfrost.so | head -n1)
+          [ -n "$SO" ] || { echo "::error::no libvulkan_panfrost.so was built"; exit 1; }
+          echo "built: $SO ($(stat -c%s "$SO") bytes)"
+          file "$SO" | grep -q 'ELF 64-bit.*ARM aarch64' || { echo "::error::not aarch64"; exit 1; }
+          readelf --version-info "$SO" | grep -q 'GLIBC_' || { echo "::error::not glibc-linked"; exit 1; }
+          strings "$SO" | grep -q 'kbase_kmod' || { echo "::error::kbase backend missing"; exit 1; }
+          strings "$SO" | grep -qi 'PanVK-kbase RC3' || echo "note: driverInfo label not found (not fatal)"
+          cp "$SO" built-panvk.so
+
+      - name: Build the ICD adapter
+        run: |
+          set -euo pipefail
+          python3 -m pip install --quiet --break-system-packages ziglang
+          git clone --quiet --depth 1 --branch "$VULKAN_HEADERS_TAG" \
+            https://github.com/KhronosGroup/Vulkan-Headers.git headers
+          mkdir -p kit
+          python3 -m ziglang cc -target aarch64-linux-gnu.2.38 \
+            -shared -fPIC -O2 -fvisibility=hidden -Iheaders/include \
+            -Wl,-soname,"$ADAPTER_NAME" \
+            tools/mali-driver/src/droiddeck_mali_icd.c -o "kit/$ADAPTER_NAME"
+          unzip -o -j "$KIT_ZIP" "LICENSE.adapter" "NOTICE.txt" -d kit/licenses >/dev/null 2>&1 || true
+          readelf -h "kit/$ADAPTER_NAME" | grep -q AArch64
+          grep -qa "libpanvk_backend.so" "kit/$ADAPTER_NAME"
+
+      - name: Package
+        run: |
+          set -euo pipefail
+          work="build/pkg"
+          mkdir -p "$work"
+          cp "kit/$ADAPTER_NAME" "$work/$ADAPTER_NAME"
+          cp built-panvk.so "$work/libpanvk_backend.so"
+          [ -d kit/licenses ] && cp -r kit/licenses "$work/licenses" || true
+          cat > "$work/meta.json" <<JSON
+          {
+            "schemaVersion": 1,
+            "kind": "linux-vulkan-icd",
+            "name": "DroidDeck Mali CSF PanVK-kbase r7 Steam UI fix (universal)",
+            "driverVersion": "Adapter 0.2.0 (universal Mali) / PanVK-kbase rc3 + fn64 fix (built from zenithblue $UPSTREAM_TAG, profile $PROFILE) / Mesa 26.3.0-devel",
+            "minGlibc": "2.38",
+            "libc": "glibc",
+            "vulkanApiVersion": "1.4.363",
+            "gpuVendor": "mali",
+            "gpu": "Mali CSF v9-v13 (built for Mali-G615 MC6; other Malis untested on this build)",
+            "kernelInterface": "mali_kbase CSF",
+            "backendLibraryName": "libpanvk_backend.so",
+            "upstreamRelease": "$UPSTREAM_TAG + driver-patches/0001",
+            "fix": "provoking-vertex helper address kept in 64 bits (wonderkast02 issue 9)",
+            "adapterSource": "tools/mali-driver/src/droiddeck_mali_icd.c",
+            "adapterSha256": "$(sha256sum "kit/$ADAPTER_NAME" | cut -d' ' -f1)"
+          }
+          JSON
+          python3 -c 'import json,sys; json.load(open(sys.argv[1])); print("meta.json parses")' "$work/meta.json"
+          ( cd "$work" && zip -q -r -9 "../../$RELEASE_ASSET" . )
+          sha256sum -- "$RELEASE_ASSET" > "$RELEASE_ASSET.sha256"
+          cat "$RELEASE_ASSET.sha256"
+
+      - name: Publish to the driver release
+        run: |
+          set -euo pipefail
+          if ! gh release view "$RELEASE_TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$RELEASE_TAG" -R "$GITHUB_REPOSITORY" --prerelease \
+              --title "DroidDeck Mali PanVK-kbase driver (GPU)" --notes "Replaced by every build."
+          fi
+          # Only this build's two files: the other workflow owns the other assets on this release.
+          gh release upload "$RELEASE_TAG" "$RELEASE_ASSET" "$RELEASE_ASSET.sha256" \
+            -R "$GITHUB_REPOSITORY" --clobber
+          gh release view "$RELEASE_TAG" -R "$GITHUB_REPOSITORY" --json assets \
+            --jq '.assets[].name' | grep -qx "$RELEASE_ASSET"

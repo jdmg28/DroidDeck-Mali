@@ -1,0 +1,27 @@
+From: emir34-34 <https://github.com/emir34-34>
+Subject: [PATCH] panvk: keep the provoking-vertex helper address in 64 bits
+
+get_fb_descs() builds the address of the per-pass "set FBDs for the
+provoking vertex" helper as uint32_t before handing it to cs_move64_to().
+On mali_kbase GPU VAs are SAME_VA and high, so the top half is dropped and
+the command stream faults at 0x00000000fffef000 (exception 0xc1,
+TRANSLATION_FAULT). The application then sees DEVICE LOST and its memory
+grows until the GPU can recycle again - or the phone goes down.
+
+The path is taken when a render pass starts before the provoking-vertex mode
+is known, which Chromium/CEF on Zink does on every page.
+
+Signed-off-by: emir34-34 <https://github.com/emir34-34>
+
+diff --git a/src/panfrost/vulkan/csf/panvk_vX_cmd_draw.c b/src/panfrost/vulkan/csf/panvk_vX_cmd_draw.c
+--- a/src/panfrost/vulkan/csf/panvk_vX_cmd_draw.c
++++ b/src/panfrost/vulkan/csf/panvk_vX_cmd_draw.c
+@@ -2446,7 +2446,7 @@ get_fb_descs(struct panvk_cmd_buffer *cmdbuf)
+          uint32_t fn_idx = calc_fn_set_fbds_provoking_vertex_idx(cmdbuf);
+          uint32_t fn_stride =
+             dev->draw_ctx->fn_set_fbds_provoking_vertex_stride;
+-         uint32_t fn_addr =
++         uint64_t fn_addr =
+             dev->draw_ctx->fns_bo->addr.dev + fn_idx * fn_stride;
+          cs_move64_to(b, addr_reg, fn_addr);
+          cs_move32_to(b, length_reg, fn_stride);
