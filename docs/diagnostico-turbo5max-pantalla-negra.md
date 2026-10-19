@@ -825,7 +825,7 @@ un fallo del CSF que el kernel no puede contener.
    elegirlo en la lista.
 2. **Primero el driver**: abrir un juego ya probado (Craft Sell, Karlson) 2–3 minutos. Si el driver
    no dibuja, volver al paquete universal: este build no ha pisado un G615 todavía.
-3. **Ajustes del modo Steam → Rendimiento → "Interfaz de Steam en la GPU (experimental)"**:
+3. **Ajustes del modo Steam → pestaña Steam → "Interfaz de Steam en la GPU (experimental)"**:
    encender. Aplica en la próxima sesión; el log debe traer
    `== ui-on-gpu: Mali - ANGLE on Zink (Kopper, X11 DRI3) over PanVK; fn64 driver required`.
 4. Abrir la tienda y navegar 1–2 minutos (buscar, abrir un juego, volver). Después cerrar la sesión
