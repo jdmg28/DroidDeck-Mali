@@ -761,3 +761,75 @@ DRM puede pedir más.
 **La cámara de DS1 (touchpad lento):** añadido el **joystick de cámara** (KIND_MOUSE_STICK): stick
 que panea el puntero cada 16 ms mientras se mantiene inclinado (a mayor tamaño, más velocidad; el
 touchpad queda para apuntar/UI, el stick para la cámara de juegos 3D).
+
+## R22 (19-10-2026): la interfaz de Steam en la GPU otra vez — con la causa del reinicio identificada
+
+La R21 dejó el interruptor **apagado en Mali a propósito** porque el 14-10 el equipo se reinició
+segundos después de que CEF pidiera Vulkan. Esta ronda encontró el porqué y prepara la vuelta,
+con dos piezas: un driver compilado aquí con el arreglo y un camino gráfico distinto.
+
+### 1. Lo que se encontró (upstream: wonderkast02/panvk-g720-kbase-csf, issue #9)
+
+El mismo stack (DroidDeck, Steam bajo gamescope anidado, PanVK-kbase, proot) en un Mali-G720
+documentó con dmesg lo que a nosotros nos faltaba: en el driver hay un **helper del "provoking
+vertex" al que se le pasa su dirección de GPU recortada a 32 bits**:
+
+```c
+uint32_t fn_addr =                      /* se pierde la mitad alta */
+   dev->draw_ctx->fns_bo->addr.dev + fn_idx * fn_stride;
+cs_move64_to(b, addr_reg, fn_addr);
+```
+
+En kbase las direcciones virtuales son SAME_VA y altas (`0x5f_fffef000`), así que el prefetch del
+command stream salta a `0xfffef000` y falla:
+
+```
+kbase: CSF group N fatal error: status 0x7d0002c1 (exception 0xc1)
+       sideband 0x00000000fffef000
+Unhandled page fault at VA 0x00000000FFFEF000
+exception type 0xC1: TRANSLATION_FAULT at level 1, READ
+```
+
+Se paran **todas** las colas de ese contexto; Zink reporta `DEVICE LOST` y, al no poder reciclar
+nada, el proceso crece varios GB. Ese camino solo se toma cuando un render pass empieza antes de
+que la app declare el modo de provoking vertex: **Chromium/CEF sobre Zink lo hace cientos de veces
+por command buffer**; los tests simples (vkcube) no. Con el arreglo (dirección en 64 bits), el
+tester aguantó 5 minutos de Big Picture con 120 gestos, sin fallo y con el proceso de CEF en
+0.45–0.7 GB. El equipo de arriba lo vio como **reinicio del teléfono**, no como crash de la app:
+un fallo del CSF que el kernel no puede contener.
+
+### 2. Lo que se construyó
+
+- **Driver `r7 (fn64)`**: rc3 de zenithblue + el arreglo de una línea, compilado **aquí** en un
+  runner ARM nativo (`.github/workflows/mali-panvk-fixed-driver.yml`, arm64 + meson + LLVM 18 para
+  el front end CLC que panfrost usa en `libpan`), envuelto en nuestro adaptador ICD y publicado en
+  el release `mali-panvk-latest` como
+  `DroidDeck-Mali-CSF-PanVK-kbase-r7-fn64.zip` (+ `.sha256`). El resto de los assets no se toca.
+- **La app exige ese driver**: con el interruptor encendido en Mali, `BL_CEF_GPU` solo viaja como
+  `1` si el driver de runtime seleccionado se llama o versiona `fn64`
+  (`SessionPrefs.steamUiGpuAllowed`); con el rc3 importado el navegador se queda en la CPU y el log
+  dice qué driver se rechazó.
+- **Camino gráfico distinto en Mali**: el navegador va **ANGLE/OpenGL → Zink → PanVK** con Kopper,
+  DRI3 de X11 y **sin la capa gamescope WSI** (las tres ya estaban puestas para Mali). No se usa
+  ANGLE/Vulkan en Mali: es lo que reinició el X6 Pro el 14-10, antes del arreglo y con la capa WSI
+  en medio.
+- **Vuelta atrás automática**: al arrancar la app, `SessionArtifacts.finishAbandoned` mira el
+  `cef-gpu.txt` que deja cada sesión; si la última sesión abandonada (reinicio incluido) corrió con
+  la interfaz en la GPU, apaga el interruptor y anota `session.ui_gpu_rollback`. Un experimento no
+  se puede quedar pegado.
+
+### 3. Cómo se prueba (X6 Pro)
+
+1. **Controladores de GPU → Avanzado → Controlador de runtime → Importar**:
+   `DroidDeck-Mali-CSF-PanVK-kbase-r7-fn64.zip` (sin descomprimir). Queda seleccionado; si no,
+   elegirlo en la lista.
+2. **Primero el driver**: abrir un juego ya probado (Craft Sell, Karlson) 2–3 minutos. Si el driver
+   no dibuja, volver al paquete universal: este build no ha pisado un G615 todavía.
+3. **Ajustes del modo Steam → Rendimiento → "Interfaz de Steam en la GPU (experimental)"**:
+   encender. Aplica en la próxima sesión; el log debe traer
+   `== ui-on-gpu: Mali - ANGLE on Zink (Kopper, X11 DRI3) over PanVK; fn64 driver required`.
+4. Abrir la tienda y navegar 1–2 minutos (buscar, abrir un juego, volver). Después cerrar la sesión
+   desde la app, no con el botón de apagado.
+5. Si el equipo se reinicia: al volver, el interruptor estará apagado solo. La carpeta de la sesión
+   (`Download/DroidDeck/<fecha>-NN-steam/`) tendrá `cef-gpu.txt=1` y `ended-without-teardown.txt`:
+   eso es exactamente lo que hay que reportar.

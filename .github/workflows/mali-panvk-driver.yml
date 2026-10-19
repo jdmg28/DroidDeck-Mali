@@ -67,6 +67,10 @@ env:
   RELEASE_TAG: mali-panvk-latest
   RELEASE_ASSET: DroidDeck-Mali-CSF-PanVK-kbase-universal.zip
   RC3_RELEASE_ASSET: DroidDeck-Mali-CSF-PanVK-kbase-rc3-exactbc.zip
+  # Built by mali-panvk-fixed-driver.yml (rc3 + the provoking-vertex fn64 fix). This workflow
+  # never builds or uploads it, but it must not delete it either: the pruning below removes every
+  # asset it does not know, and this one lives on the same release.
+  FIXED_RELEASE_ASSET: DroidDeck-Mali-CSF-PanVK-kbase-r7-fn64.zip
 
 jobs:
   package:
@@ -194,7 +198,8 @@ jobs:
           # Two zips, the ones just built: an asset an older build left is removed, so the
           # release never offers anything else to import. An asset already gone answers 404, and
           # a 404 on a delete is the outcome wanted, not a reason to fail the build.
-          keep=$(cd "$work" && ls | jq -R . | jq -sc .)
+          keep=$( { cd "$work" && ls; echo "$FIXED_RELEASE_ASSET"; echo "$FIXED_RELEASE_ASSET.sha256"; } \
+                 | jq -R . | jq -sc . )
           gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" |
             jq -r --argjson keep "$keep" '.assets[] | select(.name as $n | $keep | index($n) | not) | .id' |
             while IFS= read -r id; do
@@ -218,6 +223,13 @@ jobs:
             echo "- [$RELEASE_ASSET.sha256](https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/$RELEASE_ASSET.sha256)"
             echo "- [$RC3_RELEASE_ASSET]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/download/$TAG/$RC3_RELEASE_ASSET)"
             echo "- [$RC3_RELEASE_ASSET.sha256](https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/$RC3_RELEASE_ASSET.sha256)"
+            echo "- [$FIXED_RELEASE_ASSET](https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/$FIXED_RELEASE_ASSET)"
+            echo
+            echo "**The r7 (fn64) package** is RC3 built here with the provoking-vertex address fix:"
+            echo "the imported builds keep a helper's GPU address in 32 bits and the command stream"
+            echo "faults on the path Chromium takes through Zink, which is what the Steam UI on the"
+            echo "GPU needs. With it, the client's browser may run on the GPU (the switch is in the"
+            echo "Steam mode settings and only takes effect with this package selected)."
             echo
             echo "**What they are for:** a session that draws with the Mali GPU. gamescope needs a"
             echo "DRM primary node to composite at all, and a driver that reaches the GPU through"
