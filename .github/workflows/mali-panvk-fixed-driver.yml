@@ -107,9 +107,18 @@ jobs:
           new = "  with_gallium_panfrost,  # panvk needs no CLC: nothing under src/panfrost/vulkan uses it"
           if text.count(old) != 1:
               sys.exit("the CLC driver list is not where the build expects it")
+          text = text.replace(old, new)
+          # The polyfill subdir (src/poly/cl) is built when with_poly is true, and that list also
+          # counts panvk - but nothing in panvk links the polyfills; it is only there for the CL
+          # front end. Take panvk out of it as well.
+          old = "  with_kosmickrisp_vk,\n  with_panfrost_vk,\n].contains(true)"
+          new = "  with_kosmickrisp_vk,\n].contains(true)"
+          if text.count(old) != 1:
+              sys.exit("the polyfill list is not where the build expects it")
           open(path, "w").write(text.replace(old, new))
           PY
           grep -n "needs no CLC" work/mesa/meson.build
+          sed -n '/with_poly = \[/,/contains(true)/p' work/mesa/meson.build
 
       - name: Configure
         run: |
