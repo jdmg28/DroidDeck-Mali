@@ -57,7 +57,9 @@ jobs:
             libxcb-present-dev libxcb-sync-dev libxcb-xfixes0-dev libxcb-randr0-dev \
             libxcb-shm0-dev libxshmfence-dev libwayland-dev wayland-protocols \
             libxrandr-dev libxi-dev libxext-dev libxrender-dev libxcursor-dev libxfixes-dev \
-            libzstd-dev libexpat1-dev libudev-dev libdrm-dev bison flex
+            libzstd-dev libexpat1-dev libudev-dev libdrm-dev bison flex \
+            llvm llvm-dev libclc-18-dev spirv-tools libllvmspirvlib-18-dev \
+            libclang-18-dev
           # Mesa 26.3 wants a newer meson than 24.04 ships; pip's is the one it tests with.
           python3 -m pip install --quiet --break-system-packages \
             'meson>=1.4' ninja mako 'pyyaml' packaging
@@ -92,39 +94,11 @@ jobs:
           PY
           grep -n -A1 "uint64_t fn_addr" "$file"
 
-      - name: Keep the CLC front end out of this build
-        run: |
-          set -euo pipefail
-          # mesa-clc is a SPIR-V OpenCL compiler and drags LLVM, libclc and SPIRV-Tools in. Mesa
-          # lists panvk among the drivers that "use CL" and in the CL polyfill list, but nothing
-          # under src/panfrost/vulkan references either - PanVK compiles its own NIR - so taking
-          # panvk out of those two lists is what avoids a whole LLVM toolchain on the runner.
-          python3 - <<'PY'
-          import re
-          import sys
-
-          path = "work/mesa/meson.build"
-          text = open(path).read()
-
-          def drop_panvk(text, name):
-              match = re.search(name + r"\s*=\s*\[(.*?)\]\.contains\(true\)", text, re.S)
-              if not match:
-                  sys.exit("cannot find " + name + " in meson.build")
-              block = match.group(1)
-              if "with_panfrost_vk" not in block:
-                  sys.exit(name + " does not list panvk")
-              new_block = re.sub(r"[ \t]*with_panfrost_vk,[ \t]*\n?", "", block)
-              return text[:match.start(1)] + new_block + text[match.end(1):]
-
-          text = drop_panvk(text, "with_driver_using_cl")
-          text = drop_panvk(text, "with_poly")
-          open(path, "w").write(text)
-          print("panvk removed from with_driver_using_cl and with_poly")
-          PY
-          sed -n '/with_driver_using_cl = \[/,/contains(true)/p' work/mesa/meson.build
-          sed -n '/with_poly = \[/,/contains(true)/p' work/mesa/meson.build
-
       - name: Configure
+        env:
+          # libclc-18-dev puts its pkg-config file in /usr/lib/pkgconfig, which is not always on
+          # the multiarch search path.
+          PKG_CONFIG_PATH: /usr/lib/pkgconfig:/usr/share/pkgconfig
         run: |
           set -euo pipefail
           if ! meson setup build work/mesa \
@@ -134,7 +108,7 @@ jobs:
             -Dgallium-drivers= \
             -Dvulkan-drivers=panfrost \
             -Dpanfrost-kmds=kbase \
-            -Dllvm=disabled \
+            -Dllvm=enabled \
             -Degl=disabled -Dgles1=disabled -Dgles2=disabled -Dopengl=false \
             -Dglx=disabled -Dgbm=disabled -Dzstd=disabled -Dlibunwind=disabled \
             > /tmp/configure.log 2>&1; then
