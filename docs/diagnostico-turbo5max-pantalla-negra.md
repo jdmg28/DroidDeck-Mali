@@ -833,3 +833,83 @@ un fallo del CSF que el kernel no puede contener.
 5. Si el equipo se reinicia: al volver, el interruptor estará apagado solo. La carpeta de la sesión
    (`Download/DroidDeck/<fecha>-NN-steam/`) tendrá `cef-gpu.txt=1` y `ended-without-teardown.txt`:
    eso es exactamente lo que hay que reportar.
+
+## R22b (19-10-2026): el driver `r7 (fn64)` arranca y dibuja — los 0-3 fps eran dos ajustes, no el driver
+
+Sesión `Download/DroidDeck/2026-10-19-01-steam/` (POCO X6 Pro, app 0.3.2 (44), driver importado
+`…r7_fn64_Steam_UI_fix_universal_`, interfaz de Steam **en la CPU**: `-cef-disable-gpu`). Steam
+abrió, Karlson arrancó y **no hubo ni un fallo de GPU ni un reinicio**: el build `fn64` no se cayó
+en ningún momento. Lo que falló fue el rendimiento: 0-3 fps y la RAM al 91%.
+
+### 1. Lo que dice el log, con números
+
+El compositor de la app recibe de gamescope lo que gamescope produce. Durante el juego, en ventanas
+de 10 s (`wayland.log`):
+
+```
+12:22:32  stats last 10 s: 89 frames on screen (8.9 fps)
+12:22:42  stats last 10 s: 32 frames on screen (3.2 fps)
+12:22:52  stats last 10 s: 19 frames on screen (1.9 fps)
+12:23:02  stats last 10 s: 10 frames on screen (1.0 fps)
+12:23:12  stats last 10 s: 12 frames on screen (1.2 fps)
+12:23:22  stats last 10 s: 29 frames on screen (2.9 fps)
+```
+
+Con la interfaz de Steam sola, a 2712x1220, el mismo camino daba **20-28 fps**; o sea, la interfaz
+no era el problema del juego, pero ya venía a un tercio de lo normal. Y no es el present de la app:
+`render_scene` del compositor se quedaba en 6-11 ms de media. Lo que llega es lo que hay.
+
+Para comparar, la sesión `2026-10-17-02-steam` (mismo teléfono, misma app 44, driver
+**rc3-lowmem**), a **1600x720**:
+
+```
+10:12:33  stats last 10 s: 383 frames on screen (38.3 fps)
+10:12:43  stats last 10 s: 558 frames on screen (55.8 fps)
+10:12:53  stats last 10 s: 548 frames on screen (54.8 fps)
+```
+
+55 fps en Dark Souls. La diferencia entre las dos sesiones no es el juego: es la configuración.
+
+| Ajuste | 17-10 (55 fps) | 19-10 (0-3 fps) |
+|---|---|---|
+| Resolución (Steam) | 720p · 1600x720 | **Seguir la pantalla · 2712x1220** |
+| Preajuste de FEX | PERFORMANCE_TSO | **EXTREME_TSO** |
+| Sincronización de Wine | esync | ntsync |
+| Override de núcleos del cliente | no | sí, 0-7 (equivalente a no ponerlo) |
+
+### 2. Por qué EXTREME_TSO da 0-3 fps y no es "un preset extremo de velocidad"
+
+`FexPreset.kt` lo enseña: `EXTREME_TSO` es `PERFORMANCE_TSO` **más** `FEX_DISABLEL2CACHE=1`,
+`FEX_DYNAMICL1CACHE=1` y sus heurísticas (250/50), y `FEX_SMCCHECKS=none`. Es decir, **tira la caché
+L2 de traducción de FEX y encoge la L1**: el código x86 de Unity se vuelve a traducir todo el rato.
+Con un Unity (Karlson) eso es CPU pura: la sesión estaba a **78-96% de CPU sobre 8 núcleos**, que es
+el equipo entero ocupado traduciendo, no dibujando. Es el preset para *ahorrar memoria* cuando una
+sesión muere por RAM, no para jugar.
+
+### 3. De dónde salió el 91% de RAM
+
+- Al arrancar ya había **1,7 GB disponibles** (`device.txt`; el 17-10 eran 2,9 GB, y el primer
+  latido de hoy dio 1.527 MB): apps de fondo abiertas.
+- A 2712x1220, el navegador de Steam (CEF, en CPU) pasó a **1.071 MB en 8 procesos**
+  (`heartbeat 12:20:16`); a 720p el mismo cliente rondaba 300 MB.
+- Xwayland 465 MB, Karlson 656 MB, explorer 200 MB, la app 124 MB.
+- `== memory low (753 MB)` a las 12:22:35, con esos ocho procesos listados.
+- El patrón de siempre, pero con buffers 2,9× más grandes: **181 dma-bufs de 13.275.136 B**
+  (2712x1220x4 + ~40 KB de AFBC, o sea el tamaño del swapchain) a ~1 por segundo, y los fds de
+  Xwayland hasta **6.345**. En las sesiones de 720p el mismo patrón aparece con 4.608.000 B y los
+  fds se quedan en ~7.700: no es nuevo, lo que cambió es el tamaño de la ventana.
+
+### 4. Qué se hace
+
+1. **Ajustes del modo Steam → Pantalla → Resolución → 1600×720** (se aplica en la próxima sesión).
+2. **Ajustes del modo Steam → Juegos → Preajuste de FEX → PERFORMANCE_TSO** (se aplica al próximo
+   juego). Si el juego va justo de CPU, `PERFORMANCE` (sin TSO) es el siguiente escalón.
+3. Cerrar apps de fondo antes de abrir la sesión.
+4. Repetir Karlson 2-3 minutos con el driver `r7 (fn64)`.
+5. **Si sigue a 0-3 fps**, cambiar **Componentes → Controlador de runtime → rc3-lowmem** y repetir
+   con los mismos ajustes: esa es la comparación limpia driver sí / driver no. Si el `r7` pierde
+   contra `rc3-lowmem`, el siguiente build es el `fn64` sobre `panvk-kbase-v0.1.0-rc3-lowmem`.
+
+La sesión ahora escribe una línea cuando corre por encima de 1600x720 en Mali
+(`== note: the session is 2712x1220; …`), para que ese ajuste se vea en el log antes de sacar
+conclusiones sobre el driver.
