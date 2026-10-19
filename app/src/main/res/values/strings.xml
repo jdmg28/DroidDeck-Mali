@@ -327,7 +327,7 @@
     <string name="mode_mangoapp">Performance overlay</string>
     <string name="mode_mangoapp_hint">Turn off if games crash or go black in Deck mode. Applies next session.</string>
     <string name="mode_steam_ui_gpu">Steam interface on the GPU (experimental)</string>
-    <string name="mode_steam_ui_gpu_hint">The store and the library are drawn by the CPU; since the dma-buf WSI (build 1f4abb3) that path is fast enough that no GPU browser is needed. On Mali this switch stays off on purpose: CEF\'s ANGLE/Vulkan path restarted the device even on RC3 (POCO X6 Pro, 2026-10-14), and that reset is not something an app can survive. Applies next session.</string>
+    <string name="mode_steam_ui_gpu_hint">The store and the library are drawn by the CPU by default: since the dma-buf WSI (build 1f4abb3) that path is fast enough, and it cannot take the phone down. On Mali this switch only works with the r7 (fn64) driver built in this repository (GPU drivers, Advanced, Runtime driver: import DroidDeck-Mali-CSF-PanVK-kbase-r7-fn64.zip); with the imported rc3 the browser stays on the CPU, because its renderer faulted the GPU and the device restarted (POCO X6 Pro, 2026-10-14). There the browser runs on ANGLE/OpenGL over Zink, never ANGLE/Vulkan. Applies next session.</string>
     <string name="mode_branch">Client branch</string>
     <string name="mode_branch_deck">Steam Deck public beta (required by Deck mode).</string>
     <string name="mode_branch_hint">Applies next session. Steam may update itself once.</string>

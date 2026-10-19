@@ -147,7 +147,7 @@ jobs:
           {
             "schemaVersion": 1,
             "kind": "linux-vulkan-icd",
-            "name": "DroidDeck Mali CSF PanVK-kbase r7 Steam UI fix (universal)",
+            "name": "DroidDeck Mali CSF PanVK-kbase r7 fn64 Steam UI fix (universal)",
             "driverVersion": "Adapter 0.2.0 (universal Mali) / PanVK-kbase rc3 + fn64 fix (built from zenithblue $UPSTREAM_TAG, profile $PROFILE) / Mesa 26.3.0-devel",
             "minGlibc": "2.38",
             "libc": "glibc",

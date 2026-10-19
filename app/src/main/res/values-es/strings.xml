@@ -321,7 +321,7 @@
     <string name="mode_mangoapp">Superposición de rendimiento</string>
     <string name="mode_mangoapp_hint">Desactívalo si los juegos fallan o se quedan en negro en modo Deck. Se aplica en la próxima sesión.</string>
     <string name="mode_steam_ui_gpu">Interfaz de Steam en la GPU (experimental)</string>
-    <string name="mode_steam_ui_gpu_hint">La tienda y la biblioteca las dibuja la CPU; desde el WSI dma-buf (build 1f4abb3) esa vía es lo bastante rápida y no hace falta un navegador en GPU. En Mali este interruptor se mantiene apagado a propósito: la vía ANGLE/Vulkan de CEF reinició el equipo incluso en RC3 (POCO X6 Pro, 14-10-2026), y ese reinicio no es algo que una app pueda sobrevivir. Se aplica en la próxima sesión.</string>
+    <string name="mode_steam_ui_gpu_hint">La tienda y la biblioteca las dibuja la CPU por defecto: desde el WSI dma-buf (build 1f4abb3) esa vía es lo bastante rápida y no puede tumbar el equipo. En Mali este interruptor solo funciona con el driver r7 (fn64) compilado en este repositorio (Controladores de GPU, Avanzado, Controlador de runtime: importar DroidDeck-Mali-CSF-PanVK-kbase-r7-fn64.zip); con el rc3 importado el navegador se queda en la CPU, porque su renderer provocó un fallo de GPU y el equipo se reinició (POCO X6 Pro, 14-10-2026). Ahí el navegador va por ANGLE/OpenGL sobre Zink, nunca ANGLE/Vulkan. Se aplica en la próxima sesión.</string>
     <string name="mode_branch">Rama del cliente</string>
     <string name="mode_branch_deck">Beta pública de Steam Deck (requerida por el modo Deck).</string>
     <string name="mode_branch_hint">Se aplica en la próxima sesión. Steam puede actualizarse una vez.</string>

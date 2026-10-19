@@ -751,7 +751,32 @@ class SessionService : Service() {
         if (SessionState.mode == MODE_STEAM) guest.add("BL_MANGOAPP=" + (if (!mali && SessionPrefs.mangoapp(this)) "1" else "0"))
         // The client's browser (CEF) on the GPU; off unless asked, so a browser that panics the
         // GPU driver does not take the phone with it (droiddeck-session reads BL_CEF_GPU).
-        if (SessionState.mode == MODE_STEAM) guest.add("BL_CEF_GPU=" + (if (SessionPrefs.steamUiOnGpu(this)) "1" else "0"))
+        //
+        // On Mali it only goes to the GPU with the driver this repository builds
+        // (PanVK-kbase rc3 + driver-patches/0001, "fn64" in the package name). The imported rc3
+        // keeps the provoking-vertex helper's GPU address in 32 bits; on kbase that address is
+        // high, the firmware prefetches 0xfffef000, the whole command-stream front end faults and
+        // the phone went down with it (2026-10-14). With any other driver the browser stays on
+        // the CPU and the log says which driver was refused.
+        if (SessionState.mode == MODE_STEAM) {
+            val uiOnGpu = SessionPrefs.steamUiOnGpu(this)
+            val driverName = if (linuxDriverId.isEmpty()) "" else
+                LinuxVulkanDriverManager(this).getDriverName(linuxDriverId)
+            val driverVersion = if (linuxDriverId.isEmpty()) "" else
+                LinuxVulkanDriverManager(this).getDriverVersion(linuxDriverId)
+            val uiGpuOn = uiOnGpu && SessionPrefs.steamUiGpuAllowed(mali, driverName, driverVersion)
+            if (uiOnGpu && !uiGpuOn) {
+                Log.w(TAG, "Steam UI on GPU asked for, but \"$driverName\" is not the fn64 driver: " +
+                    "keeping the client's browser on the CPU")
+            }
+            guest.add("BL_CEF_GPU=" + (if (uiGpuOn) "1" else "0"))
+            // Remembered in the session folder so an abandoned session (a reboot, mostly) can
+            // turn the switch back off at the next start (SessionArtifacts.finishAbandoned).
+            SessionPaths.current()?.let { dir ->
+                runCatching { File(dir, "cef-gpu.txt").writeText(if (uiGpuOn) "1" else "0") }
+                    .onFailure { Log.w(TAG, "could not record the CEF GPU choice", it) }
+            }
+        }
         if (steamHere) guest.add("BL_STEAM_CHANNEL=" + SessionPrefs.steamChannel(this))
         if (SessionState.mode == MODE_STEAM) {
             guest.add("BL_GAMESCOPE_STRETCH_16X9=" + (if (SessionPrefs.stretch16x9(this)) "1" else "0"))

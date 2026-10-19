@@ -501,6 +501,16 @@ object SessionPrefs {
     fun setSteamUiOnGpu(context: Context, on: Boolean) { prefs(context).edit().putBoolean("steamUiGpu", on).apply() }
 
     /**
+     * Whether the client's browser may actually go to the GPU. Off Mali, whatever was asked.
+     * On Mali, only with the driver this repository builds: PanVK-kbase rc3 plus the
+     * provoking-vertex address fix, which its package names "fn64" (driver-patches/0001). The
+     * imported rc3 faults the command stream front end on the renderer path Chromium takes
+     * through Zink, and on kbase that took the whole phone down (X6 Pro, 2026-10-14).
+     */
+    fun steamUiGpuAllowed(mali: Boolean, driverName: String, driverVersion: String): Boolean =
+        !mali || (driverName + " " + driverVersion).contains("fn64", ignoreCase = true)
+
+    /**
      * Zink's lazy descriptor mode (ZINK_DESCRIPTORS=lazy) with its compact set layout
      * (ZINK_DEBUG=compact) for the client's GL-on-Vulkan UI, as WinNative runs it. On by default.
      */

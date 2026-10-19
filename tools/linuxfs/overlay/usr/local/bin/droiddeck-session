@@ -1004,14 +1004,17 @@ BUSCONF
         done
       ) &
     fi
-    # The client's browser (CEF) is kept off the GPU: on a Mali-G615 the session came all the way
-    # up - gamescope compositing on the real GPU, both Xwaylands answering, the client past its own
-    # checks - and the device restarted seconds after the browser asked that GPU for Vulkan (RC2 on
-    # a G720-class phone, then again on RC3 + dma-buf WSI on a G615 POCO X6 Pro with 1f4abb3; the
-    # store had already opened, so the WSI was fine and the fault is in CEF's own ANGLE-Vulkan
-    # path). That restart is a device reset no app can survive, so on Mali the GPU browser is not
-    # offered at all: BL_CEF_GPU=1 is answered with a line and the CPU-drawn client, which since
-    # the R5 dma-buf WSI is no longer the slow path it was. Non-Mali keeps the old behavior.
+    # The client's browser (CEF) on the GPU is opt-in and, on Mali, only with the driver built here
+    # with the provoking-vertex address fix (the app answers BL_CEF_GPU=0 for any other driver, so
+    # this script only sees a 1 when that check passed). The history matters to what follows:
+    # on a G615 the session came all the way up and the device restarted seconds after the browser
+    # asked the GPU for Vulkan with the gamescope WSI layer still in the path (RC3, 2026-10-14).
+    # Upstream later found a 32-bit truncated command address that faults the command stream front
+    # end on the renderer path Chromium takes through Zink (wonderkast02 issue 9) - on kbase that
+    # is a kernel-level death, not a lost context. So on Mali the browser goes ANGLE/OpenGL ->
+    # Zink -> PanVK (Kopper, X11 DRI3, no gamescope WSI layer: all three already set for Mali),
+    # which is the combination a G720 tester kept up for five minutes of Big Picture with the fix
+    # in. ANGLE/Vulkan is NOT offered on Mali: it is the path that reset the X6 Pro before the fix.
     _bl_cef=(-no-cef-sandbox -cef-ozone-platform=x11)
     # Anything the session wants to add to the client itself, one word list, never evaluated:
     # BL_STEAM_ARGS="-cef-single-process" runs the whole browser in one process, which is the
@@ -1021,12 +1024,15 @@ BUSCONF
     if [ -n "${BL_STEAM_ARGS:-}" ]; then
       read -r -a _bl_extra_args <<<"$BL_STEAM_ARGS"
     fi
-    if [ "$software" != yes ] && [ "${BL_CEF_GPU:-0}" = 1 ] && [ "${BL_GPU_FAMILY:-}" != mali ]; then
-      _bl_cef+=(-cef-use-gl=angle -cef-use-angle=vulkan -cef-force-gpu)
-    else
-      if [ "${BL_CEF_GPU:-0}" = 1 ] && [ "${BL_GPU_FAMILY:-}" = mali ] && [ "$software" != yes ]; then
-        echo "== ui-on-gpu: not on Mali - ANGLE/Vulkan restarted the device (RC2 and RC3); the dma-buf WSI already carries the client at speed"
+    if [ "$software" != yes ] && [ "${BL_CEF_GPU:-0}" = 1 ]; then
+      if [ "${BL_GPU_FAMILY:-}" = mali ]; then
+        _bl_cef+=(-cef-use-gl=angle -cef-use-angle=gl -cef-force-gpu)
+        echo "== ui-on-gpu: Mali - ANGLE on Zink (Kopper, X11 DRI3) over PanVK; fn64 driver required"
+      else
+        _bl_cef+=(-cef-use-gl=angle -cef-use-angle=vulkan -cef-force-gpu)
+        echo "== ui-on-gpu: ANGLE/Vulkan"
       fi
+    else
       _bl_cef+=(-cef-disable-gpu -cef-disable-gpu-compositing)
     fi
     echo "== steam args: ${_bl_ui[*]} ${_bl_cdp[*]} ${_bl_lang[*]} -clientbeta $steam_channel ${_bl_cef[*]} ${_bl_extra_args[*]:-} $*"

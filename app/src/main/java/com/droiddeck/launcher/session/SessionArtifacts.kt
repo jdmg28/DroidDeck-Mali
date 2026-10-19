@@ -250,6 +250,16 @@ object SessionArtifacts {
                 val record = Record(dir)
                 if (newest) copySteamLogs(context, dir, record)
                 SessionLogCapture.dumpCrashBuffer(File(dir, "crash.log"))
+                // The one switch known to take the whole phone down: a session that ran the
+                // client's browser on the GPU (cef-gpu.txt, written by SessionService) and never
+                // tore down puts it back off, so the next start cannot repeat it unasked.
+                if (newest && SessionPrefs.steamUiOnGpu(context) &&
+                    File(dir, "cef-gpu.txt").takeIf { it.isFile }?.readText()?.trim() == "1") {
+                    SessionPrefs.setSteamUiOnGpu(context, false)
+                    SessionEvents.record("session.ui_gpu_rollback", mapOf<String, Any>(), dir)
+                    Log.w(TAG, "this session ran the Steam UI on the GPU and ended without teardown; " +
+                        "the switch is off again")
+                }
                 SessionEvents.record("session.artifacts_recovered", mapOf("newest" to newest), dir)
                 markScrubbed(scrubTree(record))
                 File(dir, COMPLETE_MARKER).writeText("collected: late, at next app start, ${now()}\n")
