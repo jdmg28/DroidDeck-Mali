@@ -101,7 +101,7 @@ jobs:
             -Dgallium-drivers= \
             -Dvulkan-drivers=panfrost \
             -Dpanfrost-kmds=kbase \
-            -Dllvm=disabled \
+            -Dllvm=disabled -Dmesa-clc=disabled -Dprecomp-compiler=disabled \
             -Degl=disabled -Dgles1=disabled -Dgles2=disabled -Dopengl=false \
             -Dglx=disabled -Dgbm=disabled -Dzstd=disabled -Dlibunwind=disabled \
             > /tmp/configure.log 2>&1; then
