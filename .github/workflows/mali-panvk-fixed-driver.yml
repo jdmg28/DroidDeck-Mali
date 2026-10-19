@@ -56,7 +56,7 @@ jobs:
             libx11-dev libx11-xcb-dev libxcb1-dev libxcb-dri2-0-dev libxcb-dri3-dev \
             libxcb-present-dev libxcb-sync-dev libxcb-xfixes0-dev libxcb-randr0-dev \
             libxcb-shm0-dev libxshmfence-dev libwayland-dev wayland-protocols \
-            libzstd-dev libexpat1-dev libudev-dev bison flex
+            libzstd-dev libexpat1-dev libudev-dev libdrm-dev bison flex
           # Mesa 26.3 wants a newer meson than 24.04 ships; pip's is the one it tests with.
           python3 -m pip install --quiet --break-system-packages \
             'meson>=1.4' ninja mako 'pyyaml' packaging
@@ -94,7 +94,7 @@ jobs:
       - name: Configure
         run: |
           set -euo pipefail
-          meson setup build work/mesa \
+          if ! meson setup build work/mesa \
             --native-file upstream/meson/linux-aarch64-native.ini \
             -Dbuildtype=release \
             -Dplatforms=x11,wayland \
@@ -103,10 +103,23 @@ jobs:
             -Dpanfrost-kmds=kbase \
             -Dllvm=disabled \
             -Degl=disabled -Dgles1=disabled -Dgles2=disabled -Dopengl=false \
-            -Dglx=disabled -Dgbm=disabled -Dzstd=disabled -Dlibunwind=disabled
+            -Dglx=disabled -Dgbm=disabled -Dzstd=disabled -Dlibunwind=disabled \
+            > /tmp/configure.log 2>&1; then
+            tail -40 /tmp/configure.log || true
+            echo "::error title=meson setup failed::$(tail -c 3000 /tmp/configure.log | tr '\n' '|')"
+            exit 1
+          fi
+          tail -6 /tmp/configure.log
 
       - name: Build
-        run: ninja -C build -j"$(nproc)"
+        run: |
+          set -o pipefail
+          if ! ninja -C build -j"$(nproc)" > /tmp/build.log 2>&1; then
+            tail -60 /tmp/build.log || true
+            echo "::error title=ninja failed::$(tail -c 3000 /tmp/build.log | tr '\n' '|')"
+            exit 1
+          fi
+          tail -3 /tmp/build.log
 
       - name: Verify the built ICD
         run: |
