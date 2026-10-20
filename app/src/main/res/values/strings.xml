@@ -2190,7 +2190,7 @@
     <string name="stores_login_error_verification">The sign-in could not be verified. Try again.</string>
     <string name="stores_login_error_generic">Sign-in failed. Try again.</string>
     <string name="mode_steam_ui_backend">GPU path for the interface</string>
-    <string name="mode_steam_ui_backend_hint">How the browser reaches the GPU. OpenGL is ANGLE over Zink over PanVK: two translation layers, and the path the fn64 driver was validated on (the store ran for minutes and was closed cleanly). Vulkan is ANGLE straight onto PanVK, one layer fewer and Chromium's own backend, so it should be faster; it is the path that restarted this phone on 2026-10-14, before the driver fix existed, so try it only with the r7 (fn64) driver and expect to reboot once. Applies next session.</string>
+    <string name="mode_steam_ui_backend_hint">How the browser reaches the GPU. OpenGL is ANGLE over Zink over PanVK: two translation layers, and the path the fn64 driver was validated on (the store ran for minutes and was closed cleanly). Vulkan is ANGLE straight onto PanVK, one layer fewer and Chromium\'s own backend, so it should be faster; it is the path that restarted this phone on 2026-10-14, before the driver fix existed, so try it only with the r7 (fn64) driver and expect to reboot once. Applies next session.</string>
     <string name="mode_steam_ui_backend_gl">OpenGL (Zink) - tested</string>
     <string name="mode_steam_ui_backend_vulkan">Vulkan (experimental)</string>
     <string name="mode_steam_ui_backend_note">If the store or the library draws black or the session comes back without the interface, choose OpenGL.</string>
