@@ -396,12 +396,6 @@ class SessionService : Service() {
 
         val sessionDir = openSessionFolder()
         val sessionLog = File(sessionDir, "session.log")
-        // A phone that kept restarting inside games gets the next session one rung lower
-        // (RebootGuard). The user's switches are untouched; this only changes what the session is
-        // started with, and the log and the app both say which rung was used.
-        val safeLevel = RebootGuard.level(this)
-        if (safeLevel > 0) Log.w(TAG, "safe mode level $safeLevel: ${RebootGuard.trail(this).size} " +
-            "restart(s) with a game inside the last 48 hours")
 
         Log.i(TAG, GpuClockPin.start(this))
 
@@ -639,6 +633,12 @@ class SessionService : Service() {
 
     /** The guest's base environment: paths, the display, the GL/Vulkan stack and the client's switches. */
     private fun addClientEnvironment(guest: MutableList<String>, steamHere: Boolean) {
+        // A phone that kept restarting inside games gets the next session one rung lower
+        // (RebootGuard). The user's switches are untouched; this only changes what the session is
+        // started with, and the log and the app both say which rung was used.
+        val safeLevel = RebootGuard.level(this)
+        if (safeLevel > 0) Log.w(TAG, "safe mode level $safeLevel: ${RebootGuard.trail(this).size} " +
+            "restart(s) with a game inside the last 48 hours")
         guest.add("/usr/bin/env")
         guest.add("-i")
         guest.add("HOME=/root")
