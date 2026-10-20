@@ -612,6 +612,31 @@ object SessionPrefs {
     }
 
     /**
+     * Whether DXVK waits for the display to show each frame before drawing the next one.
+     *
+     * On Mali, no. DXVK's FIFO path asks the driver to time every present (VK_EXT_present_timing)
+     * and then waits for it on a thread of its own (VK_KHR_present_wait2). PanVK-kbase never
+     * retires those records: the timing queue fills up, acquire starts returning
+     * VK_ERROR_PRESENT_TIMING_QUEUE_FULL_EXT (-1000208000), DXVK recreates the swapchain four times
+     * and the next wait comes back VK_ERROR_DEVICE_LOST. The game stops presenting and keeps its
+     * last frame: MiSide's Aihasto splash frozen at "Fps: 0" (2026-10-20, sessions 02 and 04).
+     *
+     * With this off, the game presents at syncInterval 0 to a mailbox swapchain, which DXVK neither
+     * times nor waits on, and DXVK's own limiter paces it at [GAME_FPS_CAP] (or the session's limit
+     * when one is set). The switch is read by the compatibility tool, so it reaches every Proton,
+     * not just Valve's.
+     */
+    fun gamePresentWait(context: Context): Boolean =
+        prefs(context).getBoolean("gamePresentWait", false)
+
+    fun setGamePresentWait(context: Context, on: Boolean) {
+        prefs(context).edit().putBoolean("gamePresentWait", on).apply()
+    }
+
+    /** Ceiling DXVK holds a game to when it is not waiting for the display ([gamePresentWait]). */
+    const val GAME_FPS_CAP = 60
+
+    /**
      * Whether the client's browser may actually go to the GPU. Off Mali, whatever was asked.
      * On Mali, only with the driver this repository builds: PanVK-kbase rc3 plus the
      * provoking-vertex address fix, which its package names "fn64" (driver-patches/0001). The

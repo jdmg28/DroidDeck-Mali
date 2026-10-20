@@ -337,6 +337,27 @@ bl_libpath() {
       # latency-only defaults cost frames here. BL_DXVK_MAX_FRAME_LATENCY=1 buys latency back.
       DXVK_CONFIG="$DXVK_CONFIG;dxgi.maxFrameLatency=${BL_DXVK_MAX_FRAME_LATENCY:-3};d3d9.maxFrameLatency=${BL_DXVK_MAX_FRAME_LATENCY:-3}"
       DXVK_CONFIG="$DXVK_CONFIG;dxgi.maxSharedMemory=${BL_DXVK_SHARED_MEMORY:-384}"
+      # No waiting for the display, on Mali. DXVK's FIFO path asks the driver to time every
+      # present (VK_EXT_present_timing) and waits for each one on its own thread
+      # (VK_KHR_present_wait2); PanVK-kbase retires neither, so the timing queue fills, acquire
+      # starts returning VK_ERROR_PRESENT_TIMING_QUEUE_FULL_EXT (-1000208000), the swapchain is
+      # recreated four times and the next vkWaitForPresentKHR fails with VK_ERROR_DEVICE_LOST.
+      # The game keeps its last frame on screen and stops presenting: MiSide's Aihasto splash at
+      # "Fps: 0" in sessions 02 and 04 (2026-10-20), with the device already gone.
+      #
+      # DXVK uses neither timing nor present-wait on a mailbox swapchain - its own comment is
+      # "Present timing isn't useful with Immediate or Mailbox" - so the game presents at
+      # syncInterval 0, tearFree keeps it off IMMEDIATE, and DXVK's own limiter does the pacing
+      # the display used to do. BL_DXVK_PRESENT_WAIT=1 asks for the FIFO path back (and rebuilds
+      # this exact string), BL_FPS > 0 is the session's own ceiling otherwise 60.
+      case "${BL_GPU_FAMILY:-}:${BL_DXVK_PRESENT_WAIT:-0}" in
+        mali:0)
+          _bl_cap=${BL_FPS:-0}
+          case $_bl_cap in "" | *[!0-9]*) _bl_cap=0 ;; esac
+          [ "$_bl_cap" -gt 0 ] || _bl_cap=${BL_DXVK_FPS_CAP:-60}
+          DXVK_CONFIG="$DXVK_CONFIG;dxvk.tearFree=True;dxgi.syncInterval=0;dxvk.maxFrameRate=$_bl_cap"
+          ;;
+      esac
       DXVK_CONFIG="$DXVK_CONFIG;dxvk.enableAsync=True;dxvk.gplAsyncCache=True"
       if [ -n "${BL_DXVK_CONFIG:-}" ]; then DXVK_CONFIG="$DXVK_CONFIG;$BL_DXVK_CONFIG"; fi
       ;;
@@ -459,6 +480,43 @@ bl_directaudio() {
 }
 """
 
+# The one failure a game loses to before it draws a single pixel, and the one no log on this stack
+# names as a fault: a prefix whose registry files were cut short. Wine says so plainly ("system.reg
+# is not a valid registry file") and then wineboot cannot finish, so the launch ends with Proton's
+# banner and nothing else - no DXVK log, no game process, five seconds after the click. That is
+# exactly how Karlson failed from 2026-10-19 23:24 on, in every session (2026-10-20 01-04): the
+# prefix was caught mid-write by a power-off, and from then on every launch rebuilt nothing and
+# died the same way. A reboot with a game running is how this stack fails, so the prefix has to
+# heal itself or the game never starts again.
+#
+# The prefix is moved aside, never deleted: saves, settings and installed redists inside it stay in
+# pfx.broken-<date>, and Proton builds a fresh prefix on the same launch. Only the newest backup is
+# kept, and nothing is touched when the files are absent (a first launch) or valid.
+BL_PREFIX_SETUP = """
+bl_prefix() {
+  _blp_pfx="${STEAM_COMPAT_DATA_PATH%/}/pfx"
+  [ -d "$_blp_pfx" ] || return 0
+  _blp_bad=0
+  for _blp_reg in system.reg user.reg userdef.reg; do
+    [ -e "$_blp_pfx/$_blp_reg" ] || continue
+    if ! head -c 64 "$_blp_pfx/$_blp_reg" 2>/dev/null | grep -q 'WINE REGISTRY'; then
+      _blp_bad=1
+      echo "droiddeck-proton: $_blp_pfx/$_blp_reg is not a valid registry file - the prefix was cut short by a shutdown" >&2
+    fi
+  done
+  [ "$_blp_bad" = 1 ] || return 0
+  _blp_aside="${_blp_pfx%/}.broken-$(date +%Y%m%d-%H%M%S)"
+  for _blp_prev in "${_blp_pfx%/}".broken-*; do
+    [ "$_blp_prev" = "$_blp_aside" ] && continue
+    [ -d "$_blp_prev" ] && rm -rf "$_blp_prev" 2>/dev/null
+  done
+  if mv "$_blp_pfx" "$_blp_aside" 2>/dev/null; then
+    echo "droiddeck-proton: prefix moved to $_blp_aside; Proton rebuilds it on this launch (saves are in there)" >&2
+  fi
+  return 0
+}
+"""
+
 # Resolves the depot at launch time, so the tool can be registered before the depot exists and
 # survives the client updating or replacing it. Proton takes its base directory from
 # dirname(sys.argv[0]) without resolving it, so it is run from the depot itself.
@@ -516,6 +574,7 @@ done
 # lines and 9 of the log's 9.5 MB, all of it noise around what +loaddll already says - which dll
 # went in, and when.
 if [ -n "$depot" ]; then
+  [ "${verb:-}" = waitforexitandrun ] && bl_prefix
   bl_components "$depot"
   bl_directaudio "$depot"
   bl_game_cpus
@@ -536,8 +595,8 @@ def launcher_sh(sources=SOURCES):
     # and a % format would eat that into a single %, leaving a shell expansion that silently does
     # something else.
     return (LAUNCHER_TEMPLATE % " ".join('"%s"' % n for n in sources)).replace(
-        "verb=$1; shift", "verb=$1; shift\n" + BL_DIRECTAUDIO_SETUP + BL_GAME_CPUS_SETUP + BL_IDTECH3_SETUP
-        + BL_COMPONENTS_SETUP + BL_LIBPATH_SETUP + BL_STORE_SETUP, 1)
+        "verb=$1; shift", "verb=$1; shift\n" + BL_PREFIX_SETUP + BL_DIRECTAUDIO_SETUP + BL_GAME_CPUS_SETUP
+        + BL_IDTECH3_SETUP + BL_COMPONENTS_SETUP + BL_LIBPATH_SETUP + BL_STORE_SETUP, 1)
 
 
 LAUNCHER_SH = launcher_sh()

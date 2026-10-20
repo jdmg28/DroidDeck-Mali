@@ -1137,3 +1137,107 @@ anoche pudo ser justo eso.
    siguiente ya es nivel 2.
 5. Mandar el zip con `gpu-watch.txt`, `games.txt`, `session.log` y `device.txt`: con eso se sabe si
    fue timeout, memoria o el navegador.
+
+## R24b (20-10-2026): los tres síntomas eran tres fallos distintos
+
+Las cuatro sesiones del informe (01, 02, 03 y 04) se leyeron línea por línea. No hay uno: hay tres,
+y ninguno de los tres es «R24 rompió el juego».
+
+| Sesión | Hora | Modo seguro | Interfaz | Qué pasó |
+|---|---|---|---|---|
+| 01 | 09:27 | 0 | GPU (`cef-gpu=1`) | Karlson muere a los 5 s; MiSide llega al swapchain y se queda ahí |
+| 02 | 10:45 | 1 | CPU | Karlson muere a los 5 s; MiSide congela con `Fps: 0` |
+| 03 | 10:50 | 0 | GPU (`cef-gpu=1`) | Karlson abre y muere a los 9 s; **el equipo se va 2 s después**, sin desmontaje |
+| 04 | 11:06 | 1 | CPU | Karlson muere a los 5 s; MiSide congela con `Fps: 0` |
+
+### Karlson: el prefijo, no el juego ni la ronda
+
+El log de Proton de Karlson tiene **24 líneas en las cuatro sesiones**, y termina siempre igual:
+
+```
+system.reg is not a valid registry file
+userdef.reg is not a valid registry file
+user.reg is not a valid registry file
+wine: '…/compatdata/3961980745/pfx' is a 64-bit installation, it cannot be used with a 32-bit wineserver.
+```
+
+No hay una sola línea de Mesa, de panvk ni de DXVK: el juego **nunca llegó a crear un dispositivo
+Vulkan**. Murió en el arranque del prefijo, que es lo que explica los 5 s y el «no abre» sin log.
+El prefijo de MiSide, en la misma sesión, sí arranca Mesa y sí crea el dispositivo: el mismo Proton
+está bien; los ficheros de registro del prefijo de Karlson son los que están cortados.
+
+Eso fecha el fallo: los intentos de Karlson de 10-16, 10-18 y 10-19 duraron minutos; desde el
+**19-10 a las 23:24** (dos intentos de 6 s) todos mueren igual. Y a las 23:24 es exactamente cuando
+el equipo se apagó a la fuerza con un juego abierto. No es R24: es un prefijo que quedó a medias.
+
+Como en esta pila un reinicio con un juego dentro es *la* forma de fallar, el prefijo ahora se
+repara solo: si `system.reg`, `user.reg` o `userdef.reg` existen y no empiezan por `WINE REGISTRY`,
+el lanzador mueve `pfx` a `pfx.broken-<fecha>` (no borra: ahí quedan partidas y ajustes) y Proton lo
+reconstruye en ese mismo arranque. Se conserva solo la copia más reciente.
+
+### MiSide: la espera de presentación, no el juego
+
+El log de DXVK dice la cadena completa, y es siempre la misma (02 y 04; en 01 se queda en el mismo
+punto sin llegar a la pérdida):
+
+```
+Presenter: Actual swapchain properties:
+  Present mode: VK_PRESENT_MODE_FIFO_KHR (dynamic: yes)
+  Buffer size:  1280x720     Image count: 4     Timing: yes (relative)
+Presenter: Reported refresh rate: 119.8 Hz
+Presenter: Present timing disabled
+Presenter: Got -1000208000, recreating swapchain     (×4)
+  … última recreación: Timing: no
+err: Presenter: vkWaitForPresentKHR failed: VK_ERROR_DEVICE_LOST
+```
+
+`-1000208000` es `0xC4620980`, `VK_ERROR_PRESENT_TIMING_QUEUE_FULL_EXT`: la cola de presentaciones
+cronometradas de `VK_EXT_present_timing`. DXVK, en FIFO, pide al controlador que cronometre cada
+presentación y **espera a que se complete** en su propio hilo (`vkWaitForPresentKHR`). PanVK-kbase
+no retira esos registros: la cola se llena, la adquisición empieza a devolver `QUEUE_FULL`, el
+swapchain se recrea cuatro veces y la siguiente espera llega cuando el dispositivo ya está perdido.
+El juego deja de presentar y se queda en el último fotograma — el splash de Aihasto con `Fps: 0`.
+
+No es la vía de presentación del juego (nivel 0 y nivel 1 fallan igual) y no es el juego: es la
+espera. DXVK no usa ni cronometraje ni espera en un swapchain de tipo buzón (su propio comentario:
+«Present timing isn't useful with Immediate or Mailbox»), así que ahora los juegos presentan a
+`syncInterval 0` con `dxvk.tearFree=True` y DXVK los limita él mismo (`dxvk.maxFrameRate`): 60 fps,
+o el límite de la sesión si hay uno puesto. El ajuste está en
+**Ajustes del modo Steam → Steam → Cliente → Esperar el fotograma en pantalla** (apagado), y
+encendido devuelve el camino FIFO de antes.
+
+### El reinicio: la sesión 03 no es «entrando en partida»
+
+En la 03 no hay **ningún** log de MiSide y `droiddeck-game-env` aparece **una sola vez** en toda la
+sesión: el único lanzamiento fue Karlson (su log de Proton es el que está en el zip). Lo que hay es
+Karlson (AppID 3961980745), apareciendo en `focus.changed` a las 10:51:16, Steam retirando los
+procesos de su árbol a las 10:51:25 y la última línea escrita a las 10:51:27. El equipo se fue mientras Steam
+cerraba el árbol de Proton de Karlson, con el nivel 0 y la interfaz en la GPU (`cef-gpu=1`).
+
+Eso no descarta el reinicio, lo sitúa: ocurría en el **cierre de un juego**, que es donde han
+estado los tres reinicios de esta pila, no al entrar en partida. Como no hay log del kernel (un
+reinicio se lleva `logcat`, `pstore` no es legible sin root), lo único que se puede hacer es no
+volver a poner al mismo tiempo el navegador en la GPU y un juego presentando por dma-buf: el nivel
+1 ya lo hace. La prueba limpia es la misma partida con **Interfaz de Steam en la GPU apagada** y el
+nivel 0 (Volver a normal): si no se reinicia, el culpable era el navegador en la GPU, no el juego.
+
+### Y el detector de juegos
+
+`gpu-watch.txt` daba `game=1` desde el primer segundo con `pid=16506`, `rss=4 MB` y
+`cmd=/data/app/~~…/com.droiddeck.launcher.`: el proceso invitado de la propia app lleva
+`steamapps/common` en sus argumentos y cumplía el patrón. Con eso, `game-started.txt` mentía y la
+escalera contaba cualquier reinicio como «con un juego dentro». Ahora se descarta todo lo que corra
+desde `/data/app` o `/data/user`, que es siempre un paquete de Android y nunca un juego.
+
+### Qué probar (en este orden)
+
+1. Instalar el APK nuevo. **Karlson**: lanzarlo una vez. El primer arranque reconstruye el prefijo
+   (tarda más de lo normal y vuelve a pedir lo que instalara el juego); el log debe decir
+   `droiddeck-proton: prefix moved to …/pfx.broken-<fecha>` la primera vez y no repetirlo después.
+2. **MiSide**: entrar en partida y jugar 2-3 minutos. En `steam/MiSideFull_d3d11.log` la línea del
+   swapchain tiene que decir `Present mode: VK_PRESENT_MODE_MAILBOX_KHR` y **no** debe aparecer
+   `Present timing`, ni `QUEUE_FULL`, ni `vkWaitForPresentKHR`.
+3. Si MiSide sigue congelándose, encender **Esperar el fotograma en pantalla** y repetir: eso deja
+   el camino de antes y confirma que el problema es la espera.
+4. Si se reinicia otra vez, apagar **Interfaz de Steam en la GPU**, poner el modo seguro en
+   **Volver a normal** y jugar la misma partida: así se separa el navegador del juego.

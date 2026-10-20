@@ -109,6 +109,8 @@ class ModeSettings(
     val steamUiRawFps: Boolean = false,
     /** Steam only, Mali: how a game presents to gamescope (SessionPrefs.GAME_PRESENT_*); null elsewhere. */
     val maliGamePresent: String? = null,
+    /** Steam only, Mali: DXVK waits for the display before drawing the next frame (SessionPrefs.gamePresentWait). */
+    val gamePresentWait: Boolean = false,
     /** Steam only: what the pad is to the client (SessionPrefs.CONTROLLER_*); null outside Steam. */
     val steamController: String? = null,
     /** Steam only: start a Steam session when DroidDeck opens. */
@@ -175,6 +177,7 @@ class ModeSettingsActions(
     val onResetSafeMode: () -> Unit = {},
     val onSteamUiRawFps: (Boolean) -> Unit = {},
     val onMaliGamePresent: (String) -> Unit = {},
+    val onGamePresentWait: (Boolean) -> Unit = {},
     val onSteamController: (String) -> Unit = {},
     val onRunSteamAtStartup: (Boolean) -> Unit = {},
     val onWifiDiscovery: (Boolean) -> Unit = {},
@@ -467,6 +470,11 @@ fun ModeSettingsPage(s: ModeSettings, a: ModeSettingsActions) {
                     ),
                     s.maliGamePresent ?: SessionPrefs.GAME_PRESENT_DRI3,
                     onPick = a.onMaliGamePresent,
+                )
+                ToggleRow(
+                    host, "gamePresentWait", stringResource(R.string.mode_game_present_wait),
+                    stringResource(R.string.mode_game_present_wait_hint),
+                    s.gamePresentWait, onChange = a.onGamePresentWait,
                 )
                 ToggleRow(
                     host, "gameWebBudget", stringResource(R.string.mode_game_web_budget),

@@ -724,6 +724,12 @@ class SessionService : Service() {
                 guest.add("BL_SAFE_LEVEL=" + safeLevel)
                 guest.add("BL_GAME_PRESENT=" + if (safeLevel >= RebootGuard.LEVEL_SAFE_PRESENT)
                     SessionPrefs.GAME_PRESENT_SHM else SessionPrefs.maliGamePresent(this))
+                // Whether a game's DXVK waits for the display to show each frame, read by the
+                // compatibility tool when it builds DXVK_CONFIG: off means a mailbox swapchain and
+                // DXVK's own limiter, which is the only present path PanVK-kbase survives (see
+                // SessionPrefs.gamePresentWait).
+                guest.add("BL_DXVK_PRESENT_WAIT=" + if (SessionPrefs.gamePresentWait(this)) "1" else "0")
+                guest.add("BL_DXVK_FPS_CAP=" + SessionPrefs.GAME_FPS_CAP)
                 // While a game runs, the client's browser holds a budget of its own
                 // (SessionPrefs.gameBrowserBudget): 1.4-2.0 GB in eight processes beside a game
                 // is memory the game does not get.
