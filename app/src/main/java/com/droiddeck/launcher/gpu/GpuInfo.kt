@@ -47,7 +47,10 @@ data class GpuInfo(
 
     val support: Support
         get() = when {
-            family == Family.MALI -> if (Build.VERSION.SDK_INT >= 35) Support.UNTESTED else Support.UNSUPPORTED
+            // Mali is offered on every Android the app installs on: the driver's own kbase
+            // front end (CSF or JM) is what decides, not the Android release. R20 removed the
+            // 15+ requirement for the label and the session start; this is the last of it.
+            family == Family.MALI -> Support.UNTESTED
             family == Family.NOT_ADRENO -> Support.UNSUPPORTED
             family == Family.A6XX && model == 650 -> Support.TESTED
             family == Family.A8XX -> Support.TESTED
@@ -59,14 +62,14 @@ data class GpuInfo(
     val supportText: String
         get() = when (support) {
             Support.TESTED -> "Supported"
-            Support.UNTESTED -> if (family == Family.MALI) "Experimental Mali/Immortalis (CSF): import PanVK-kbase; validated on Mali-G615, this GPU is untested"
+            Support.UNTESTED -> if (family == Family.MALI) "Experimental Mali/Immortalis (v9-v13, CSF or JM): import PanVK-kbase; validated on Mali-G615 here, this GPU is untested"
                 else if (family == Family.A7XX_LOW) "Experimental: its drivers are test builds"
                 else "Outside tested hardware (Adreno 650, 725 and newer): it may not run"
             Support.UNSUPPORTED -> "Not supported: DroidDeck needs an Adreno (Snapdragon) GPU"
         }
 
     /** [supportText] in the app's language. */
-    fun supportText(context: Context): String = if (family == Family.MALI && Build.VERSION.SDK_INT >= 35)
+    fun supportText(context: Context): String = if (family == Family.MALI)
         context.getString(R.string.gpuinfo_mali_experimental) else context.getString(when (support) {
         Support.TESTED -> R.string.gpuinfo_supported
         Support.UNTESTED -> if (family == Family.A7XX_LOW) R.string.gpuinfo_experimental else R.string.gpuinfo_below_tested

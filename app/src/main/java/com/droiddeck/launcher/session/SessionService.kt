@@ -376,8 +376,7 @@ class SessionService : Service() {
         // mode nothing changes: on Mali a session still needs the imported PanVK package.
         if (!com.droiddeck.launcher.gpu.GpuSafety.software(this) &&
             com.droiddeck.launcher.core.DeviceSupport.mali() &&
-            (android.os.Build.VERSION.SDK_INT < 35 ||
-             LinuxVulkanDriver.resolveIcdPath(this, SessionPrefs.linuxDriver(this)) == null ||
+            (LinuxVulkanDriver.resolveIcdPath(this, SessionPrefs.linuxDriver(this)) == null ||
              !LinuxVulkanDriverManager(this).isMaliRuntimeDriver(SessionPrefs.linuxDriver(this)))) {
             Log.e(TAG, getString(com.droiddeck.launcher.R.string.mali_driver_needed))
             android.os.Handler(android.os.Looper.getMainLooper()).post {

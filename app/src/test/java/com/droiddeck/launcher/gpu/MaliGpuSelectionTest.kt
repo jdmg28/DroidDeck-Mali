@@ -16,11 +16,9 @@ class MaliGpuSelectionTest {
 
     @Test fun experimentalIsNeverReportedAsTestedHardware() {
         assertNotEquals(GpuInfo.Support.TESTED, mali.support)
-        if (android.os.Build.VERSION.SDK_INT >= 35) {
-            assertEquals(GpuInfo.Support.UNTESTED, mali.support)
-            assertTrue(mali.supportText.contains("not validated"))
-        } else {
-            assertEquals(GpuInfo.Support.UNSUPPORTED, mali.support)
-        }
+        // Every Android the app installs on: the driver's kbase front end decides whether a Mali
+        // generation runs, not the platform release (R20; the session gate had kept 15+ before).
+        assertEquals(GpuInfo.Support.UNTESTED, mali.support)
+        assertTrue(mali.supportText.contains("untested"))
     }
 }

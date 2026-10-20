@@ -913,3 +913,31 @@ sesión muere por RAM, no para jugar.
 La sesión ahora escribe una línea cuando corre por encima de 1600x720 en Mali
 (`== note: the session is 2712x1220; …`), para que ese ajuste se vea en el log antes de sacar
 conclusiones sobre el driver.
+
+## Mali-G57 (v9 JM): qué se puede esperar
+
+El G57 es Valhall de 1.ª/2.ª generación, **PAN_ARCH v9 y frontend JM** (no CSF). Hasta RC2 el
+driver lo trataba como experimental y fallaba casi todo (PanProbe 2/17); **RC3 añadió la serie
+`jm-v9` (001-030)**: Vulkan 1.3, geometry shaders, teselación, transform feedback, multiViewport,
+clip/cull distances, depth bounds, fill mode, render condicional, robustImageAccess2 y timestamps.
+El paquete universal del release y el `r7 (fn64)` la incluyen: el perfil `g615-v11-csf` aplica
+`common`, `kbase-common`, `app-loader`, `wsi`, `csf`, `csf-v11` **y `jm-v9` + `jm-v7`** (lo que
+upstream llama el ICD universal). El arreglo `fn64` toca solo el camino CSF, así que en un G57 no
+cambia nada.
+
+**Lo que midió upstream** (su `README`, RC3): Lenovo Tab TB336FU, Mali-G57 MC2, `gpu_id
+0x90930010`, Android 16, kernel 5.15, kbase JM 11.38 → **PanProbe 38/38**, cubos D3D8 a D3D11
+correctos (el de D3D11 a ~70-76 fps) y NFS: Most Wanted a ~18 fps (limitado por GPU, sin fallos).
+Es el único G57 probado. Un G57 de otro fabricante puede cambiar el ABI/UAPI de `mali_kbase`, los
+permisos de `/dev/mali0` o la versión de Android: es el primer sitio donde mirar si no arranca.
+
+**Un bloqueo que sobraba.** La app exigía `Build.VERSION.SDK_INT >= 35` para abrir una sesión Mali
+(`SessionService`, comprobación del driver) y, por debajo, marcaba la GPU como no compatible aunque
+el README y las notas de v0.4.0-beta.1 dijeran que ya no se exigía Android 15. Se quitó el 19-10:
+en Mali la sesión solo comprueba que haya un driver PanVK importado y seleccionado, en cualquier
+Android donde instale la app. Ese cambio va en el APK rolling posterior a `edc860c`, no en la beta
+publicada.
+
+Si en un G57 la pantalla sale negra con el driver cargado, el primer interruptor es
+`Download/droiddeck-mali-dri3` con `0` (el WSI deja de exportar dma-buf/AFBC y copia por shm), que
+es la vía que no depende del soporte de dma-buf del kernel de ese teléfono.
