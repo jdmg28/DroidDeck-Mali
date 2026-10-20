@@ -941,3 +941,102 @@ publicada.
 Si en un G57 la pantalla sale negra con el driver cargado, el primer interruptor es
 `Download/droiddeck-mali-dri3` con `0` (el WSI deja de exportar dma-buf/AFBC y copia por shm), que
 es la vía que no depende del soporte de dma-buf del kernel de ese teléfono.
+
+## R23 (19-10-2026): la interfaz ya va en la GPU; el reinicio es del cierre del juego
+
+Log usado: **`DroidDeck-2026-10-19-05-steam`** (el más nuevo de Drive al escribir esto,
+20-10-2026 01:08 UTC). Build 45, sesión 1600x720 a 120 Hz, driver `r7 (fn64) universal`,
+`FEX PERFORMANCE_TSO`, `PANVK_KBASE_DRI3=1`, y por primera vez **`cef-gpu.txt=1`**: el navegador
+de Steam corrió en la GPU (`== ui-on-gpu: Mali - ANGLE on Zink (Kopper, X11 DRI3) over PanVK`).
+Este zip **no trae `wayland.log`**, así que los fps son los que midió el usuario, no una lectura
+del log.
+
+**Lo que sí quedó probado**
+
+- La tienda en la GPU **no reinicia el equipo**: aguantó minutos, con heartbeats cada ~2 s y el
+  log terminando con el cierre de un juego, no con una caída en la tienda. Es la primera vez que
+  ese camino se sostiene en el tiempo.
+- La tienda se quedó en **~30 fps** con panel de 120 Hz.
+- Karlson: **22-24 fps** a 1600x720, medio + bloom, DXVK 3.1.1 sobre panvk 26.2.99, FL 11_1,
+  heap de **878 MiB** `DEVICE_LOCAL`, `queue (0,0)`.
+- El equipo **se reinició al salir del juego a su menú**, no durante la partida.
+
+**Qué dice el final del log** (por orden):
+
+1. `[gamescope] Error xdg_backend: Compositor released us but we were not acquired. Oh no.` ×3 —
+   gamescope perdió su ventana XDG. El compositor de la app ya no estaba, o se estaba yendo.
+2. Después, un bloque de `bo_alloc_dmabuf … bo_size=4608000` (1600x720x4) y luego **ceros**: la
+   copia se cortó a media escritura, que es un corte de energía, no un cierre ordenado. Ese es el
+   patrón de un reinicio del equipo (watchdog del kernel o del GPU), no de un cierre de sesión.
+3. `ended-without-teardown.txt` se escribió en el arranque siguiente, 22:08:17.
+
+**Por qué el rollback no sirvió de nada (y ya no se dispara ahí).** La app apagaba el interruptor
+«Interfaz de Steam en la GPU» cuando una sesión terminaba sin teardown, asumiendo que el navegador
+era el culpable. En esta sesión la tienda había funcionado dos minutos y el reinicio ocurrió con un
+juego en marcha: apagar el interruptor habría castigado lo único que sí funcionó. Ahora
+`droiddeck-session` escribe `game-started.txt` (con `sync`) la primera vez que ve un proceso de
+juego, y `SessionArtifacts.finishAbandoned` **conserva** el interruptor si ese archivo existe
+(evento `session.ui_gpu_kept`). El rollback sigue vivo para la sesión que muere sin ningún juego.
+
+**Lo que se añadió para las tres peticiones**
+
+1. *Tienda al máximo de fps* → **Ajustes del modo Steam → Steam → Cliente → Máximo fps en la
+   interfaz** (encendido por defecto, se aplica en la próxima sesión). Añade a la línea de Steam
+   `-cef-disable-occlusion -cef-disable-gpu-vsync -cef-disable-frame-rate-limit`: son los
+   interruptores propios de Chromium/CEF, **no** el limitador de fps de la app ni la tasa de
+   gamescope, así que ningún juego cambia de tope. `--disable-gpu-vsync` es lo que convierte un
+   fotograma de 17-33 ms en «lo que dé la GPU» en vez de «30, porque se pierde el vsync de 60».
+   El log ahora escribe una línea cuando el webhelper arranca diciendo si su línea de comandos
+   **lleva** `--disable-gpu-vsync`: Steam descarta en silencio los interruptores que no conoce, y
+   esa línea lo resuelve sin adivinar.
+2. *Interfaz en la GPU, dos caminos* → **Ajustes del modo Steam → Steam → Cliente → Ruta GPU de
+   la interfaz** (aparece con «Interfaz de Steam en la GPU» encendido): `OpenGL (Zink) - probado` (lo que corrió aquí) o `Vulkan (experimental)` (ANGLE
+   directo sobre PanVK, una capa menos; es el camino que reinició el X6 Pro el 14-10 antes de que
+   existiera `fn64`). El log imprime cuál se tomó.
+3. *El reinicio del juego* → **Ajustes del modo Steam → Steam → Cliente → Mali: cómo presenta un
+   juego**.
+   Todos los reinicios de esta pila han salido del **cierre de un juego**: su fotograma es un
+   dma-buf que PanVK exporta y gamescope importa, y liberarlo mientras el firmware todavía lo lee
+   es lo que el kernel no puede contener. Tres opciones, aplicadas **solo al proceso del juego**
+   (`droiddeck-game-env`, por `BL_GAME_PRESENT`), nunca a la tienda ni al compositor:
+   - `DRI3 dma-buf - vía rápida` (por defecto): lo de siempre, y donde corrieron las sesiones de
+     55 fps;
+   - `DRI3 sin AFBC`: mismo dma-buf, sin imágenes comprimidas (`PANVK_DEBUG=wsi_no_afbc`) — para
+     el fallo que aparece al tocarse la imagen comprimida y no el búfer;
+   - `Memoria compartida - sin dma-buf`: `PANVK_KBASE_DRI3=0`, PanVK copia el fotograma a memoria
+     compartida y gamescope lo lee de ahí. Una copia más por fotograma y **la más lenta de las
+     tres**, pero no deja nada que la GPU tenga que liberar al salir. Es la que hay que probar si
+     el reinicio se repite al cerrar el juego.
+   Además, con un juego en marcha el navegador del cliente pasa a un presupuesto de 350 MB
+   (el trim que ya existía, apagado hasta ahora): la tienda tenía 1.4-2.0 GB en 8 procesos al
+   lado de un juego con 878 MB de heap propio.
+
+**Sobre los 40 fps en juegos, sin tocar el tope**
+
+Con estos números, Karlson a 1600x720 medio+bloom no llega a 40 fps por cambiar ajustes: el
+fotograma cuesta ~42 ms y el trabajo es de relleno de píxeles (bloom) más FEX traduciendo Unity.
+Lo que sí mueve la aguja, en orden de efecto medido en esta pila:
+
+1. **Píxeles**: 1600x720 → 1280x720 en los ajustes del juego (o escala de resolución al 80% si el
+   juego la tiene) es un 20% menos de relleno; a 1152x648, un 35% menos. Gamescope escala al
+   tamaño de la sesión y la interfaz de Steam sigue a 1600x720.
+2. **RAM/CPU del navegador**: el presupuesto de 350 MB de arriba (arriba, punto 3).
+3. **FEX**: `PERFORMANCE_TSO` es el preset correcto; `PERFORMANCE` (sin TSO) es el siguiente
+   escalón solo si el juego es de CPU pura.
+4. **DXVK**: `dxvk.maxFrameLatency = 1` y compilación asíncrona de pipelines (página del juego →
+   `DXVK_CONFIG`) quitan tirones, no suben el promedio.
+
+Y lo que **no** hay que hacer: subir el limitador de fps. En esta sesión no estaba limitando
+(Karlson daba 22-24, no un número redondo), así que el tope no era el problema.
+
+**Plan de prueba**
+
+1. Instalar el APK rolling (`software-mode-latest`), que ya trae estos ajustes.
+2. Abrir la tienda con `Máximo fps en la interfaz` encendido y **leer la línea del heartbeat**:
+   `== ui-on-gpu: the webhelper carries --disable-gpu-vsync …` o la que dice que Steam lo
+   descartó. Guardar el log pase lo que pase.
+3. Jugar Karlson 3-4 minutos a 1280x720 y anotar fps del HUD (QAM → Rendimiento → Nivel de
+   superposición).
+4. Si **se reinicia al salir del juego**, cambiar a `Memoria compartida - sin dma-buf` y repetir:
+   ese es el experimento que separa «el cierre del swapchain» de todo lo demás.
+   Si la tienda sale en negro o sin interfaz, volver a `OpenGL (Zink)`.

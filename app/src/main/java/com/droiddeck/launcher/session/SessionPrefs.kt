@@ -501,6 +501,91 @@ object SessionPrefs {
     fun setSteamUiOnGpu(context: Context, on: Boolean) { prefs(context).edit().putBoolean("steamUiGpu", on).apply() }
 
     /**
+     * Which path the client's browser takes to the GPU, when it is on the GPU at all.
+     *
+     * [UI_GPU_GL] is ANGLE on OpenGL, and OpenGL on this stack is Zink (GL over Vulkan) over
+     * PanVK - two translation layers, and the path the fn64 fix was validated on. [UI_GPU_VULKAN]
+     * is ANGLE straight onto Vulkan: one layer fewer and Chromium's own, native backend, which
+     * should be faster, but it is the path that reset the X6 Pro on 2026-10-14 *before* the
+     * command-address fix existed. Both need the fn64 driver; the app still refuses either
+     * without it. Off Mali only the Vulkan path is meaningful and this value is not used.
+     */
+    const val UI_GPU_GL = "gl"
+    const val UI_GPU_VULKAN = "vulkan"
+
+    fun steamUiGpuBackend(context: Context): String {
+        val value = prefs(context).getString("steamUiGpuBackend", UI_GPU_GL)
+        return if (value == UI_GPU_VULKAN) UI_GPU_VULKAN else UI_GPU_GL
+    }
+
+    fun setSteamUiGpuBackend(context: Context, id: String) {
+        prefs(context).edit().putString("steamUiGpuBackend", if (id == UI_GPU_VULKAN) UI_GPU_VULKAN else UI_GPU_GL).apply()
+    }
+
+    /**
+     * Let the browser draw the store as fast as the GPU can, instead of behind its own ceiling.
+     *
+     * Chromium caps its compositor at the display's refresh and, on a window it believes another
+     * window covers, throttles it further; on this stack (ANGLE -> Zink -> PanVK, gamescope
+     * presenting on top) the store measured 30 fps on a 120 Hz panel. The two switches behind
+     * this (`--disable-gpu-vsync`, `--disable-frame-rate-limit`) remove the browser's own limit
+     * - they do not touch the app's FPS limiter or gamescope's `-r`, so a game's cap is still
+     * the game's - and the occlusion switches keep the compositor working when Xwayland says the
+     * store's window is covered. Only sent when the browser is on the GPU: on the CPU path
+     * rendering unthrottled would spend the cores the game needs.
+     */
+    fun steamUiMaxFps(context: Context): Boolean = prefs(context).getBoolean("steamUiMaxFps", true)
+    fun setSteamUiMaxFps(context: Context, on: Boolean) {
+        prefs(context).edit().putBoolean("steamUiMaxFps", on).apply()
+    }
+
+    /**
+     * Take memory back from the client's browser while a game runs: renderers over a 350 MB
+     * budget are dropped, one every 30 s, until it fits (the session script's web trim). On this phone the store's browser held 1.4-2.0 GB in eight processes beside a
+     * game that had 878 MB of its own; what the trim frees is memory the game can have, and
+     * cores it does not have to share.
+     */
+    fun gameBrowserBudget(context: Context): Boolean =
+        prefs(context).getBoolean("gameBrowserBudget", true)
+
+    fun setGameBrowserBudget(context: Context, on: Boolean) {
+        prefs(context).edit().putBoolean("gameBrowserBudget", on).apply()
+    }
+
+    /**
+     * How a game's swapchain reaches gamescope, which is where the reboots on this stack have
+     * come from: the game's frame is a dma-buf that PanVK exports and gamescope imports, and the
+     * last two device restarts (2026-10-15 rc3-lowmem, 2026-10-19 fn64) happened while a game
+     * was being torn down - leaving its swapchain, not while the store was in use.
+     *
+     *  - [GAME_PRESENT_DRI3] dma-buf, the fast path (the driver's default and the one 55 fps
+     *    sessions ran on);
+     *  - [GAME_PRESENT_NOAFBC] the same, with AFBC (Arm's fixed-rate compression) off for the
+     *    swapchain only: a compressed image is the one piece of the frame a teardown can free
+     *    while the firmware still reads it, and `PANVK_DEBUG=wsi_no_afbc` is upstream's switch
+     *    for exactly that;
+     *  - [GAME_PRESENT_SHM] no dma-buf at all: PanVK copies the frame to shared memory
+     *    (`PANVK_KBASE_DRI3=0`) and gamescope reads it from there. One copy more per frame and
+     *    the slowest of the three, but nothing for the GPU to free on the way out.
+     *
+     * The store and the compositor keep their own setting; this one is put in the environment of
+     * the games Proton launches, by droiddeck-game-env.
+     */
+    const val GAME_PRESENT_DRI3 = "dri3"
+    const val GAME_PRESENT_NOAFBC = "noafbc"
+    const val GAME_PRESENT_SHM = "shm"
+
+    fun maliGamePresent(context: Context): String {
+        val value = prefs(context).getString("maliGamePresent", GAME_PRESENT_DRI3)
+        return if (value == GAME_PRESENT_NOAFBC || value == GAME_PRESENT_SHM) value else GAME_PRESENT_DRI3
+    }
+
+    fun setMaliGamePresent(context: Context, id: String) {
+        val value = if (id == GAME_PRESENT_NOAFBC || id == GAME_PRESENT_SHM) id else GAME_PRESENT_DRI3
+        prefs(context).edit().putString("maliGamePresent", value).apply()
+    }
+
+    /**
      * Whether the client's browser may actually go to the GPU. Off Mali, whatever was asked.
      * On Mali, only with the driver this repository builds: PanVK-kbase rc3 plus the
      * provoking-vertex address fix, which its package names "fn64" (driver-patches/0001). The

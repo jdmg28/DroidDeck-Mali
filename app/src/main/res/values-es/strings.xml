@@ -2170,4 +2170,18 @@
     <string name="device_info_copied">Copiado.</string>
     <string name="force_ssbs_title">Forzar SSBS</string>
     <string name="force_ssbs_hint">Mantiene activado un ajuste de velocidad de la CPU que Wine sigue desactivando. Puede hacer más rápidos los juegos de Windows en Snapdragon 8 Elite; poco cambio en chips anteriores. Se aplica en el próximo inicio de un juego.</string>
+    <string name="mode_steam_ui_backend">Ruta GPU de la interfaz</string>
+    <string name="mode_steam_ui_backend_hint">Cómo llega el navegador a la GPU. OpenGL es ANGLE sobre Zink sobre PanVK: dos capas de traducción, y la ruta con la que se validó el driver fn64 (la tienda aguantó minutos y se cerró limpiamente). Vulkan es ANGLE directo sobre PanVK, una capa menos y el backend propio de Chromium, así que debería ser más rápido; es la ruta que reinició este teléfono el 14-10-2026, antes de que existiera el arreglo del driver, así que pruébala solo con el driver r7 (fn64) y cuenta con un reinicio. Se aplica en la próxima sesión.</string>
+    <string name="mode_steam_ui_backend_gl">OpenGL (Zink) - probado</string>
+    <string name="mode_steam_ui_backend_vulkan">Vulkan (experimental)</string>
+    <string name="mode_steam_ui_backend_note">Si la tienda o la biblioteca salen en negro, o la sesión vuelve sin interfaz, elige OpenGL.</string>
+    <string name="mode_steam_ui_maxfps">Máximo fps en la interfaz</string>
+    <string name="mode_steam_ui_maxfps_hint">El navegador tiene su propio techo: dibuja como mucho a la tasa de la pantalla, y menos cuando Xwayland le dice que su ventana está tapada. En este teléfono la tienda midió 30 fps con pantalla de 120 Hz. Con esto encendido el navegador dibuja tan rápido como le permita la GPU (--disable-gpu-vsync y --disable-frame-rate-limit de Chromium). No toca el limitador de fps de la app ni la tasa de gamescope, así que un juego conserva el tope que tenía. Apágalo si la tienda calienta el teléfono sin hacer nada. Se aplica en la próxima sesión.</string>
+    <string name="mode_mali_present">Mali: cómo presenta un juego</string>
+    <string name="mode_mali_present_hint">Todos los reinicios de esta pila han salido del cierre de un juego, no de la tienda: el fotograma del juego es un dma-buf que PanVK exporta y gamescope importa. DRI3 es la vía rápida (ahí corrieron las sesiones de 55 fps). Sin AFBC conserva el dma-buf pero sin imágenes comprimidas. Memoria compartida no usa dma-buf: una copia más por fotograma y la más lenta de las tres, pero no deja nada que la GPU tenga que liberar al salir. La tienda y el compositor conservan su propio ajuste; solo el proceso del juego toma este. Se aplica en la próxima sesión.</string>
+    <string name="mode_mali_present_dri3">DRI3 dma-buf - vía rápida</string>
+    <string name="mode_mali_present_noafbc">DRI3 sin AFBC</string>
+    <string name="mode_mali_present_shm">Memoria compartida - sin dma-buf</string>
+    <string name="mode_game_web_budget">Limitar el navegador a 350 MB con un juego en marcha</string>
+    <string name="mode_game_web_budget_hint">El navegador de Steam llegó a tener 1,4-2,0 GB en ocho procesos junto a un juego con 878 MB propios. Con esto encendido, mientras hay un juego, sus renderers por encima de 350 MB se van cerrando de uno en uno hasta entrar en el presupuesto: memoria que gana el juego y núcleos que no comparte. La tienda vuelve a cargar ese renderer cuando lo necesite. Se aplica en la próxima sesión.</string>
 </resources>

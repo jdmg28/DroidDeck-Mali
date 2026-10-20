@@ -95,6 +95,14 @@ class ModeSettings(
     val mangoapp: Boolean = true,
     /** Steam only: the client's browser runs on the GPU instead of the CPU (SessionPrefs.steamUiOnGpu). */
     val steamUiOnGpu: Boolean = false,
+    /** Steam only: the GPU path the browser takes (SessionPrefs.UI_GPU_*); null outside Steam. */
+    val steamUiGpuBackend: String? = null,
+    /** Steam only: let the browser draw without its own frame ceiling (SessionPrefs.steamUiMaxFps). */
+    val steamUiMaxFps: Boolean = true,
+    /** Steam only: hold the browser to 350 MB while a game runs (SessionPrefs.gameBrowserBudget). */
+    val gameBrowserBudget: Boolean = true,
+    /** Steam only, Mali: how a game presents to gamescope (SessionPrefs.GAME_PRESENT_*); null elsewhere. */
+    val maliGamePresent: String? = null,
     /** Steam only: what the pad is to the client (SessionPrefs.CONTROLLER_*); null outside Steam. */
     val steamController: String? = null,
     /** Steam only: start a Steam session when DroidDeck opens. */
@@ -155,6 +163,10 @@ class ModeSettingsActions(
     val onSteamDeckMode: (Boolean) -> Unit = {},
     val onMangoapp: (Boolean) -> Unit = {},
     val onSteamUiOnGpu: (Boolean) -> Unit = {},
+    val onSteamUiGpuBackend: (String) -> Unit = {},
+    val onSteamUiMaxFps: (Boolean) -> Unit = {},
+    val onGameBrowserBudget: (Boolean) -> Unit = {},
+    val onMaliGamePresent: (String) -> Unit = {},
     val onSteamController: (String) -> Unit = {},
     val onRunSteamAtStartup: (Boolean) -> Unit = {},
     val onWifiDiscovery: (Boolean) -> Unit = {},
@@ -407,6 +419,42 @@ fun ModeSettingsPage(s: ModeSettings, a: ModeSettingsActions) {
                 stringResource(R.string.mode_steam_ui_gpu_hint),
                 s.steamUiOnGpu, onChange = a.onSteamUiOnGpu,
             )
+            if (s.steamUiOnGpu) {
+                ChoiceRow(
+                    host, "steamUiGpuBackend", stringResource(R.string.mode_steam_ui_backend),
+                    stringResource(R.string.mode_steam_ui_backend_hint),
+                    listOf(
+                        SessionPrefs.UI_GPU_GL to stringResource(R.string.mode_steam_ui_backend_gl),
+                        SessionPrefs.UI_GPU_VULKAN to stringResource(R.string.mode_steam_ui_backend_vulkan),
+                    ),
+                    s.steamUiGpuBackend ?: SessionPrefs.UI_GPU_GL,
+                    note = stringResource(R.string.mode_steam_ui_backend_note),
+                    onPick = a.onSteamUiGpuBackend,
+                )
+                ToggleRow(
+                    host, "steamUiMaxFps", stringResource(R.string.mode_steam_ui_maxfps),
+                    stringResource(R.string.mode_steam_ui_maxfps_hint),
+                    s.steamUiMaxFps, onChange = a.onSteamUiMaxFps,
+                )
+            }
+            if (s.maliGamePresent != null) {
+                ChoiceRow(
+                    host, "maliPresent", stringResource(R.string.mode_mali_present),
+                    stringResource(R.string.mode_mali_present_hint),
+                    listOf(
+                        SessionPrefs.GAME_PRESENT_DRI3 to stringResource(R.string.mode_mali_present_dri3),
+                        SessionPrefs.GAME_PRESENT_NOAFBC to stringResource(R.string.mode_mali_present_noafbc),
+                        SessionPrefs.GAME_PRESENT_SHM to stringResource(R.string.mode_mali_present_shm),
+                    ),
+                    s.maliGamePresent ?: SessionPrefs.GAME_PRESENT_DRI3,
+                    onPick = a.onMaliGamePresent,
+                )
+                ToggleRow(
+                    host, "gameWebBudget", stringResource(R.string.mode_game_web_budget),
+                    stringResource(R.string.mode_game_web_budget_hint),
+                    s.gameBrowserBudget, onChange = a.onGameBrowserBudget,
+                )
+            }
             // Deck mode fixes the branch (SessionPrefs.steamChannel); the choice is for Deck mode off.
             if (s.steamDeckMode) SettingsRow(stringResource(R.string.mode_branch), stringResource(R.string.mode_branch_deck)) {}
             else ChoiceRow(

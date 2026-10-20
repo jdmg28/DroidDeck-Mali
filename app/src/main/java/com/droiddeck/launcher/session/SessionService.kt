@@ -708,6 +708,18 @@ class SessionService : Service() {
                     guest.add("PANVK_BC_AFRC=" + it)
                     Log.i(TAG, "mali: PANVK_BC_AFRC=$it (Download/droiddeck-mali-afrc)")
                 }
+                // Games' own present path, applied by droiddeck-game-env to the game's process
+                // only (the store and the compositor keep the session's setting). See
+                // SessionPrefs.maliGamePresent: the two device restarts came out of a game's
+                // teardown, not out of the store.
+                guest.add("BL_GAME_PRESENT=" + SessionPrefs.maliGamePresent(this))
+                // While a game runs, the client's browser holds a budget of its own
+                // (SessionPrefs.gameBrowserBudget): 1.4-2.0 GB in eight processes beside a game
+                // is memory the game does not get.
+                if (SessionPrefs.gameBrowserBudget(this)) {
+                    guest.add("BL_WEB_MB=600")
+                    guest.add("BL_WEB_GAME_MB=350")
+                }
             }
         }
         // An imported glibc Turnip, when one is set (by the user, or by Auto): the session script
@@ -769,6 +781,13 @@ class SessionService : Service() {
                     "keeping the client's browser on the CPU")
             }
             guest.add("BL_CEF_GPU=" + (if (uiGpuOn) "1" else "0"))
+            // Which way the browser reaches the GPU: ANGLE on OpenGL (Zink) or ANGLE on Vulkan.
+            // Only meaningful when it is on the GPU at all; the session script prints the one it
+            // took, and a Vulkan path on Mali is still an experiment (fn64 required).
+            guest.add("BL_CEF_BACKEND=" + SessionPrefs.steamUiGpuBackend(this))
+            // The browser's own frame ceiling, off when asked (SessionPrefs.steamUiMaxFps).
+            guest.add("BL_CEF_MAXFPS=" + (if (SessionPrefs.steamUiMaxFps(this)) "1" else "0"))
+            if (uiGpuOn) Log.i(TAG, "Steam UI on GPU: backend " + SessionPrefs.steamUiGpuBackend(this))
             // Remembered in the session folder so an abandoned session (a reboot, mostly) can
             // turn the switch back off at the next start (SessionArtifacts.finishAbandoned).
             SessionPaths.current()?.let { dir ->

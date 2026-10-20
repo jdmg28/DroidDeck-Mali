@@ -1034,11 +1034,36 @@ BUSCONF
     fi
     if [ "$software" != yes ] && [ "${BL_CEF_GPU:-0}" = 1 ]; then
       if [ "${BL_GPU_FAMILY:-}" = mali ]; then
-        _bl_cef+=(-cef-use-gl=angle -cef-use-angle=gl -cef-force-gpu)
-        echo "== ui-on-gpu: Mali - ANGLE on Zink (Kopper, X11 DRI3) over PanVK; fn64 driver required"
+        # Two ways to the GPU, chosen in the app (SessionPrefs.steamUiGpuBackend):
+        #  - gl (default): ANGLE -> OpenGL -> Zink -> PanVK. Two translation layers, and the path
+        #    the fn64 fix was validated on (upstream: Big Picture for five minutes, CEF at
+        #    0.45-0.7 GB);
+        #  - vulkan: ANGLE -> PanVK directly, Chromium's native backend, one layer fewer. It is
+        #    the path that reset the X6 Pro on 2026-10-14, before the address fix existed; with
+        #    fn64 in the driver it is an experiment, and the app's rollback still covers it.
+        if [ "${BL_CEF_BACKEND:-gl}" = vulkan ]; then
+          _bl_cef+=(-cef-use-gl=angle -cef-use-angle=vulkan -cef-force-gpu)
+          echo "== ui-on-gpu: Mali - ANGLE/Vulkan directly on PanVK (experiment); fn64 driver required"
+        else
+          _bl_cef+=(-cef-use-gl=angle -cef-use-angle=gl -cef-force-gpu)
+          echo "== ui-on-gpu: Mali - ANGLE on Zink (Kopper, X11 DRI3) over PanVK; fn64 driver required"
+        fi
       else
         _bl_cef+=(-cef-use-gl=angle -cef-use-angle=vulkan -cef-force-gpu)
         echo "== ui-on-gpu: ANGLE/Vulkan"
+      fi
+      # The browser's own ceiling, off when the app asks (Ajustes del modo Steam > Cliente >
+      # Maximo fps en la interfaz). Chromium caps its compositor at the display's rate and, on a
+      # window it believes is covered, throttles it harder; the store measured 30 fps on this
+      # 120 Hz panel. These are Chromium's switches, not the session's FPS limiter: the app's
+      # cap and gamescope's -r are untouched, so a game still runs at the cap it was given.
+      if [ "${BL_CEF_MAXFPS:-0}" = 1 ]; then
+        # -cef-disable-occlusion is Steam's own switch (Chromium stops drawing a window it
+        # believes is covered, and under gamescope Xwayland can say so). The other two are
+        # Chromium's; whether Steam forwards a switch it does not know is not documented, so the
+        # heartbeat below says whether the webhelper's command line actually carries them.
+        _bl_cef+=(-cef-disable-occlusion -cef-disable-gpu-vsync -cef-disable-frame-rate-limit)
+        echo "== ui-on-gpu: the browser draws without its own frame ceiling (BL_CEF_MAXFPS=1)"
       fi
     else
       _bl_cef+=(-cef-disable-gpu -cef-disable-gpu-compositing)
@@ -1124,6 +1149,39 @@ BUSCONF
           _c=$(tr '\0' ' ' < "$_d/cmdline" 2>/dev/null) || continue
           case $_c in *steamapps/common*|*steamapps\\common*|*"SteamLaunch AppId="*) _bl_game=1; break ;; esac
         done
+        # Did CEF get the frame-rate switches? Steam builds the webhelper's command line from
+        # its -cef- arguments, and an unknown switch is silently dropped. One line, once, so the
+        # next log answers "was the store unbounded?" instead of leaving it to inference.
+        if [ "${BL_CEF_GPU:-0}" = 1 ] && [ "${_bl_cef_checked:-0}" = 0 ]; then
+          _bl_cef_args=
+          for _d in /proc/[0-9]*; do
+            _a=$(tr '\0' ' ' < "$_d/cmdline" 2>/dev/null) || continue
+            case $_a in *steamwebhelper*) _bl_cef_args=$_a; break ;; esac
+          done
+          case $_bl_cef_args in
+            *disable-gpu-vsync*)
+              echo "== ui-on-gpu: the webhelper carries --disable-gpu-vsync (the browser is unbounded)"
+              _bl_cef_checked=1 ;;
+            *steamwebhelper*)
+              echo "== ui-on-gpu: the webhelper does NOT carry --disable-gpu-vsync; Steam dropped the switches (BL_CEF_MAXFPS had no effect)"
+              _bl_cef_checked=1 ;;
+          esac
+        fi
+        # The two things a reboot takes away, written small and synced so they survive it:
+        #  - that a game ran in this session. The app's rollback of the store-on-GPU switch is
+        #    for a session the browser took down; on 2026-10-19 a reboot while a game was being
+        #    torn down turned the switch off after a store that had run fine for two minutes.
+        #  - the last beat, because the guest's own log lost the seconds before the reset (its
+        #    tail was zeros in the copy the app gathered at the next start).
+        if [ -n "${BL_DEBUG_DIR:-}" ]; then
+          if [ "$_bl_game" = 1 ] && [ ! -f "$BL_DEBUG_DIR/game-started.txt" ]; then
+            printf 'a game was running in this session at %s\n' "$(date +%T)" > "$BL_DEBUG_DIR/game-started.txt" 2>/dev/null
+            sync -f "$BL_DEBUG_DIR/game-started.txt" 2>/dev/null || :
+          fi
+          printf '%s · game %s\n' "heartbeat $(date +%T): ${_bl_busy:-cpu ?} · ${_bl_mem:-available ?} · tienda ${_bl_web:-?}" "$_bl_game" \
+            > "$BL_DEBUG_DIR/last-heartbeat.txt" 2>/dev/null
+          sync -f "$BL_DEBUG_DIR/last-heartbeat.txt" 2>/dev/null || :
+        fi
         # Pick the largest replaceable CEF --type=renderer process (never the main steamwebhelper
         # browser, --type=gpu-process, --type=zygote, or --type=utility: killing gpu-process 3
         # times triggers CEF's gpu:3 full browser shutdown and restarts the Steam UI).

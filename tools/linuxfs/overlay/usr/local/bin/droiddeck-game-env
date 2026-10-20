@@ -56,6 +56,33 @@ def game_files(exe):
     return names
 
 
+def present_env(env):
+    """The game's swapchain path, as the session asked it (BL_GAME_PRESENT), Mali builds only.
+
+    Every reboot on this stack has come out of a game's teardown, not out of the store: the
+    game's frame is a dma-buf PanVK exports and gamescope imports, and freeing it while the
+    firmware still reads it is the one thing the kernel cannot contain. The store, gamescope
+    and the desktop keep the session's own setting; only the game process takes this one:
+
+      dri3    - the fast path, dma-bufs and AFBC (the default, and what 55 fps sessions ran on);
+      noafbc  - dma-bufs without AFBC on the swapchain (PANVK_DEBUG=wsi_no_afbc), for a fault
+                in the compressed image rather than in the buffer;
+      shm     - no dma-buf at all (PANVK_KBASE_DRI3=0): a copy more per frame, nothing for the
+                GPU to free on the way out.
+    """
+    if env.get("BL_GPU_FAMILY") != "mali":
+        return {}
+    mode = env.get("BL_GAME_PRESENT", "dri3")
+    if mode == "shm":
+        return {"PANVK_KBASE_DRI3": "0"}
+    if mode == "noafbc":
+        flags = [f for f in env.get("PANVK_DEBUG", "").split(",") if f]
+        if "wsi_no_afbc" not in flags:
+            flags.append("wsi_no_afbc")
+        return {"PANVK_DEBUG": ",".join(flags)}
+    return {}
+
+
 class Game:
     """What a fix gets to look at: the executable, its launch arguments and the files beside it."""
 
@@ -276,6 +303,13 @@ def main():
     base = dict(env)
     if app_id:
         waiting = len(command) > 1 and command[1] == "waitforexitandrun"
+        if waiting:
+            present = present_env(env)
+            if present:
+                env.update(present)
+                print("droiddeck-game-env: present %s (%s)" % (
+                    env.get("BL_GAME_PRESENT", "dri3"),
+                    ", ".join(sorted("%s=%s" % item for item in present.items()))), file=sys.stderr)
         fixes = {}
         if waiting:
             fixes, extra, notes = engine_fixes(command[2], command[3:]) if len(command) > 2 else ({}, [], [])

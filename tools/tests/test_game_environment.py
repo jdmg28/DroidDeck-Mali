@@ -109,6 +109,22 @@ class GameEnvironmentTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 MODULE["apply_config"]({}, {**config, "dxvkConfig": bad}, "42")
 
+    def test_a_games_present_path_is_its_own_switch(self):
+        # The session's DRI3 stays as it is; only the game process takes the chosen path, and the
+        # other variables it already had are kept (wsi_no_afbc is added to, never replaces, them).
+        self.assertEqual(MODULE["present_env"]({"BL_GAME_PRESENT": "shm"}), {})
+        self.assertEqual(MODULE["present_env"]({"BL_GPU_FAMILY": "mali", "BL_GAME_PRESENT": "dri3"}), {})
+        self.assertEqual(MODULE["present_env"]({"BL_GPU_FAMILY": "mali"}), {})
+        self.assertEqual(
+            MODULE["present_env"]({"BL_GPU_FAMILY": "mali", "BL_GAME_PRESENT": "shm"}),
+            {"PANVK_KBASE_DRI3": "0"})
+        self.assertEqual(
+            MODULE["present_env"]({"BL_GPU_FAMILY": "mali", "BL_GAME_PRESENT": "noafbc", "PANVK_DEBUG": "no_crc"}),
+            {"PANVK_DEBUG": "no_crc,wsi_no_afbc"})
+        self.assertEqual(
+            MODULE["present_env"]({"BL_GPU_FAMILY": "mali", "BL_GAME_PRESENT": "noafbc", "PANVK_DEBUG": "wsi_no_afbc"}),
+            {"PANVK_DEBUG": "wsi_no_afbc"})
+
     def test_game_ids_and_probes(self):
         for prefix in ("", "/compatdata/0", "/compatdata/0-123", "/compatdata/nope", "/compatdata/4294967296"):
             self.assertIsNone(MODULE["game_id"]({"STEAM_COMPAT_DATA_PATH": prefix}))

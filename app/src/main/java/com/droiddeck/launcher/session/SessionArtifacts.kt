@@ -252,13 +252,26 @@ object SessionArtifacts {
                 SessionLogCapture.dumpCrashBuffer(File(dir, "crash.log"))
                 // The one switch known to take the whole phone down: a session that ran the
                 // client's browser on the GPU (cef-gpu.txt, written by SessionService) and never
-                // tore down puts it back off, so the next start cannot repeat it unasked.
+                // tore down puts it back off, so the next start cannot repeat it unasked - but
+                // only when the browser is what took the session down. A game in the same session
+                // changes that: on 2026-10-19 the store ran on the GPU for two minutes at 30 fps
+                // and the phone restarted while a game was being torn down, so rolling the store's
+                // switch off there would have punished the one thing that worked. The session
+                // script writes game-started.txt the first time it sees a game process (and
+                // syncs it, so it survives the reset).
+                val gameRan = File(dir, "game-started.txt").isFile
                 if (newest && SessionPrefs.steamUiOnGpu(context) &&
                     File(dir, "cef-gpu.txt").takeIf { it.isFile }?.readText()?.trim() == "1") {
-                    SessionPrefs.setSteamUiOnGpu(context, false)
-                    SessionEvents.record("session.ui_gpu_rollback", mapOf<String, Any>(), dir)
-                    Log.w(TAG, "this session ran the Steam UI on the GPU and ended without teardown; " +
-                        "the switch is off again")
+                    if (gameRan) {
+                        SessionEvents.record("session.ui_gpu_kept", mapOf("reason" to "game-running"), dir)
+                        Log.i(TAG, "this session ran the Steam UI on the GPU and ended without teardown, " +
+                            "but a game was running in it: keeping the switch on")
+                    } else {
+                        SessionPrefs.setSteamUiOnGpu(context, false)
+                        SessionEvents.record("session.ui_gpu_rollback", mapOf<String, Any>(), dir)
+                        Log.w(TAG, "this session ran the Steam UI on the GPU and ended without teardown; " +
+                            "the switch is off again")
+                    }
                 }
                 SessionEvents.record("session.artifacts_recovered", mapOf("newest" to newest), dir)
                 markScrubbed(scrubTree(record))
