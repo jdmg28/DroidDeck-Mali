@@ -1176,6 +1176,15 @@ BUSCONF
         _bl_game_cmd=
         for _d in /proc/[0-9]*; do
           _c=$(tr '\0' ' ' < "$_d/cmdline" 2>/dev/null) || continue
+          # The session's own guest process carries the Steam library path in its arguments, so it
+          # matched the patterns below and every session reported a game from its first second -
+          # gpu-watch named pid 16506 (the guest), 4 MB resident, "game=1" before anything had been
+          # launched, and the ladder counted every restart as one "with a game inside". Nothing that
+          # runs out of /data/app or /data/user is a game: those are Android packages, this app's
+          # own included.
+          case $_c in
+            /data/app/*|/data/user/*) continue ;;
+          esac
           case $_c in
             *steamapps/common*|*steamapps\\common*|*"SteamLaunch AppId="*)
               _bl_game=1
