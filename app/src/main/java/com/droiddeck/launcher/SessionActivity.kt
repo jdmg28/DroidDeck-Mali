@@ -1176,7 +1176,15 @@ class SessionActivity : ComponentActivity(), SurfaceHolder.Callback {
             Library.drawsAtPanel(program) && !SessionPrefs.resolutionChosen(this, mode))
             com.droiddeck.launcher.session.SessionDisplay.MATCH_SCREEN
         else SessionPrefs.resolutionChoice(this, mode, panel)
-        return com.droiddeck.launcher.session.SessionDisplay.resolveChoice(panel, choice)
+        val size = com.droiddeck.launcher.session.SessionDisplay.resolveChoice(panel, choice)
+        // The safe mode's last rung: a phone that has restarted three times with a game running
+        // gets 1280x720 at most, whatever the resolution page says (the compositor and gamescope
+        // read this same size, so the picture just scales to the panel).
+        if (com.droiddeck.launcher.session.RebootGuard.level(this) >=
+            com.droiddeck.launcher.session.RebootGuard.LEVEL_SMALL) {
+            return com.droiddeck.launcher.session.SessionDisplay.capped(size, 1280, 720)
+        }
+        return size
     }
 
     /**

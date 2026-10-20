@@ -523,6 +523,19 @@ object SessionPrefs {
     }
 
     /**
+     * The session script's own restart trail (RebootGuard): epoch milliseconds, comma-separated.
+     * Kept here rather than in a file of its own so it is written with the same SharedPreferences
+     * the app already owns, and read in one place.
+     */
+    fun rebootTrail(context: Context): List<Long> =
+        (prefs(context).getString("rebootTrail", "") ?: "").split(',')
+            .mapNotNull { it.trim().toLongOrNull() }.filter { it > 0 }
+
+    fun saveRebootTrail(context: Context, trail: List<Long>) {
+        prefs(context).edit().putString("rebootTrail", trail.joinToString(",")).apply()
+    }
+
+    /**
      * Let the browser draw the store as fast as the GPU can, instead of behind its own ceiling.
      *
      * Chromium caps its compositor at the display's refresh and, on a window it believes another
@@ -537,6 +550,19 @@ object SessionPrefs {
     fun steamUiMaxFps(context: Context): Boolean = prefs(context).getBoolean("steamUiMaxFps", true)
     fun setSteamUiMaxFps(context: Context, on: Boolean) {
         prefs(context).edit().putBoolean("steamUiMaxFps", on).apply()
+    }
+
+    /**
+     * The two Chromium switches behind "maximum fps" that are not Steam's own: `--disable-gpu-vsync`
+     * and `--disable-frame-rate-limit`. Off by default since 2026-10-20: on the first session that
+     * used them the client's menu drew garbled and the phone restarted, and CEF has a known
+     * regression where `--disable-frame-rate-limit` leaves a white window. The occlusion switch
+     * alone ([steamUiMaxFps]) is Steam's documented answer to a browser that throttles itself.
+     */
+    fun steamUiRawFps(context: Context): Boolean = prefs(context).getBoolean("steamUiRawFps", false)
+
+    fun setSteamUiRawFps(context: Context, on: Boolean) {
+        prefs(context).edit().putBoolean("steamUiRawFps", on).apply()
     }
 
     /**

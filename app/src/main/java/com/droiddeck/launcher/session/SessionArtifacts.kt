@@ -62,6 +62,10 @@ object SessionArtifacts {
             // thing the report's settings lines cannot tell (a game's env can override them).
             com.droiddeck.launcher.core.DeviceReport.appendSyncInUse(File(dir, "device.txt"), dir)
             markScrubbed(scrubTree(record))
+            // A session that ended through its own teardown with a game in it is the evidence the
+            // safe-mode ladder asks for: whatever it was running did not restart the phone, so
+            // the next one starts from normal again (RebootGuard).
+            if (File(dir, "game-started.txt").isFile) RebootGuard.clear(context)
             SessionEvents.record("session.artifacts_collected", mapOf("reason" to reason), dir)
             File(dir, COMPLETE_MARKER).writeText("collected: $reason at ${now()}\n")
         } catch (e: Exception) {
@@ -260,6 +264,10 @@ object SessionArtifacts {
                 // script writes game-started.txt the first time it sees a game process (and
                 // syncs it, so it survives the reset).
                 val gameRan = File(dir, "game-started.txt").isFile
+                // The restart trail behind the safe mode: only for a session that had a game in
+                // it, and only the newest (older folders are collected in the same pass and are
+                // the same restarts).
+                if (newest) RebootGuard.record(context, dir, gameRan)
                 if (newest && SessionPrefs.steamUiOnGpu(context) &&
                     File(dir, "cef-gpu.txt").takeIf { it.isFile }?.readText()?.trim() == "1") {
                     if (gameRan) {

@@ -182,6 +182,11 @@ if [ "$software" != yes ] && [ "${BL_GPU_FAMILY:-}" = mali ]; then
   if [ -n "${PANVK_BC_AFRC:-}" ]; then
     echo "== mali bc: PANVK_BC_AFRC=${PANVK_BC_AFRC} (0 = exact BC decode; Download/droiddeck-mali-afrc or the game page set it)"
   fi
+  # The safe-mode ladder (RebootGuard in the app): the phone restarted with a game in it, so this
+  # session runs one rung lower than the user's own switches ask for. Say which, and what it took.
+  if [ "${BL_SAFE_LEVEL:-0}" -gt 0 ] 2>/dev/null; then
+    echo "== safe mode: level ${BL_SAFE_LEVEL} after a restart with a game running - browser on the CPU and shared-memory present (>=1), no in-ring semaphore waits (>=2), 1280x720 at most (>=3). Ajustes del modo Steam > Steam > Modo seguro: Volver a normal undoes it"
+  fi
   # Games' present path. The gamescope WSI layer (the XWayland-bypass swapchain) hung after the
   # first frame on both 2026-10-12 and 2026-10-14 sessions: swapchain created, no error back,
   # audio and input alive, picture frozen at the game's logo. It never reads PANVK_KBASE_DRI3,
@@ -1052,18 +1057,21 @@ BUSCONF
         _bl_cef+=(-cef-use-gl=angle -cef-use-angle=vulkan -cef-force-gpu)
         echo "== ui-on-gpu: ANGLE/Vulkan"
       fi
-      # The browser's own ceiling, off when the app asks (Ajustes del modo Steam > Cliente >
-      # Maximo fps en la interfaz). Chromium caps its compositor at the display's rate and, on a
-      # window it believes is covered, throttles it harder; the store measured 30 fps on this
-      # 120 Hz panel. These are Chromium's switches, not the session's FPS limiter: the app's
-      # cap and gamescope's -r are untouched, so a game still runs at the cap it was given.
+      # The browser's own ceiling (Ajustes del modo Steam > Steam > Cliente > Maximo fps en la
+      # interfaz). Chromium caps its compositor at the display's rate and, on a window it believes
+      # is covered, throttles it harder; the store measured 30 fps on this 120 Hz panel.
+      # -cef-disable-occlusion is Steam's own switch for exactly that, and it is the whole of the
+      # default since 2026-10-20: on the first session that also passed Chromium's
+      # --disable-gpu-vsync and --disable-frame-rate-limit, the client's menu drew garbled and the
+      # phone restarted, and CEF has a known regression where --disable-frame-rate-limit leaves a
+      # white window. Those two are behind BL_CEF_RAWFPS now (off unless asked).
       if [ "${BL_CEF_MAXFPS:-0}" = 1 ]; then
-        # -cef-disable-occlusion is Steam's own switch (Chromium stops drawing a window it
-        # believes is covered, and under gamescope Xwayland can say so). The other two are
-        # Chromium's; whether Steam forwards a switch it does not know is not documented, so the
-        # heartbeat below says whether the webhelper's command line actually carries them.
-        _bl_cef+=(-cef-disable-occlusion -cef-disable-gpu-vsync -cef-disable-frame-rate-limit)
-        echo "== ui-on-gpu: the browser draws without its own frame ceiling (BL_CEF_MAXFPS=1)"
+        _bl_cef+=(-cef-disable-occlusion)
+        echo "== ui-on-gpu: the browser stops throttling itself as a covered window (-cef-disable-occlusion)"
+        if [ "${BL_CEF_RAWFPS:-0}" = 1 ]; then
+          _bl_cef+=(-cef-disable-gpu-vsync -cef-disable-frame-rate-limit)
+          echo "== ui-on-gpu: EXPERIMENT - Chromium's raw --disable-gpu-vsync/--disable-frame-rate-limit are on"
+        fi
       fi
     else
       _bl_cef+=(-cef-disable-gpu -cef-disable-gpu-compositing)
@@ -1119,6 +1127,19 @@ BUSCONF
             fi
           done
           echo "== fds: $_bl_fd_worst of ${_bl_fd_soft:-?} · worst: ${_bl_fd_who:-?}"
+          # The driver's dma-buf allocations, counted from the session's own log: the one number
+          # that matches "it tries to draw the whole game at once" - a game's first frames
+          # allocate its shadow maps, textures and swapchain in a burst, and on kbase a burst
+          # that cannot be satisfied is a GPU fault and a reset. 30 s apart, so it is a rate.
+          _bl_bo_log=${BL_LOG:-${BL_DEBUG_DIR:-/tmp}/session.log}
+          if [ -r "$_bl_bo_log" ]; then
+            _bl_bo_now=$(grep -ac 'bo_alloc_dmabuf: succeeded' "$_bl_bo_log" 2>/dev/null) || _bl_bo_now=0
+            _bl_bo_d=$(( ${_bl_bo_now:-0} - ${_bl_bo_total:-0} ))
+            _bl_bo_total=${_bl_bo_now:-0}
+            if [ "$_bl_bo_d" -gt 0 ]; then
+              echo "== dma-buf: +$_bl_bo_d allocations in the last 30 s (${_bl_bo_total} since start)$([ "$_bl_bo_d" -ge 50 ] && printf ' - burst')"
+            fi
+          fi
           if [ "${_bl_fd_soft:-0}" -gt 0 ] &&
              [ $(( _bl_fd_worst * 100 / _bl_fd_soft )) -ge 80 ]; then
             echo "== fd warning: ${_bl_fd_who:-?} holds $_bl_fd_worst of $_bl_fd_soft descriptors; at the ceiling nothing in this session can allocate GPU memory"
@@ -1144,11 +1165,39 @@ BUSCONF
         # A game running, read off /proc rather than guessed: the client launches one with the
         # game's own path (Linux slashes or Wine backslashes) or reaper's SteamLaunch AppId= in
         # its command line, and nothing else in the session carries it.
+        #
+        # Its first second and its last are what every "it does not open" and every restart has
+        # been about, so both are named: the pid and executable when it appears, and how long it
+        # lived - with the last resident size - when it is gone. A launch that dies in three
+        # seconds and a game that ran for ten minutes are different bugs, and until now the log
+        # could not tell them apart.
         _bl_game=0
+        _bl_game_pid=
+        _bl_game_cmd=
         for _d in /proc/[0-9]*; do
           _c=$(tr '\0' ' ' < "$_d/cmdline" 2>/dev/null) || continue
-          case $_c in *steamapps/common*|*steamapps\\common*|*"SteamLaunch AppId="*) _bl_game=1; break ;; esac
+          case $_c in
+            *steamapps/common*|*steamapps\\common*|*"SteamLaunch AppId="*)
+              _bl_game=1
+              _bl_game_pid=${_d#/proc/}
+              _bl_game_cmd=$(printf '%s' "$_c" | cut -c1-90)
+              break ;;
+          esac
         done
+        if [ "$_bl_game" = 1 ] && [ -z "${_bl_game_since:-}" ]; then
+          _bl_game_since=$(date +%s)
+          echo "== game: started [$_bl_game_pid] $_bl_game_cmd"
+        elif [ "$_bl_game" = 0 ] && [ -n "${_bl_game_since:-}" ]; then
+          echo "== game: gone after $(( $(date +%s) - _bl_game_since ))s (last resident ${_bl_game_rss_mb:-?} MB)"
+          if [ -n "${BL_DEBUG_DIR:-}" ]; then
+            printf 'game gone after %ss at %s\n' "$(( $(date +%s) - _bl_game_since ))" "$(date +%T)" \
+              >> "$BL_DEBUG_DIR/games.txt" 2>/dev/null
+          fi
+          _bl_game_since=
+        fi
+        if [ "$_bl_game" = 1 ] && [ -n "${_bl_game_pid:-}" ] && [ -d "/proc/$_bl_game_pid" ]; then
+          _bl_game_rss_mb=$(awk '/^VmRSS:/ { printf "%d", $2 / 1024 }' "/proc/$_bl_game_pid/status" 2>/dev/null)
+        fi
         # Did CEF get the frame-rate switches? Steam builds the webhelper's command line from
         # its -cef- arguments, and an unknown switch is silently dropped. One line, once, so the
         # next log answers "was the store unbounded?" instead of leaving it to inference.
@@ -1181,6 +1230,24 @@ BUSCONF
           printf '%s · game %s\n' "heartbeat $(date +%T): ${_bl_busy:-cpu ?} · ${_bl_mem:-available ?} · tienda ${_bl_web:-?}" "$_bl_game" \
             > "$BL_DEBUG_DIR/last-heartbeat.txt" 2>/dev/null
           sync -f "$BL_DEBUG_DIR/last-heartbeat.txt" 2>/dev/null || :
+          # The black box: one line, rewritten every beat and synced, with what a restart takes
+          # away - the game the session was running, how long it had been up, its resident set,
+          # the driver's dma-buf allocations so far, and the descriptors. A session that ends in
+          # the GPU's watchdog leaves its last state here, a second old at most.
+          {
+            printf '%s ' "$(date +%T)"
+            printf 'level=%s ' "${BL_SAFE_LEVEL:-0}"
+            printf 'avail=%s ' "$(awk '/^MemAvailable:/ { printf "%dMB", $2 / 1024 }' /proc/meminfo 2>/dev/null)"
+            printf 'cpu=%s ' "${_bl_busy:-?}"
+            printf 'game=%s ' "$_bl_game"
+            [ -n "${_bl_game_pid:-}" ] && printf 'pid=%s up=%ss rss=%sMB ' "$_bl_game_pid" \
+              "$(( $(date +%s) - ${_bl_game_since:-$(date +%s)} ))" "${_bl_game_rss_mb:-?}"
+            [ -n "${_bl_game_cmd:-}" ] && printf 'cmd=%s ' "$(printf '%s' "$_bl_game_cmd" | cut -c1-60)"
+            printf 'web=%s ' "${_bl_web:-?}"
+            printf 'bo=%s ' "${_bl_bo_total:-?}"
+            printf '\n'
+          } > "$BL_DEBUG_DIR/gpu-watch.txt" 2>/dev/null
+          sync -f "$BL_DEBUG_DIR/gpu-watch.txt" 2>/dev/null || :
         fi
         # Pick the largest replaceable CEF --type=renderer process (never the main steamwebhelper
         # browser, --type=gpu-process, --type=zygote, or --type=utility: killing gpu-process 3
@@ -1203,7 +1270,12 @@ BUSCONF
         # Optional browser renderer budget (off by default now that steamwebhelper is isolated
         # from panvk/ANGLE; set BL_WEB_MB to enable).
         _bl_web_cap=${BL_WEB_MB:-0}
-        [ "$_bl_game" = 1 ] && [ "${BL_WEB_MB:-0}" -gt 0 ] 2>/dev/null && _bl_web_cap=${BL_WEB_GAME_MB:-350}
+        # ...and never while a game is still starting: a launch is the client's own renderers
+        # talking to the client, and taking one away then is how a "Play" that does nothing
+        # happens. A launch that has not reached 90 s is left alone.
+        _bl_game_up=$(( $(date +%s) - ${_bl_game_since:-$(date +%s)} ))
+        [ "$_bl_game" = 1 ] && [ "$_bl_game_up" -ge 90 ] && [ "${BL_WEB_MB:-0}" -gt 0 ] 2>/dev/null \
+          && _bl_web_cap=${BL_WEB_GAME_MB:-350}
         if [ "$_bl_web_cap" -gt 0 ] 2>/dev/null; then
           _bl_web_mb=$(ps -eo rss=,comm= 2>/dev/null |
             awk '$2 ~ /steamwebhelper/ { n++; s += $1 } END { printf "%d %d", s / 1024, n }')

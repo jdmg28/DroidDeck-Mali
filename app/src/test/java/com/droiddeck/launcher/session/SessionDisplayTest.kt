@@ -25,6 +25,17 @@ class SessionDisplayTest {
         assertEquals(1280 to 720, SessionDisplay.resolveChoice(1280 to 720, "1080p"))
     }
 
+    @Test fun safeModesLastRungCapsTheOutputAndKeepsItsShape() {
+        // 1600x720 (the tested size) is already under 1280x720? No: wider, so it scales to fit.
+        assertEquals(1280 to 576, SessionDisplay.capped(1600 to 720, 1280, 720))
+        assertEquals(1280 to 720, SessionDisplay.capped(1280 to 720, 1280, 720))
+        assertEquals(1280 to 720, SessionDisplay.capped(960 to 540, 1280, 720))
+        // Follow screen on a 20:9 panel is taller than 720 lines: bounded by height.
+        assertEquals(1280 to 576, SessionDisplay.capped(2400 to 1080, 1280, 720))
+        // Even sides, never zero.
+        assertEquals(2 to 2, SessionDisplay.capped(1 to 1, 0, 0))
+    }
+
     @Test fun optionsListTheHeightsThePanelCanShowThenThePanel() {
         val thor = SessionDisplay.resolutionOptions(1920 to 1080)
         assertEquals(listOf("720p", "900p", SessionDisplay.MATCH_SCREEN, SessionDisplay.FOLLOW_SCREEN), thor)

@@ -396,6 +396,12 @@ class SessionService : Service() {
 
         val sessionDir = openSessionFolder()
         val sessionLog = File(sessionDir, "session.log")
+        // A phone that kept restarting inside games gets the next session one rung lower
+        // (RebootGuard). The user's switches are untouched; this only changes what the session is
+        // started with, and the log and the app both say which rung was used.
+        val safeLevel = RebootGuard.level(this)
+        if (safeLevel > 0) Log.w(TAG, "safe mode level $safeLevel: ${RebootGuard.trail(this).size} " +
+            "restart(s) with a game inside the last 48 hours")
 
         Log.i(TAG, GpuClockPin.start(this))
 
@@ -700,8 +706,11 @@ class SessionService : Service() {
                 guest.add("LIBGL_KOPPER_DISABLE=false")
                 // The present-path fix for games stuck at their logo (see maliGamescopeWsi()).
                 guest.add("BL_MALI_GAMESCOPE_WSI=" + if (maliGamescopeWsi()) "1" else "0")
-                // In-ring semaphore waits on the driver (see maliSemaphoreWaits()).
-                guest.add("PANVK_KBASE_GPU_SEMAPHORE_WAITS=" + if (maliSemaphoreWaits()) "1" else "0")
+                // In-ring semaphore waits on the driver (see maliSemaphoreWaits()); the highest
+                // safe-mode rung turns them off, because a submit that waits inside the ring is
+                // what a job timeout - and a soft reset - is made of.
+                val semaWaits = maliSemaphoreWaits() && safeLevel < RebootGuard.LEVEL_NO_SEMA
+                guest.add("PANVK_KBASE_GPU_SEMAPHORE_WAITS=" + if (semaWaits) "1" else "0")
                 // Exact BC textures when the switch asks (see maliBcAfrc()); the log line says
                 // what the session chose, beside the driver's other knobs.
                 maliBcAfrc()?.let {
@@ -712,7 +721,9 @@ class SessionService : Service() {
                 // only (the store and the compositor keep the session's setting). See
                 // SessionPrefs.maliGamePresent: the two device restarts came out of a game's
                 // teardown, not out of the store.
-                guest.add("BL_GAME_PRESENT=" + SessionPrefs.maliGamePresent(this))
+                guest.add("BL_SAFE_LEVEL=" + safeLevel)
+                guest.add("BL_GAME_PRESENT=" + if (safeLevel >= RebootGuard.LEVEL_SAFE_PRESENT)
+                    SessionPrefs.GAME_PRESENT_SHM else SessionPrefs.maliGamePresent(this))
                 // While a game runs, the client's browser holds a budget of its own
                 // (SessionPrefs.gameBrowserBudget): 1.4-2.0 GB in eight processes beside a game
                 // is memory the game does not get.
@@ -775,8 +786,12 @@ class SessionService : Service() {
                 LinuxVulkanDriverManager(this).getDriverName(linuxDriverId)
             val driverVersion = if (linuxDriverId.isEmpty()) "" else
                 LinuxVulkanDriverManager(this).getDriverVersion(linuxDriverId)
-            val uiGpuOn = uiOnGpu && SessionPrefs.steamUiGpuAllowed(mali, driverName, driverVersion)
-            if (uiOnGpu && !uiGpuOn) {
+            val uiGpuOn = uiOnGpu && SessionPrefs.steamUiGpuAllowed(mali, driverName, driverVersion) &&
+                safeLevel < RebootGuard.LEVEL_SAFE_PRESENT
+            if (uiOnGpu && !uiGpuOn && safeLevel >= RebootGuard.LEVEL_SAFE_PRESENT) {
+                Log.w(TAG, "safe mode level $safeLevel: the client's browser stays on the CPU " +
+                    "after a restart with a game running (Steam > Modo seguro: Volver a normal)")
+            } else if (uiOnGpu && !uiGpuOn) {
                 Log.w(TAG, "Steam UI on GPU asked for, but \"$driverName\" is not the fn64 driver: " +
                     "keeping the client's browser on the CPU")
             }
@@ -785,8 +800,10 @@ class SessionService : Service() {
             // Only meaningful when it is on the GPU at all; the session script prints the one it
             // took, and a Vulkan path on Mali is still an experiment (fn64 required).
             guest.add("BL_CEF_BACKEND=" + SessionPrefs.steamUiGpuBackend(this))
-            // The browser's own frame ceiling, off when asked (SessionPrefs.steamUiMaxFps).
+            // The browser's own frame ceiling, off when asked (SessionPrefs.steamUiMaxFps), and
+            // Chromium's two raw switches only when the user turned them on (steamUiRawFps).
             guest.add("BL_CEF_MAXFPS=" + (if (SessionPrefs.steamUiMaxFps(this)) "1" else "0"))
+            guest.add("BL_CEF_RAWFPS=" + (if (SessionPrefs.steamUiRawFps(this)) "1" else "0"))
             if (uiGpuOn) Log.i(TAG, "Steam UI on GPU: backend " + SessionPrefs.steamUiGpuBackend(this))
             // Remembered in the session folder so an abandoned session (a reboot, mostly) can
             // turn the switch back off at the next start (SessionArtifacts.finishAbandoned).

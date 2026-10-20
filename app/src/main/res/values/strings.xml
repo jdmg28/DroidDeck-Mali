@@ -2203,4 +2203,9 @@
     <string name="mode_mali_present_shm">Shared memory - no dma-buf</string>
     <string name="mode_game_web_budget">Hold the browser to 350 MB while a game runs</string>
     <string name="mode_game_web_budget_hint">Steam\'s browser kept 1.4-2.0 GB in eight processes beside a game that had 878 MB of its own. With this on, while a game is running, the browser\'s renderers over a 350 MB budget are closed one at a time - never below three - until it fits: memory the game gets, and cores it does not share. The store reloads a renderer the next time it needs it. Applies next session.</string>
+    <string name="mode_safe_mode">Safe mode after restarts</string>
+    <string name="mode_safe_mode_hint">Level %1$d of 3 (%2$d restart(s) with a game in the last 48 hours). The session steps down instead of repeating what took the phone down: level 1 keeps the client\'s browser on the CPU and sends every game through shared memory (no dma-buf), level 2 also turns off the driver\'s in-ring semaphore waits, level 3 also runs the session at 1280x720 at most. Your own switches are unchanged - only the session is affected, and the log says which rung ran. A session that closes with a game in it clears this by itself.</string>
+    <string name="mode_safe_mode_reset">Back to normal</string>
+    <string name="mode_steam_ui_rawfps">Unbudgeted browser (experimental)</string>
+    <string name="mode_steam_ui_rawfps_hint">Adds Chromium\'s own --disable-gpu-vsync and --disable-frame-rate-limit on top. Off since 2026-10-20: on the first session that used them, the client\'s menu drew garbled and the phone restarted, and CEF has a known regression where --disable-frame-rate-limit leaves a white window. Turn it on only for a session you are watching.</string>
 </resources>

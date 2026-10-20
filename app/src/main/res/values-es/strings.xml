@@ -2184,4 +2184,9 @@
     <string name="mode_mali_present_shm">Memoria compartida - sin dma-buf</string>
     <string name="mode_game_web_budget">Limitar el navegador a 350 MB con un juego en marcha</string>
     <string name="mode_game_web_budget_hint">El navegador de Steam llegó a tener 1,4-2,0 GB en ocho procesos junto a un juego con 878 MB propios. Con esto encendido, mientras hay un juego, los renderers del navegador que pasan de un presupuesto de 350 MB se van cerrando de uno en uno —nunca por debajo de tres— hasta entrar en él: memoria que gana el juego y núcleos que no comparte. La tienda vuelve a cargar un renderer cuando lo necesite. Se aplica en la próxima sesión.</string>
+    <string name="mode_safe_mode">Modo seguro tras reinicios</string>
+    <string name="mode_safe_mode_hint">Nivel %1$d de 3 (%2$d reinicio(s) con un juego en las últimas 48 horas). La sesión baja un escalón en vez de repetir lo que tumbó el teléfono: el nivel 1 deja el navegador del cliente en la CPU y manda cada juego por memoria compartida (sin dma-buf), el nivel 2 apaga además las esperas de semáforo en el anillo del driver, y el nivel 3 corre la sesión a 1280x720 como máximo. Tus interruptores no cambian: solo afecta a la sesión, y el log dice qué escalón corrió. Una sesión que se cierra con un juego dentro lo borra sola.</string>
+    <string name="mode_safe_mode_reset">Volver a normal</string>
+    <string name="mode_steam_ui_rawfps">Navegador sin presupuesto (experimental)</string>
+    <string name="mode_steam_ui_rawfps_hint">Añade encima los interruptores propios de Chromium --disable-gpu-vsync y --disable-frame-rate-limit. Apagado desde el 20-10-2026: en la primera sesión que los usó, el menú del cliente salió clisheado y el teléfono se reinició, y CEF tiene una regresión conocida en la que --disable-frame-rate-limit deja una ventana en blanco. Enciéndelo solo en una sesión que estés mirando.</string>
 </resources>

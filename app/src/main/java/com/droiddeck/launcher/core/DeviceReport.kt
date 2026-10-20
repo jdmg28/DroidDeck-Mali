@@ -176,6 +176,10 @@ object DeviceReport {
         k("Threaded GL (glthread)", SessionPrefs.glThread(context))
         k("No GL error checks", SessionPrefs.noGlError(context))
         k("Steam Deck mode", SessionPrefs.steamDeckMode(context))
+        // The rung the safe-mode ladder put this session on, and the restarts behind it: the first
+        // thing to read in a report that says "it restarted again".
+        k("Safe mode (restarts with a game)", "level " + com.droiddeck.launcher.session.RebootGuard.level(context) +
+            " of 3 (" + com.droiddeck.launcher.session.RebootGuard.trail(context).size + " in 48 h)")
         k("Steam controller", SessionPrefs.steamController(context))
         k("Upscaler", (SessionPrefs.upscalerChoices.firstOrNull { it.first == SessionPrefs.upscaler(context) }?.second ?: "Off") +
             " (sharpness ${SessionPrefs.upscaleSharpness(context)}%)")

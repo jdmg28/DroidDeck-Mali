@@ -1040,3 +1040,100 @@ Y lo que **no** hay que hacer: subir el limitador de fps. En esta sesión no est
 4. Si **se reinicia al salir del juego**, cambiar a `Memoria compartida - sin dma-buf` y repetir:
    ese es el experimento que separa «el cierre del swapchain» de todo lo demás.
    Si la tienda sale en negro o sin interfaz, volver a `OpenGL (Zink)`.
+
+## R24 (20-10-2026): los reinicios dentro de juegos — qué se cambió y qué hay que mirar
+
+**Lo que reportó el usuario** (APK del 19-10 22:51, el de la sección R23):
+
+1. Anoche: Karlson no abría; al pulsar el botón de menú de Steam, el menú salió **clisheado** y el
+   dispositivo **se reinició**.
+2. Hoy: todo normal, el menú impecable, **sin reinicio** — mismo APK, mismos ajustes.
+3. Hoy: Karlson sigue sin abrir; MiSide abre y **se reinicia al entrar en partida**.
+
+Eso son tres reinicios con una cosa en común: **la GPU haciendo trabajo nuevo** (los primeros
+fotogramas de un juego, el menú del cliente dibujándose encima). Y una cosa que **no** es común: el
+momento. No es un ajuste que falle siempre; es una condición de carrera en el camino del driver.
+
+### Lo que se corrigió de entrada (porque era nuevo y es el único cambio de esta ronda)
+
+El APK de R23 añadía a la línea de Steam `-cef-disable-occlusion -cef-disable-gpu-vsync
+-cef-disable-frame-rate-limit`. Los dos últimos son interruptores **de Chromium**, no de Steam:
+
+- `--disable-frame-rate-limit` tiene una regresión conocida en CEF desde la rama 4183: deja la
+  ventana **en blanco** (o, con ANGLE/Zink, con trozos sin pintar). El menú clisheado de anoche es
+  exactamente ese síntoma;
+- `--disable-gpu-vsync` quita el vsync *del compositor del navegador*: sin él, el renderer de CEF
+  puede ponerse a producir fotogramas sin freno mientras el juego arranca — los dos peleando por la
+  misma GPU, que es la descripción que dio el usuario («quiere renderizar todo de golpe»).
+
+Desde este build, **«Máximo fps en la interfaz» solo aplica `-cef-disable-occlusion`** (el
+interruptor propio de Steam para que Chromium no deje de dibujar una ventana que cree tapada, que es
+la causa documentada de los 30 fps con panel de 120 Hz). Los otros dos quedan detrás de
+**«Navegador sin presupuesto (experimental)»**, apagado.
+
+### Modo seguro tras reinicios (nuevo, automático y reversible)
+
+`RebootGuard` cuenta los reinicios de los últimos 48 h **con un juego dentro** (`game-started.txt`,
+que escribe `droiddeck-session` y sincroniza para que sobreviva al corte). Cada uno baja un escalón
+la sesión siguiente; los interruptores del usuario **no** se tocan, solo lo que la sesión arranca:
+
+| Nivel | Qué cambia | Dónde se ve |
+| --- | --- | --- |
+| 1 | navegador del cliente a la CPU **y** juegos por memoria compartida (`PANVK_KBASE_DRI3=0`, sin dma-buf) | `== safe mode: level 1 …` |
+| 2 | además, fuera las esperas de semáforo en el anillo (`PANVK_KBASE_GPU_SEMAPHORE_WAITS=0`): un submit lento ya no puede convertirse en un timeout de job, que en kbase es un *soft reset* | idem |
+| 3 | además, la sesión corre a 1280x720 como máximo, sea cual sea el ajuste de resolución | idem |
+
+Una sesión que se cierra con un juego dentro y sin reinicio **borra la lista sola** (evento
+`session.artifacts_collected` con `game-started.txt` presente → `RebootGuard.clear`). Se puede
+deshacer a mano en **Ajustes del modo Steam → Steam → Cliente → Modo seguro tras reinicios → Volver
+a normal**, y el nivel sale en el `device.txt` de cada reporte.
+
+### La caja negra: lo que un reinicio se lleva
+
+El final del `session.log` del 19-10 eran ceros: el `sync` del sistema no llegó. Ahora el heartbeat
+escribe **`gpu-watch.txt`** en la carpeta de la sesión, una línea reescrita y sincronizada cada
+10 s con lo que hace falta para saber qué estaba pasando en el segundo anterior al corte:
+
+```
+hh:mm:ss level=0 avail=1576MB cpu=71% game=1 pid=4311 up=142s rss=903MB cmd=/…/MiSide.exe bo=214
+```
+
+Además:
+
+- `== game: started [pid] <cmdline>` y `== game: gone after Ns (last resident M MB)` — la
+  diferencia entre «no abre» (muere en segundos) y «se reinició» (llevaba minutos);
+- `== dma-buf: +N allocations in the last 30 s (total) - burst` cuando pasan de 50: es el número
+  que corresponde a «quiere renderizar todo de golpe»;
+- `== ui-on-gpu: the webhelper carries --disable-gpu-vsync …` o la línea que dice que Steam lo
+  descartó.
+
+Y el presupuesto de memoria del navegador ya **no actúa durante el arranque de un juego**: solo a
+partir de 90 s con el juego en marcha. Cerrar un renderer del cliente mientras Steam está lanzando
+un título es una forma conocida de que el botón «Jugar» no haga nada — el «Karlson no abre» de
+anoche pudo ser justo eso.
+
+### Hipótesis, en el orden en que las pruebas las pueden descartar
+
+1. **El camino CEF→ANGLE→Zink→PanVK sigue fallando**. `fn64` arregló *un* truncamiento de dirección
+   en `get_fb_descs()` (32 → 64 bits). El síntoma de anoche (menú corrupto y reinicio inmediato) es
+   el mismo patrón que el 14-10 antes del parche. Se prueba sin tocar nada: **modo seguro nivel 1**
+   (o apagar «Interfaz de Steam en la GPU») y usar el menú 10 minutos.
+2. **Timeout de job en kbase durante el arranque del juego**. MiSide carga mundo, sombras y texturas
+   en los primeros fotogramas: muchos submit seguidos. Si uno tarda más de lo que kbase tolera, hay
+   *soft reset* — y desde fuera eso es «se reinició solo». Nivel 2 (sin esperas en el anillo) y el
+   contador de dma-buf de la caja negra son la prueba.
+3. **Presión de memoria de GPU** (heap de 878 MiB `DEVICE_LOCAL` en Karlson). Un fallo de
+   asignación en panvk+kbase puede acabar en fault del *command stream*. Nivel 1 (sin dma-buf) y
+   nivel 3 (1280x720) reducen justo eso.
+
+### Qué hacer ahora (en este orden, un reinicio por prueba como mucho)
+
+1. Instalar el APK rolling nuevo. Abrir Steam y comprobar en el log la línea del webhelper.
+2. **Sin tocar nada más**: menú 10 minutos, abrir la tienda, navegar. Si no se reinicia, el nivel 1
+   no hace falta para el menú.
+3. MiSide: entrar en partida y jugar 2-3 minutos. Si se reinicia, la app habrá anotado 1 reinicio y
+   **la sesión siguiente ya arranca en nivel 1 sin hacer nada**.
+4. Repetir MiSide con nivel 1. Si aguanta, ese es el ajuste para jugar; si se reinicia otra vez, la
+   siguiente ya es nivel 2.
+5. Mandar el zip con `gpu-watch.txt`, `games.txt`, `session.log` y `device.txt`: con eso se sabe si
+   fue timeout, memoria o el navegador.

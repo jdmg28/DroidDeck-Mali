@@ -101,6 +101,12 @@ class ModeSettings(
     val steamUiMaxFps: Boolean = true,
     /** Steam only: hold the browser to 350 MB while a game runs (SessionPrefs.gameBrowserBudget). */
     val gameBrowserBudget: Boolean = true,
+    /** Steam only: current safe-mode rung (RebootGuard.level), 0 = none. */
+    val safeLevel: Int = 0,
+    /** Steam only: restarts with a game still inside the 48 h window. */
+    val safeRestarts: Int = 0,
+    /** Steam only: Chromium's raw vsync switches, off by default (SessionPrefs.steamUiRawFps). */
+    val steamUiRawFps: Boolean = false,
     /** Steam only, Mali: how a game presents to gamescope (SessionPrefs.GAME_PRESENT_*); null elsewhere. */
     val maliGamePresent: String? = null,
     /** Steam only: what the pad is to the client (SessionPrefs.CONTROLLER_*); null outside Steam. */
@@ -166,6 +172,8 @@ class ModeSettingsActions(
     val onSteamUiGpuBackend: (String) -> Unit = {},
     val onSteamUiMaxFps: (Boolean) -> Unit = {},
     val onGameBrowserBudget: (Boolean) -> Unit = {},
+    val onResetSafeMode: () -> Unit = {},
+    val onSteamUiRawFps: (Boolean) -> Unit = {},
     val onMaliGamePresent: (String) -> Unit = {},
     val onSteamController: (String) -> Unit = {},
     val onRunSteamAtStartup: (Boolean) -> Unit = {},
@@ -414,6 +422,12 @@ fun ModeSettingsPage(s: ModeSettings, a: ModeSettingsActions) {
                 stringResource(R.string.mode_mangoapp_hint),
                 s.mangoapp, onChange = a.onMangoapp,
             )
+            if (s.safeLevel > 0) SettingsRow(
+                stringResource(R.string.mode_safe_mode),
+                stringResource(R.string.mode_safe_mode_hint, s.safeLevel, s.safeRestarts),
+            ) {
+                SecondaryButton(stringResource(R.string.mode_safe_mode_reset)) { a.onResetSafeMode() }
+            }
             ToggleRow(
                 host, "steamUiGpu", stringResource(R.string.mode_steam_ui_gpu),
                 stringResource(R.string.mode_steam_ui_gpu_hint),
@@ -435,6 +449,11 @@ fun ModeSettingsPage(s: ModeSettings, a: ModeSettingsActions) {
                     host, "steamUiMaxFps", stringResource(R.string.mode_steam_ui_maxfps),
                     stringResource(R.string.mode_steam_ui_maxfps_hint),
                     s.steamUiMaxFps, onChange = a.onSteamUiMaxFps,
+                )
+                if (s.steamUiMaxFps) ToggleRow(
+                    host, "steamUiRawFps", stringResource(R.string.mode_steam_ui_rawfps),
+                    stringResource(R.string.mode_steam_ui_rawfps_hint),
+                    s.steamUiRawFps, onChange = a.onSteamUiRawFps,
                 )
             }
             if (s.maliGamePresent != null) {

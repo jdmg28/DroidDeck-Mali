@@ -42,6 +42,7 @@ import com.droiddeck.launcher.session.ComponentsManager
 import com.droiddeck.launcher.ui.ComponentsPage
 import com.droiddeck.launcher.session.GameSaves
 import com.droiddeck.launcher.session.SessionLogShare
+import com.droiddeck.launcher.session.RebootGuard
 import com.droiddeck.launcher.session.SessionPrefs
 import com.droiddeck.launcher.session.SteamRepair
 import com.droiddeck.launcher.ui.ProtonPage
@@ -126,6 +127,9 @@ class MainActivity : ComponentActivity() {
     private var steamUiGpuBackend by mutableStateOf(SessionPrefs.UI_GPU_GL)
     private var steamUiMaxFps by mutableStateOf(true)
     private var gameBrowserBudget by mutableStateOf(true)
+    private var safeLevel by mutableStateOf(0)
+    private var safeRestarts by mutableStateOf(0)
+    private var steamUiRawFps by mutableStateOf(false)
     private var maliGamePresent by mutableStateOf(SessionPrefs.GAME_PRESENT_DRI3)
     private var steamController by mutableStateOf(SessionPrefs.CONTROLLER_DECK)
     private var showProtons by mutableStateOf(false)
@@ -1288,6 +1292,9 @@ class MainActivity : ComponentActivity() {
                 steamUiGpuBackend = if (mode == SessionService.MODE_STEAM) steamUiGpuBackend else null,
                 steamUiMaxFps = steamUiMaxFps,
                 gameBrowserBudget = gameBrowserBudget,
+                safeLevel = if (mode == SessionService.MODE_STEAM) safeLevel else 0,
+                safeRestarts = if (mode == SessionService.MODE_STEAM) safeRestarts else 0,
+                steamUiRawFps = steamUiRawFps,
                 maliGamePresent = if (mode == SessionService.MODE_STEAM && com.droiddeck.launcher.core.DeviceSupport.mali())
                     maliGamePresent else null,
                 steamController = if (mode == SessionService.MODE_STEAM) steamController else null,
@@ -1380,6 +1387,12 @@ class MainActivity : ComponentActivity() {
                 onSteamUiGpuBackend = { id -> SessionPrefs.setSteamUiGpuBackend(this, id); steamUiGpuBackend = id },
                 onSteamUiMaxFps = { on -> SessionPrefs.setSteamUiMaxFps(this, on); steamUiMaxFps = on },
                 onGameBrowserBudget = { on -> SessionPrefs.setGameBrowserBudget(this, on); gameBrowserBudget = on },
+                onResetSafeMode = {
+                    RebootGuard.clear(this)
+                    safeLevel = 0
+                    safeRestarts = 0
+                },
+                onSteamUiRawFps = { on -> SessionPrefs.setSteamUiRawFps(this, on); steamUiRawFps = on },
                 onMaliGamePresent = { id -> SessionPrefs.setMaliGamePresent(this, id); maliGamePresent = id },
                 onSteamController = { id -> SessionPrefs.setSteamController(this, id); steamController = id },
                 onRunSteamAtStartup = { on ->
@@ -1501,6 +1514,9 @@ class MainActivity : ComponentActivity() {
         steamUiGpuBackend = SessionPrefs.steamUiGpuBackend(this)
         steamUiMaxFps = SessionPrefs.steamUiMaxFps(this)
         gameBrowserBudget = SessionPrefs.gameBrowserBudget(this)
+        safeLevel = RebootGuard.level(this)
+        safeRestarts = RebootGuard.trail(this).size
+        steamUiRawFps = SessionPrefs.steamUiRawFps(this)
         maliGamePresent = SessionPrefs.maliGamePresent(this)
         steamController = SessionPrefs.steamController(this)
         runSteamAtStartup = SessionPrefs.runSteamAtStartup(this)
