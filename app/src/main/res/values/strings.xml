@@ -2202,5 +2202,5 @@
     <string name="mode_mali_present_noafbc">DRI3 without AFBC</string>
     <string name="mode_mali_present_shm">Shared memory - no dma-buf</string>
     <string name="mode_game_web_budget">Hold the browser to 350 MB while a game runs</string>
-    <string name="mode_game_web_budget_hint">Steam\'s browser kept 1.4-2.0 GB in eight processes beside a game that had 878 MB of its own. With this on, while a game is running, its renderers over 350 MB are dropped one at a time until it fits - memory the game gets, and cores it does not share. The store reloads that renderer the next time it needs it. Applies next session.</string>
+    <string name="mode_game_web_budget_hint">Steam\'s browser kept 1.4-2.0 GB in eight processes beside a game that had 878 MB of its own. With this on, while a game is running, the browser\'s renderers over a 350 MB budget are closed one at a time - never below three - until it fits: memory the game gets, and cores it does not share. The store reloads a renderer the next time it needs it. Applies next session.</string>
 </resources>

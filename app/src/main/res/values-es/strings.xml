@@ -2183,5 +2183,5 @@
     <string name="mode_mali_present_noafbc">DRI3 sin AFBC</string>
     <string name="mode_mali_present_shm">Memoria compartida - sin dma-buf</string>
     <string name="mode_game_web_budget">Limitar el navegador a 350 MB con un juego en marcha</string>
-    <string name="mode_game_web_budget_hint">El navegador de Steam llegó a tener 1,4-2,0 GB en ocho procesos junto a un juego con 878 MB propios. Con esto encendido, mientras hay un juego, sus renderers por encima de 350 MB se van cerrando de uno en uno hasta entrar en el presupuesto: memoria que gana el juego y núcleos que no comparte. La tienda vuelve a cargar ese renderer cuando lo necesite. Se aplica en la próxima sesión.</string>
+    <string name="mode_game_web_budget_hint">El navegador de Steam llegó a tener 1,4-2,0 GB en ocho procesos junto a un juego con 878 MB propios. Con esto encendido, mientras hay un juego, los renderers del navegador que pasan de un presupuesto de 350 MB se van cerrando de uno en uno —nunca por debajo de tres— hasta entrar en él: memoria que gana el juego y núcleos que no comparte. La tienda vuelve a cargar un renderer cuando lo necesite. Se aplica en la próxima sesión.</string>
 </resources>
