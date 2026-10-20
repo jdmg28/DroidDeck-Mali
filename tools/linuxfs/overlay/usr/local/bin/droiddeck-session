@@ -1198,23 +1198,28 @@ BUSCONF
         if [ "$_bl_game" = 1 ] && [ -n "${_bl_game_pid:-}" ] && [ -d "/proc/$_bl_game_pid" ]; then
           _bl_game_rss_mb=$(awk '/^VmRSS:/ { printf "%d", $2 / 1024 }' "/proc/$_bl_game_pid/status" 2>/dev/null)
         fi
-        # Did CEF get the frame-rate switches? Steam builds the webhelper's command line from
-        # its -cef- arguments, and an unknown switch is silently dropped. One line, once, so the
-        # next log answers "was the store unbounded?" instead of leaving it to inference.
+        # Did CEF get the switches? Steam builds the webhelper's command line from its -cef-
+        # arguments, and an unknown one is silently dropped. One line, once, naming the switch this
+        # session actually asked for, so the next log answers "was it applied?" without inference.
         if [ "${BL_CEF_GPU:-0}" = 1 ] && [ "${_bl_cef_checked:-0}" = 0 ]; then
-          _bl_cef_args=
-          for _d in /proc/[0-9]*; do
-            _a=$(tr '\0' ' ' < "$_d/cmdline" 2>/dev/null) || continue
-            case $_a in *steamwebhelper*) _bl_cef_args=$_a; break ;; esac
-          done
-          case $_bl_cef_args in
-            *disable-gpu-vsync*)
-              echo "== ui-on-gpu: the webhelper carries --disable-gpu-vsync (the browser is unbounded)"
-              _bl_cef_checked=1 ;;
-            *steamwebhelper*)
-              echo "== ui-on-gpu: the webhelper does NOT carry --disable-gpu-vsync; Steam dropped the switches (BL_CEF_MAXFPS had no effect)"
-              _bl_cef_checked=1 ;;
-          esac
+          _bl_cef_want=
+          [ "${BL_CEF_MAXFPS:-0}" = 1 ] && _bl_cef_want=disable-occlusion
+          [ "${BL_CEF_RAWFPS:-0}" = 1 ] && _bl_cef_want=disable-gpu-vsync
+          if [ -n "$_bl_cef_want" ]; then
+            _bl_cef_args=
+            for _d in /proc/[0-9]*; do
+              _a=$(tr '\0' ' ' < "$_d/cmdline" 2>/dev/null) || continue
+              case $_a in *steamwebhelper*) _bl_cef_args=$_a; break ;; esac
+            done
+            case $_bl_cef_args in
+              *"--$_bl_cef_want"*)
+                echo "== ui-on-gpu: the webhelper carries --$_bl_cef_want (the browser switch was applied)"
+                _bl_cef_checked=1 ;;
+              *steamwebhelper*)
+                echo "== ui-on-gpu: the webhelper does NOT carry --$_bl_cef_want; Steam dropped it (that switch had no effect)"
+                _bl_cef_checked=1 ;;
+            esac
+          fi
         fi
         # The two things a reboot takes away, written small and synced so they survive it:
         #  - that a game ran in this session. The app's rollback of the store-on-GPU switch is
