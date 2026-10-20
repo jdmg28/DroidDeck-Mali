@@ -26,11 +26,12 @@ class SessionDisplayTest {
     }
 
     @Test fun safeModesLastRungCapsTheOutputAndKeepsItsShape() {
-        // 1600x720 (the tested size) is already under 1280x720? No: wider, so it scales to fit.
+        // The tested session size is wider than the cap, so it scales down and keeps 20:9.
         assertEquals(1280 to 576, SessionDisplay.capped(1600 to 720, 1280, 720))
+        // Anything already inside the cap is returned untouched.
         assertEquals(1280 to 720, SessionDisplay.capped(1280 to 720, 1280, 720))
-        assertEquals(1280 to 720, SessionDisplay.capped(960 to 540, 1280, 720))
-        // Follow screen on a 20:9 panel is taller than 720 lines: bounded by height.
+        assertEquals(960 to 540, SessionDisplay.capped(960 to 540, 1280, 720))
+        // A 20:9 panel sized by its height.
         assertEquals(1280 to 576, SessionDisplay.capped(2400 to 1080, 1280, 720))
         // Even sides, never zero.
         assertEquals(2 to 2, SessionDisplay.capped(1 to 1, 0, 0))
