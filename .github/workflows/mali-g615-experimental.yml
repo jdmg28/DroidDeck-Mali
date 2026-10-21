@@ -175,12 +175,6 @@ jobs:
       # The debug build: its application id carries the .mali.g615 suffix, which is the id of the
       # app already installed from this repo's releases.
       DROIDDECK_BUILD_VARIANT: debug
-      # What makes this apk an update of the published one. The package and the key never change;
-      # the version code did not either - every build to 2026-10-20 shipped 45, so the phone saw
-      # "the same version" and HyperOS offered to install it again instead of updating it. 450000 +
-      # the run number is above 45 from the first build, never repeats, and leaves the literal in
-      # app/build.gradle as this app's own version for a local build.
-      DROIDDECK_VERSION_CODE: ${{ 450000 + github.run_number }}
       DROIDDECK_NDK_VERSION: 27.3.13750724
       # Steam client is the target. Skip optional GOG/Epic/Amazon Rust engines for this branch.
       DROIDDECK_SKIP_RUST: 1
@@ -203,6 +197,16 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends zstd pkg-config gh
           sdkmanager 'platform-tools' 'platforms;android-34' 'build-tools;34.0.0' 'cmake;3.22.1' 'ndk;27.3.13750724'
+
+      # What makes this apk an update of the published one. The package and the key never change;
+      # the version code did not either - every build to 2026-10-20 shipped 45, so the phone saw
+      # "the same version" and HyperOS offered to install it again instead of updating it. 450000
+      # plus the run number is above 45 from the first build, never repeats, and leaves the literal
+      # in app/build.gradle as this app's own version for a local build. Written into the
+      # environment here rather than as an expression in env:, which this workflow file is not
+      # accepted with.
+      - name: The version code this build ships
+        run: echo "DROIDDECK_VERSION_CODE=$((450000 + GITHUB_RUN_NUMBER))" >> "$GITHUB_ENV"
 
       - name: Build the app and the guest preloads
         run: |
