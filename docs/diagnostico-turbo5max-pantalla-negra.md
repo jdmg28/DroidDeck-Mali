@@ -1241,3 +1241,28 @@ desde `/data/app` o `/data/user`, que es siempre un paquete de Android y nunca u
    el camino de antes y confirma que el problema es la espera.
 4. Si se reinicia otra vez, apagar **Interfaz de Steam en la GPU**, poner el modo seguro en
    **Volver a normal** y jugar la misma partida: así se separa el navegador del juego.
+
+### Por qué el APK se instaló «como una app nueva» (21-10-2026)
+
+No fue la firma. La clave está en el repositorio (`keystore/testkey.p12`, la testkey de AOSP), su
+certificado es `a40da80a59d170caa950cf15c18c454d47a39b26989d8b640ecd745ba71bf5dc`, y el flujo de
+esta rama lo comprueba en cada push contra el APK ya publicado: el informe de CI lista **el mismo
+SHA-256** para la compilación nueva y para la publicada, y el mismo `applicationId`
+`com.droiddeck.launcher.mali.g615`.
+
+Lo que no se movía era el **versionCode**: `versionCode 45` en `app/build.gradle` desde R21, igual en
+todas las compilaciones publicadas. Android decide que un APK es una actualización por tres cosas —
+paquete, firma y número de versión—, y la tercera era idéntica a la instalada: el instalador no tenía
+nada que ofrecer como actualización.
+
+Ahora cada compilación de esta rama lleva `450000 + número de ejecución`
+(`DROIDDECK_VERSION_CODE`, escrito por un paso del flujo, y pasado a Gradle como `-PblVersionCode`),
+que solo sube y nunca repite. La compilación de R24b es **450132**. Una compilación local sigue
+llevando 45: el literal de `app/build.gradle` no cambia.
+
+La página **Actualizaciones** muestra ahora la versión con su número entre paréntesis, porque es lo
+que distingue dos instalaciones de esta app: la de esta rama termina en
+`-mali-g615-experimental` y lleva un número de seis cifras; la «estándar»
+(`com.droiddeck.launcher`, de las compilaciones de `main`) lleva `0.4.0-beta.1` y 45, y **no** se
+puede actualizar con un APK de esta rama (son paquetes distintos): si el teléfono tiene las dos, cada
+una se actualiza con su propio APK.
