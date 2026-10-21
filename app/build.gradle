@@ -86,6 +86,15 @@ android {
         // proot, gamescope, the Steam client and everything it launches all live under files/.
         targetSdkVersion 28
         versionCode 45
+        // An update is decided by this number, the package and the key - all three. This branch
+        // kept 45 for every build it published (the literal above has not moved since R21), so
+        // each new APK was "the same version" to Android: the installer had nothing to call an
+        // update, and HyperOS offered to install it again (a second app on the launcher, 2026-10-20).
+        // CI passes -PblVersionCode=<450000 + run number>, which only ever goes up; a local build
+        // keeps the literal, so `versionCode 45` above stays the app's own version.
+        if (project.hasProperty('blVersionCode')) {
+            versionCode project.property('blVersionCode').toString().toInteger()
+        }
         versionName "0.4.0-beta.1"
         buildConfigField "String", "BUILD_LABEL", "\"${escapedBuildLabel}\""
         buildConfigField "String", "SOURCE_COMMIT", "\"${sourceCommit}\""

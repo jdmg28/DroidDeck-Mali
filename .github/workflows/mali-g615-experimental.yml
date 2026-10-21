@@ -175,6 +175,12 @@ jobs:
       # The debug build: its application id carries the .mali.g615 suffix, which is the id of the
       # app already installed from this repo's releases.
       DROIDDECK_BUILD_VARIANT: debug
+      # What makes this apk an update of the published one. The package and the key never change;
+      # the version code did not either - every build to 2026-10-20 shipped 45, so the phone saw
+      # "the same version" and HyperOS offered to install it again instead of updating it. 450000 +
+      # the run number is above 45 from the first build, never repeats, and leaves the literal in
+      # app/build.gradle as this app's own version for a local build.
+      DROIDDECK_VERSION_CODE: ${{ 450000 + github.run_number }}
       DROIDDECK_NDK_VERSION: 27.3.13750724
       # Steam client is the target. Skip optional GOG/Epic/Amazon Rust engines for this branch.
       DROIDDECK_SKIP_RUST: 1
@@ -294,6 +300,14 @@ jobs:
           if [ "$FOUND" = true ] && [ "$THIS_CODE" -lt "$OLD_CODE" ]; then
             echo "::error::versionCode $THIS_CODE is lower than the published $OLD_CODE"
             fail=1
+          fi
+          # Equal is what this branch shipped for months (45 on every build), and it is the one
+          # case Android does not treat as an update: HyperOS offered to install the new apk
+          # beside the old one. A re-run of this same run number republishes the same code over
+          # its own asset, so equality there is expected and only the commit differs - the
+          # summary says which, and the version code moving is what the next push checks.
+          if [ "$FOUND" = true ] && [ "$THIS_CODE" -eq "$OLD_CODE" ]; then
+            echo "::warning::versionCode did not move ($THIS_CODE): the installer will not see this as an update"
           fi
           # The AOSP testkey is publicly known, which is fine for a fork's test builds and is the
           # key every build of this branch has used; what must never change is which key it is.

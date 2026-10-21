@@ -99,9 +99,13 @@ internal fun UpdatesPage(s: FrontEndState, a: FrontEndActions, modifier: Modifie
     val colors = MaterialTheme.colorScheme
     Column(modifier = modifier) {
         PageHeader(stringResource(R.string.upd_title)) {
-            // The build that is running, beside the title where it is always in view.
+            // The build that is running, beside the title where it is always in view. The version
+            // code is part of it because that, and not the name, is what Android compares to call
+            // a new apk an update: two installs of this app are told apart by their suffix
+            // (.mali.g615 or not) and by this number, and until 2026-10-20 every build carried 45
+            // - so a new apk looked like the same version, and HyperOS installed it again.
             Text(
-                stringResource(R.string.upd_build, me.version, s.buildLabel), fontSize = 12.5.sp, color = colors.onSurfaceVariant,
+                stringResource(R.string.upd_build, "${me.version} (${me.versionCode})", s.buildLabel), fontSize = 12.5.sp, color = colors.onSurfaceVariant,
                 maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f).padding(top = 6.dp),
             )
             val checked = u.catalog?.checkedAt?.takeIf { it > 0 }
