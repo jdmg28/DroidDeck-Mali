@@ -135,7 +135,10 @@ object SessionArtifacts {
         val tmp = File(dir, ".${f.name}.scrub")
         return try {
             val before = Scrubbed(f.length(), f.lastModified())
-            tmp.bufferedWriter().use { w -> LogRedactor.scrubTo(f, w) }
+            // The share pass, not the plain one: a log that ends up in a zip must not still carry
+            // the CDN tokens redact() leaves alone, and the record this writes lets the zip skip
+            // the work later.
+            tmp.bufferedWriter().use { w -> LogRedactor.scrubForShare(f, w) }
             val scrubbed = tmp.readBytes()
             if (scrubbed.contentEquals(f.readBytes())) {
                 tmp.delete()

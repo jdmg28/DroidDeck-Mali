@@ -117,7 +117,7 @@ object SessionLogShare {
         z.putNextEntry(ZipEntry(name))
         if (!scrubbed && LogRedactor.isText(f)) {
             val w = z.bufferedWriter()
-            LogRedactor.scrubTo(f, w)
+            LogRedactor.scrubForShare(f, w)
             w.flush()
         } else {
             f.inputStream().use { it.copyTo(z) }
