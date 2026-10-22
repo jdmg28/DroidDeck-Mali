@@ -144,12 +144,31 @@ docker run --rm --platform linux/amd64 \
         READELF=aarch64-linux-gnu-readelf bash tools/linuxfs/check-preloads.sh "$d"
     '
 
-x86_key=$(inputs_hash bullseye tools/linuxfs/build-x86-preloads.sh tools/linuxfs/preload tools/linuxfs/fex \
+# The Debian bullseye image, from whichever registry answers: public.ecr.aws has answered
+# "toomanyrequests: Data limit exceeded" to the whole runner, and the x86-64 preloads are the
+# one step that needs this image, so a mirror is the difference between a build and no build.
+# DROIDDECK_BULLSEYE_IMAGE pins one for a machine that has it cached.
+bullseye_image=${DROIDDECK_BULLSEYE_IMAGE:-}
+if [ -z "$bullseye_image" ]; then
+    for candidate in public.ecr.aws/docker/library/debian:bullseye \
+                     mirror.gcr.io/library/debian:bullseye \
+                     docker.io/library/debian:bullseye; do
+        if docker image inspect "$candidate" >/dev/null 2>&1 ||
+           docker pull -q "$candidate" >/dev/null 2>&1; then
+            bullseye_image=$candidate
+            break
+        fi
+    done
+    echo "x86-64 preloads: using ${bullseye_image:-no debian:bullseye image}"
+fi
+[ -n "$bullseye_image" ] || { echo "no debian:bullseye image could be fetched from any registry" >&2; exit 1; }
+
+x86_key=$(inputs_hash "bullseye $bullseye_image" tools/linuxfs/build-x86-preloads.sh tools/linuxfs/preload tools/linuxfs/fex \
     app/src/main/cpp/fakeinput_steam.cpp)
 x86_stage="${staging_dir}/x86-preloads"
 if restore_step x86-preloads "${x86_key}" "${linuxfs_dir}"; then :; else
     docker run --rm --platform linux/amd64 \
-        -v "${repo_root}:/src" -w /src public.ecr.aws/docker/library/debian:bullseye bash -c '
+        -v "${repo_root}:/src" -w /src "$bullseye_image" bash -c '
             set -euo pipefail
             printf "deb http://archive.debian.org/debian bullseye main\ndeb http://archive.debian.org/debian-security bullseye-security main\n" > /etc/apt/sources.list
             apt-get -o Acquire::Check-Valid-Until=false update -qq
