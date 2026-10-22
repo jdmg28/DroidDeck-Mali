@@ -262,6 +262,13 @@ object SessionArtifacts {
                 // script writes game-started.txt the first time it sees a game process (and
                 // syncs it, so it survives the reset).
                 val gameRan = File(dir, "game-started.txt").isFile
+                // The session writes this once the worst process passes 80% of the descriptor
+                // ceiling (droiddeck-session, R25). On its own the file ships with the folder;
+                // the event puts it in events.jsonl, where the report reads it without a hunt.
+                File(dir, "fd-pressure").takeIf { it.isFile }?.let { marker ->
+                    SessionEvents.record("session.fd_pressure",
+                        mapOf("report" to marker.readText().trim().take(200)), dir)
+                }
                 // The restart trail behind the safe mode: only for a session that had a game in
                 // it, and only the newest (older folders are collected in the same pass and are
                 // the same restarts).
