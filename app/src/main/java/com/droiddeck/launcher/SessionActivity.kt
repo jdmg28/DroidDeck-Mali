@@ -174,10 +174,14 @@ class SessionActivity : ComponentActivity(), SurfaceHolder.Callback {
     }
     private var steamController: SteamControllerBle? = null
     private var onScreenControls: OnScreenControls? = null
+    /** Steam's touch controls (SteamTouchControls), made once the session offers the device. */
     private var steamTouchControls: com.droiddeck.launcher.input.SteamTouchControls? = null
     private var steamTouchAvailable by mutableStateOf(false)
     private val steamTouchRetry = Runnable { updateOnScreenControls() }
+    /** While Steam's touch controls are up: how the game's touch config says touches outside them
+     *  act (Steam Link's input and mouse modes), in place of the drawer's touch mode. */
     private var steamTouchOptions: com.droiddeck.launcher.input.SteamTouchConfig.Options? = null
+    /** The touch mode touches are routed by: the drawer's, or the game's while Steam's controls are up. */
     private var routedTouchMode = SessionPrefs.TOUCH_AUTO
     private var keyboard: KeyboardHost? = null
     private var controllerSettings by mutableStateOf<ControllerPrefs.Settings?>(null)
@@ -480,7 +484,17 @@ class SessionActivity : ComponentActivity(), SurfaceHolder.Callback {
             uiHandler.removeCallbacks(cursorHide)
             cursorVisible = false
         }
-        onScreenControls = OnScreenControls(this, bridge, onKeyboard = ::togglePcKeyboard).also { root.addView(it) }
+        onScreenControls = OnScreenControls(this, bridge, onKeyboard = ::togglePcKeyboard,
+            onKey = { code, down -> if (CompositorHost.isStarted) sendGuestKey(code, down) },
+            onMouse = { button, down -> WaylandCompositor.nativeSendSceneInput(3, button, if (down) 1 else 0) },
+            onPadDelta = { dx, dy ->
+                val w = surfaceView.width
+                val h = surfaceView.height
+                if (w > 0 && h > 0) WaylandCompositor.sendPointerDelta(
+                    dx * com.droiddeck.launcher.input.InputSpace.WIDTH / w,
+                    dy * com.droiddeck.launcher.input.InputSpace.HEIGHT / h)
+            },
+        ).also { root.addView(it) }
         keyboard = KeyboardHost(this).also { root.addView(it) }
         touchpad = TouchpadGestures(PointerGestures.slop(this), pointerListener)
         threeFingerTap = com.droiddeck.launcher.input.ThreeFingerTap(PointerGestures.slop(this) * 2)
@@ -507,8 +521,15 @@ class SessionActivity : ComponentActivity(), SurfaceHolder.Callback {
                 com.droiddeck.launcher.runtime.DesktopCatalog.protonSeedNeeded(this)
             if (needRuntime || needDesktop || needProton) installThenStart(needRuntime, needDesktop, needProton)
         }
-        hud = PerfHud(this)
+        // The HUD says the session's own output, which the game is drawing at and the panel is
+        // showing at its own rate: "960x720 · 120 Hz" next to 27 fps is what tells a reader that
+        // the resolution is the cost, or the refresh, or neither.
+        hud = PerfHud(this, outputSize())
         hud.onPresentingWindowChanged = {
+            // Logged on every change, not every frame: when a session's picture stops, whether the
+            // window still presenting frames is the game's or Steam's says whether the game stopped
+            // committing buffers at all or something else was put in front of it.
+            Log.i(TAG, "presenting window: ${hud.presentingWindow ?: "none"}")
             if (FrameGen.engine(this) != FrameGen.ENGINE_OFF) CompositorHost.rearmFrameGen { applyFrameGen() }
         }
         if (SessionState.running && SessionState.firstFrameSeen) {
@@ -1448,7 +1469,9 @@ class SessionActivity : ComponentActivity(), SurfaceHolder.Callback {
         val turnip = TurnipDriver(this)
         com.droiddeck.launcher.gpu.DriverSetupLog.write(this, "surface.driver-setup")
         if (!CompositorHost.isStarted) CompositorHost.displayChoice = SessionPrefs.androidDriver(this)
-        val driverId = if (CompositorHost.isStarted) null else turnip.install()
+        // A Linux/glibc PanVK is NEVER loaded into this Android/Bionic process; on Mali even a
+        // stale manual Turnip selection is ignored.
+        val driverId = if (CompositorHost.isStarted || com.droiddeck.launcher.core.DeviceSupport.mali()) null else turnip.install()
 
         val previous = SessionState.outputSize
         val live = if (SessionState.followScreen && !isInPictureInPictureMode)
@@ -1516,6 +1539,7 @@ class SessionActivity : ComponentActivity(), SurfaceHolder.Callback {
         if (!SessionState.running) SessionEvents.record("compositor.started")
         if (!SessionState.running) {
             SessionEvents.transition(SessionPhase.STARTING_GUEST, "guest.starting")
+            armPresentationWatchdog()
             SessionService.start(
                 this, intent.getStringExtra(SessionService.EXTRA_MODE) ?: SessionService.MODE_STEAM,
                 intent.getStringExtra(SessionService.EXTRA_PROGRAM),
@@ -1581,6 +1605,7 @@ class SessionActivity : ComponentActivity(), SurfaceHolder.Callback {
         if (holder !== outputHolder()) return
         surfaceW = 0
         surfaceH = 0
+        watchdogGen.incrementAndGet() // a surface going away is not a presentation fault to report
         glassesOutputActive = false
         CompositorHost.detach(holder.surface)
     }
@@ -1602,7 +1627,15 @@ class SessionActivity : ComponentActivity(), SurfaceHolder.Callback {
             Library.drawsAtPanel(program) && !SessionPrefs.resolutionChosen(this, mode))
             com.droiddeck.launcher.session.SessionDisplay.MATCH_SCREEN
         else SessionPrefs.resolutionChoice(this, mode, panel)
-        return com.droiddeck.launcher.session.SessionDisplay.resolveChoice(panel, choice)
+        val size = com.droiddeck.launcher.session.SessionDisplay.resolveChoice(panel, choice)
+        // The safe mode's last rung: a phone that has restarted three times with a game running
+        // gets 1280x720 at most, whatever the resolution page says (the compositor and gamescope
+        // read this same size, so the picture just scales to the panel).
+        if (com.droiddeck.launcher.session.RebootGuard.level(this) >=
+            com.droiddeck.launcher.session.RebootGuard.LEVEL_SMALL) {
+            return com.droiddeck.launcher.session.SessionDisplay.capped(size, 1280, 720)
+        }
+        return size
     }
 
     private fun refreshHz(): Float {
@@ -1761,6 +1794,25 @@ class SessionActivity : ComponentActivity(), SurfaceHolder.Callback {
     private class EndHint(val text: String, val evenOnSuccess: Boolean = false)
 
     private fun sessionEndHint(log: File?): EndHint? {
+        // The compositor's own word (set by the presentation watchdog, or read back from
+        // wayland.log when this process did not live to see the session end).
+        presentationFault?.let { return EndHint(getString(R.string.session_end_present_fault, it)) }
+        val waylandLog = SessionState.logDirectory?.let { File(it, "wayland.log") }
+        if (waylandLog != null && waylandLog.isFile) {
+            try {
+                java.io.RandomAccessFile(waylandLog, "r").use { f ->
+                    val start = maxOf(0L, waylandLog.length() - 256L * 1024)
+                    f.seek(start)
+                    val bytes = ByteArray((waylandLog.length() - start).toInt())
+                    f.readFully(bytes)
+                    Regex("DD_PRESENT_FAULT: (.+)").find(String(bytes, Charsets.ISO_8859_1))
+                        ?.groupValues?.get(1)?.trim()?.takeIf { it.isNotEmpty() }?.let {
+                            return EndHint(getString(R.string.session_end_present_fault, it))
+                        }
+                }
+            } catch (_: Exception) {
+            }
+        }
         if (log == null || !log.isFile) return null
         return try {
             var enosys = 0
@@ -2319,6 +2371,7 @@ class SessionActivity : ComponentActivity(), SurfaceHolder.Callback {
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
         if (event.isFromSource(android.view.InputDevice.SOURCE_MOUSE)) return onMouse(event)
+        // Child views get the event first, so menus, keyboards and the on-screen pad still work.
         if (event.actionMasked == MotionEvent.ACTION_DOWN) {
             scrollTouchGesture = scrollTouchMode()
             scrollRestX = 0f
@@ -2448,10 +2501,12 @@ class SessionActivity : ComponentActivity(), SurfaceHolder.Callback {
             what, d.name, d.vendorId, d.productId, d.id, d.sources))
     }
 
+    /** Steam's touch controls, once the session has made the device (SessionService). */
     private fun steamTouch(): com.droiddeck.launcher.input.SteamTouchControls? {
         val device = com.droiddeck.launcher.input.SteamTouchDevice.current ?: return null
         steamTouchControls?.let { view ->
             if (view.device === device) return view
+            // A new session made a new device: the view of the old one goes.
             view.releaseAll()
             (view.parent as? android.view.ViewGroup)?.removeView(view)
             steamTouchControls = null
@@ -2464,10 +2519,13 @@ class SessionActivity : ComponentActivity(), SurfaceHolder.Callback {
             steamTouchOptions = options
             applyTouchRouting()
         }
+        // Paste: the clipboard is shared with the session's X servers; Ctrl+V types it.
         view.onPaste = {
-            sendGuestKey(29, true); sendGuestKey(47, true)
+            sendGuestKey(29, true); sendGuestKey(47, true) // KEY_LEFTCTRL, KEY_V
             sendGuestKey(47, false); sendGuestKey(29, false)
         }
+        // The client reads a controller's config when it connects: after a save, plug the device
+        // out and back in so it takes the new one.
         view.onSaved = {
             device.plugged = false
             uiHandler.postDelayed({ updateOnScreenControls() }, 700)
@@ -2504,8 +2562,12 @@ class SessionActivity : ComponentActivity(), SurfaceHolder.Callback {
             return
         }
         val buttonsOnly = forced == SessionPrefs.OSC_STEAM_QAM
+        // Steam's touch controller stands in for the app's pad, and is plugged into the client only
+        // while it is shown - as Steam Link withdraws its controls when a physical pad is in use.
         val wantsSteam = forced == SessionPrefs.OSC_STEAM_TOUCH && SessionState.mode == SessionService.MODE_STEAM
         val steam = if (wantsSteam) steamTouch() else null
+        // The service makes the device while the session starts, after this activity: the app's
+        // own pad until then, and another look in a moment.
         if (wantsSteam && steam == null && !isFinishing && !isDestroyed) {
             uiHandler.removeCallbacks(steamTouchRetry)
             uiHandler.postDelayed(steamTouchRetry, 1000)
@@ -2519,8 +2581,14 @@ class SessionActivity : ComponentActivity(), SurfaceHolder.Callback {
             SessionPrefs.OSC_ALWAYS -> true
             SessionPrefs.OSC_STEAM_QAM -> true
             SessionPrefs.OSC_NEVER -> false
+            // Shown throughout a Steam session: a handheld's built-in pad would keep Auto off for good.
+            // Outside Steam it is Auto.
             SessionPrefs.OSC_STEAM_TOUCH -> SessionState.mode == SessionService.MODE_STEAM ||
                 (!PadBridge.anyControllerConnected() && SessionState.mode != SessionService.MODE_DESKTOP)
+            // Auto: the touch pad when there is no controller - except on the desktop, where the
+            // screen is a touchpad for the pointer and a pad over it would be in the way. A game
+            // started from the rail, or Steam, gets it; the drawer turns it on anywhere. A paired
+            // Steam controller counts as the controller it is, Bluetooth or not.
             else -> !PadBridge.anyControllerConnected() && !SteamControllerBle.connected &&
                 SessionState.mode != SessionService.MODE_DESKTOP
         }
@@ -3105,6 +3173,46 @@ class SessionActivity : ComponentActivity(), SurfaceHolder.Callback {
     }
 
     private val endListener: (Int) -> Unit = { status -> onSessionEnded(status) }
+
+    /**
+     * What the compositor says it cannot present with, when the watchdog below acts on it. Read by
+     * [sessionEndHint] ahead of the log: the fault is also a DD_PRESENT_FAULT line in wayland.log,
+     * but the string here is exact even if the log write lost the race with the session ending.
+     */
+    @Volatile private var presentationFault: String? = null
+
+    /** Bumped on every arm/disarm, so a watchdog left over from an earlier session stands down. */
+    private val watchdogGen = java.util.concurrent.atomic.AtomicInteger()
+
+    /**
+     * A session whose compositor cannot present sits on a silent black screen forever: the guest
+     * runs, sound plays, and nothing in the UI says why - the exact report from a Mali device
+     * whose system Vulkan is unusable (a Turbo 5 Max / Immortalis-G925), in every driver mode,
+     * because the presenter is the one GPU component the app itself owns. The compositor records
+     * its reason (vkp_fault); after a minute of no first frame while a session runs, this ends the
+     * session so the reason reaches the ended screen instead of nobody. A slow start (a big
+     * runtime, FEX fetching) has no compositor fault and is left alone.
+     */
+    private fun armPresentationWatchdog() {
+        presentationFault = null
+        val gen = watchdogGen.incrementAndGet()
+        Thread({
+            var waitedMs = 0
+            while (waitedMs < 60_000) {
+                Thread.sleep(1000)
+                waitedMs += 1000
+                if (watchdogGen.get() != gen) return@Thread
+                if (SessionState.firstFrameSeen || SessionState.stopRequested || !SessionState.running) return@Thread
+            }
+            if (watchdogGen.get() != gen || SessionState.firstFrameSeen) return@Thread
+            if (!SessionState.running || SessionState.stopRequested) return@Thread
+            val fault = WaylandCompositor.compositorFault()
+            if (fault.isBlank()) return@Thread
+            presentationFault = fault
+            Log.e(TAG, "presentation watchdog: $fault")
+            SessionService.stop(this@SessionActivity)
+        }, "present-watchdog").start()
+    }
     private val firstFrameListener = Runnable {
         SessionEvents.firstFrame()
         if (SessionState.mode == SessionService.MODE_STEAM) SteamRepair.clientShown(this)
@@ -3115,6 +3223,7 @@ class SessionActivity : ComponentActivity(), SurfaceHolder.Callback {
     }
 
     override fun onDestroy() {
+        uiHandler.removeCallbacks(steamTouchRetry)
         steamVrRecovery.close()
         uiHandler.removeCallbacks(steamTouchRetry)
         if (runtimeRemovalBlocked) { super.onDestroy(); return }

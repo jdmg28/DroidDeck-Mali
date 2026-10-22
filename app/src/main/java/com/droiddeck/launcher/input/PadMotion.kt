@@ -52,6 +52,9 @@ class PadMotion(private val context: Context, private val rotation: () -> Int) :
             sensors?.unregisterListener(this)
             reading = false
             idlePolls = 0
+            gyro.fill(0)
+            FakeInputWriter.writeMotion(SLOT, accel, gyro)
+            SteamTouchDevice.current?.setMotion(accel, gyro)
             still()
         }
         worker.quitSafely()

@@ -31,6 +31,22 @@ object SessionDisplay {
             .filter { resolveChoice(panel, it) != screenSize(panel) } + MATCH_SCREEN + FOLLOW_SCREEN
     }
 
+    /**
+     * [size] scaled down, keeping its shape, until neither side is over [maxWidth] x [maxHeight]:
+     * the safe mode's last rung (RebootGuard), where a smaller swapchain is the point.
+     */
+    fun capped(size: Pair<Int, Int>, maxWidth: Int, maxHeight: Int): Pair<Int, Int> {
+        val scale = minOf(1f, maxWidth.toFloat() / size.first, maxHeight.toFloat() / size.second)
+        if (scale >= 1f) return size
+        // Rounded, not truncated: 1080 * 1280/2400 is 575.999... in float, and truncating it
+        // would take a line off a 16:9 picture.
+        val w = (size.first * scale + 0.5f).toInt() and 1.inv()
+        val h = (size.second * scale + 0.5f).toInt() and 1.inv()
+        return maxOf(w, 2) to maxOf(h, 2)
+    }
+
+    /** A Follow screen session's display for a window of this size: its own shape, square or
+     *  portrait included, with even sides; null when it is too small to follow (PiP). */
     fun followSize(width: Int, height: Int): Pair<Int, Int>? =
         if (minOf(width, height) < FOLLOW_MIN_SIDE) null else (width and 1.inv()) to (height and 1.inv())
 

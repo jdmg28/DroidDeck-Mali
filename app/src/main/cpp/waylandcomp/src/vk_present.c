@@ -12,6 +12,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdarg.h>
 #include <sys/system_properties.h>
 #include <unistd.h>
 #include <errno.h>
@@ -24,6 +25,33 @@
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
 #define LOGE(...) droiddeck_log("error", __VA_ARGS__)
 #define MOD_INVALID VKP_MOD_INVALID
+
+/* The reason presentation cannot start, for the app to surface: when dev_init gives up the
+ * compositor keeps serving Wayland ("clients will connect but nothing is drawn") and when the
+ * swapchain fails swap_init retries every 0.5 s - both silent to the person holding the phone,
+ * who is looking at a black session in the meantime. This is how a session on a device whose
+ * system Vulkan is unusable (a new Mali the vendor driver cannot present from, say) sat black
+ * forever with the guest running behind it, in every driver mode, and nothing in the UI said
+ * why. Every point that gives up records its reason here; the first successful swapchain build
+ * clears it. droiddeck_compositor_fault() (waylandcomp_jni.c) reads it, and the session's
+ * ended screen shows it (SessionActivity's presentation watchdog + sessionEndHint). */
+static char g_fault[224];
+static void set_fault(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+static void set_fault(const char *fmt, ...) {
+    char msg[sizeof(g_fault)];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(msg, sizeof(msg), fmt, ap);
+    va_end(ap);
+    if (!strcmp(msg, g_fault)) return;
+    snprintf(g_fault, sizeof(g_fault), "%s", msg);
+    droiddeck_log("present", "DD_PRESENT_FAULT: %s", g_fault);
+}
+static void clear_fault(void) {
+    if (!g_fault[0]) return;
+    g_fault[0] = '\0';
+    droiddeck_log("present", "presentation recovered: fault cleared");
+}
 
 struct vkp_image {
     VkImage image;
@@ -54,6 +82,8 @@ static VkFence g_fence;
 static int g_swap_extra;
 #define SCENE_FMT VK_FORMAT_R8G8B8A8_UNORM
 static VkPhysicalDeviceMemoryProperties g_memprops;
+/* Complete optional dma-buf import group; system Mali may have none of it. */
+static int g_has_dmabuf_import;
 
 static VkSurfaceKHR g_surface;
 static VkSwapchainKHR g_swapchain;
@@ -399,7 +429,9 @@ static int dev_init(void) {
     if (g_dev_state != 0) return g_dev_state == 1 ? 0 : -1;
 
     if (vk_loader_open(g_driver_path, g_library_name, g_native_lib_dir) != 0) {
-        LOGE("present: vk_loader_open failed"); g_dev_state = -1; return -1;
+        LOGE("present: vk_loader_open failed"); g_dev_state = -1;
+        set_fault("no Vulkan loader: libvulkan.so would not load in this app");
+        return -1;
     }
 
     const char *inst_exts[3] = {VK_KHR_SURFACE_EXTENSION_NAME,
@@ -430,13 +462,19 @@ static int dev_init(void) {
                                 .enabledExtensionCount = n_inst_exts,
                                 .ppEnabledExtensionNames = inst_exts};
     if (g_vk.CreateInstance(&ici, NULL, &g_inst) != VK_SUCCESS) {
-        LOGE("present: vkCreateInstance failed"); g_dev_state = -1; return -1;
+        LOGE("present: vkCreateInstance failed"); g_dev_state = -1;
+        set_fault("vkCreateInstance failed on the system Vulkan driver");
+        return -1;
     }
     vk_loader_load_instance(g_inst);
 
     uint32_t npd = 0;
     g_vk.EnumeratePhysicalDevices(g_inst, &npd, NULL);
-    if (!npd) { LOGE("present: no physical devices"); g_dev_state = -1; return -1; }
+    if (!npd) {
+        LOGE("present: no physical devices"); g_dev_state = -1;
+        set_fault("the system Vulkan driver exposed no devices to this app");
+        return -1;
+    }
     VkPhysicalDevice pds[8]; if (npd > 8) npd = 8;
     g_vk.EnumeratePhysicalDevices(g_inst, &npd, pds);
     g_pd = VK_NULL_HANDLE;
@@ -448,7 +486,11 @@ static int dev_init(void) {
         for (uint32_t q = 0; q < nq; q++)
             if (qs[q].queueFlags & VK_QUEUE_GRAPHICS_BIT) { g_pd = pds[i]; g_qfam = q; break; }
     }
-    if (g_pd == VK_NULL_HANDLE) { LOGE("present: no graphics queue"); g_dev_state = -1; return -1; }
+    if (g_pd == VK_NULL_HANDLE) {
+        LOGE("present: no graphics queue"); g_dev_state = -1;
+        set_fault("the system Vulkan device offers no graphics queue");
+        return -1;
+    }
     {
         VkPhysicalDeviceProperties props;
         g_vk.GetPhysicalDeviceProperties(g_pd, &props);
@@ -459,17 +501,25 @@ static int dev_init(void) {
     }
     g_vk.GetPhysicalDeviceMemoryProperties(g_pd, &g_memprops);
 
-    const char *dev_exts[7] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME, "VK_KHR_external_memory_fd",
-                               "VK_EXT_external_memory_dma_buf", "VK_EXT_image_drm_format_modifier",
-                               "VK_KHR_image_format_list", NULL, NULL};
-    uint32_t n_dev_exts = 5;
+    /* Only the screen swapchain is mandatory. A stock Mali driver may lack Linux dma-buf
+     * imports: asking for missing extensions made vkCreateDevice fail before SHM/AHB could work. */
+    static const char *const dmabuf_exts[] = {"VK_KHR_external_memory_fd", "VK_EXT_external_memory_dma_buf",
+        "VK_EXT_image_drm_format_modifier", "VK_KHR_image_format_list"};
+    const char *dev_exts[7] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
+    uint32_t n_dev_exts = 1;
     uint32_t ne = 0;
     g_vk.EnumerateDeviceExtensionProperties(g_pd, NULL, &ne, NULL);
     VkExtensionProperties *exts = calloc(ne ? ne : 1, sizeof(*exts));
     g_vk.EnumerateDeviceExtensionProperties(g_pd, NULL, &ne, exts);
-    for (unsigned i = 0; i < 5; i++)
-        if (!has_ext(exts, ne, dev_exts[i]))
-            LOGE("present: driver MISSING %s (dmabuf import will fail)", dev_exts[i]);
+    g_has_dmabuf_import = 1;
+    for (unsigned i = 0; i < sizeof(dmabuf_exts) / sizeof(*dmabuf_exts); ++i) {
+        if (has_ext(exts, ne, dmabuf_exts[i])) dev_exts[n_dev_exts++] = dmabuf_exts[i];
+        else {
+            g_has_dmabuf_import = 0;
+            LOGI("present: no %s; dma-buf copy imports unavailable, use SHM/AHB where supported", dmabuf_exts[i]);
+        }
+    }
+    /* HDR sessions only: the HDR10 swapchain (frame generation) can carry the game's metadata. */
     int want_hdr_md = 0;
     if (droiddeck_color_requested()) {
         want_hdr_md = has_ext(exts, ne, VK_EXT_HDR_METADATA_EXTENSION_NAME);
@@ -495,7 +545,10 @@ static int dev_init(void) {
         dr = g_vk.CreateDevice(g_pd, &dci, NULL, &g_dev);
     }
     if (dr != VK_SUCCESS) {
-        LOGE("present: vkCreateDevice failed"); g_dev_state = -1; return -1;
+        LOGE("present: vkCreateDevice failed"); g_dev_state = -1;
+        set_fault("vkCreateDevice failed on %s (%s)", g_gpu_name[0] ? g_gpu_name : "the system device",
+                  vk_result_name(dr));
+        return -1;
     }
     vk_loader_load_device(g_dev);
     g_vk.GetDeviceQueue(g_dev, g_qfam, 0, &g_queue);
@@ -540,6 +593,8 @@ static int dev_init(void) {
 }
 
 int vkp_ready(void) { return dev_init(); }
+
+const char *vkp_fault(void) { return g_fault; }
 
 static int swap_init_locked(void);
 
@@ -648,11 +703,17 @@ static int swap_init_locked(void) {
     VkAndroidSurfaceCreateInfoKHR aci = {
         .sType = VK_STRUCTURE_TYPE_ANDROID_SURFACE_CREATE_INFO_KHR, .window = g_window};
     if (g_vk.CreateAndroidSurfaceKHR(g_inst, &aci, NULL, &g_surface) != VK_SUCCESS) {
-        SWLOGE("present: create android surface failed"); return -1;
+        SWLOGE("present: create android surface failed");
+        set_fault("vkCreateAndroidSurfaceKHR failed for the session surface");
+        return -1;
     }
     VkBool32 sup = VK_FALSE;
     g_vk.GetPhysicalDeviceSurfaceSupportKHR(g_pd, g_qfam, g_surface, &sup);
-    if (!sup) { SWLOGE("present: queue can't present to the window"); return -1; }
+    if (!sup) {
+        SWLOGE("present: queue can't present to the window");
+        set_fault("the system Vulkan queue cannot present to the session surface");
+        return -1;
+    }
 
     VkSurfaceCapabilitiesKHR caps;
     g_vk.GetPhysicalDeviceSurfaceCapabilitiesKHR(g_pd, g_surface, &caps);
@@ -663,9 +724,15 @@ static int swap_init_locked(void) {
     uint32_t nfmt = 0;
     g_vk.GetPhysicalDeviceSurfaceFormatsKHR(g_pd, g_surface, &nfmt, NULL);
     VkSurfaceFormatKHR *fmts = nfmt ? calloc(nfmt, sizeof(*fmts)) : NULL;
-    if (!fmts) { SWLOGE("present: the surface lists no formats"); return -1; }
+    if (!fmts) {
+        SWLOGE("present: the surface lists no formats");
+        set_fault("out of memory reading the session surface's swapchain formats");
+        return -1;
+    }
     if (g_vk.GetPhysicalDeviceSurfaceFormatsKHR(g_pd, g_surface, &nfmt, fmts) < 0 || !nfmt) {
-        free(fmts); SWLOGE("present: vkGetPhysicalDeviceSurfaceFormatsKHR failed"); return -1;
+        free(fmts); SWLOGE("present: vkGetPhysicalDeviceSurfaceFormatsKHR failed");
+        set_fault("the session surface lists no swapchain formats (vkGetPhysicalDeviceSurfaceFormatsKHR)");
+        return -1;
     }
     VkSurfaceFormatKHR chosen = fmts[0];
     const VkSurfaceFormatKHR sdr_choice = fmts[0];
@@ -737,13 +804,20 @@ static int swap_init_locked(void) {
         cr = g_vk.CreateSwapchainKHR(g_dev, &sci, NULL, &g_swapchain);
     }
     if (cr != VK_SUCCESS) {
+        char fmtname[24];
+        vk_format_short(g_swap_fmt, fmtname, sizeof(fmtname));
         g_swapchain = VK_NULL_HANDLE;
         SWLOGE("present: vkCreateSwapchainKHR failed (%d)", (int)cr);
+        set_fault("vkCreateSwapchainKHR failed on %s for a %ux%u %s surface (%s)",
+                  g_gpu_name[0] ? g_gpu_name : "the system device",
+                  (unsigned)g_extent.width, (unsigned)g_extent.height,
+                  fmtname, vk_result_name(cr));
         return -1;
     }
     g_vk.GetSwapchainImagesKHR(g_dev, g_swapchain, &g_nimg, NULL);
     g_images = calloc(g_nimg, sizeof(VkImage));
     g_vk.GetSwapchainImagesKHR(g_dev, g_swapchain, &g_nimg, g_images);
+    clear_fault();
 
     droiddeck_log("gpu", "screen output %ux%u, %u buffers, vsync%s", g_extent.width, g_extent.height, g_nimg,
                g_swap_extra ? " (frame generation: several presents per frame)" : "");
@@ -850,7 +924,8 @@ const char *vkp_modifier_name(uint64_t modifier) {
 }
 
 static int modifier_importable(VkFormat fmt, uint64_t modifier, VkImageUsageFlags usage) {
-    if (!g_vk.GetPhysicalDeviceImageFormatProperties2) return 1;
+    if (!g_has_dmabuf_import) return 0;
+    if (!g_vk.GetPhysicalDeviceImageFormatProperties2) return 1; /* can't ask; the create will tell */
     VkPhysicalDeviceExternalImageFormatInfo ext = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_IMAGE_FORMAT_INFO,
         .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT};
@@ -869,7 +944,7 @@ static int modifier_importable(VkFormat fmt, uint64_t modifier, VkImageUsageFlag
 }
 
 int vkp_dmabuf_modifiers(uint32_t drm_format, uint64_t *out, int max) {
-    if (max <= 0 || dev_init() != 0 || !g_vk.GetPhysicalDeviceFormatProperties2) return 0;
+    if (max <= 0 || dev_init() != 0 || !g_vk.GetPhysicalDeviceFormatProperties2 || !g_has_dmabuf_import) return 0;
     VkFormat fmt = drm_to_vk(drm_format);
     VkDrmFormatModifierPropertiesListEXT list = {
         .sType = VK_STRUCTURE_TYPE_DRM_FORMAT_MODIFIER_PROPERTIES_LIST_EXT};
@@ -911,7 +986,7 @@ int vkp_image_is_dmabuf(const struct vkp_image *img) { return img && img->dmabuf
 struct vkp_image *vkp_image_import_dmabuf(int fd, uint32_t drm_format, uint64_t modifier, int w, int h,
                                           uint32_t stride, uint32_t offset, int as_blit_dst) {
     if (modifier == MOD_INVALID || w <= 0 || h <= 0) return NULL;
-    if (dev_init() != 0) return NULL;
+    if (dev_init() != 0 || !g_has_dmabuf_import) return NULL;
 
     struct vkp_image *img = calloc(1, sizeof(*img));
     if (!img) return NULL;

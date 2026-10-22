@@ -123,6 +123,10 @@ class GpuDriversState(
     val androidDownloads: List<DownloadRow> = emptyList(),
     val canRestoreBundled: Boolean = false,
     val activeBundle: String? = null,
+    /** Whether this is a Mali device: only there does the GPU safety switch have anything to say. */
+    val mali: Boolean = false,
+    /** The GPU safety setting in force (GpuSafety): "auto", "software" or "mali". */
+    val gpuSafety: String = com.droiddeck.launcher.gpu.GpuSafety.AUTO,
     val mode: String = GPU_MODE_AUTO,
     val display: DriverSlot = DriverSlot(),
     val runtime: DriverSlot = DriverSlot(),
@@ -145,6 +149,8 @@ class GpuDriversActions(
     val onImportAndroid: () -> Unit = {},
     val onImportZip: () -> Unit = {},
     val onRestoreBundled: () -> Unit = {},
+    /** The GPU safety setting: "auto" (default, software on Mali), "software" or "mali". */
+    val onGpuSafety: (String) -> Unit = {},
     val onMode: (String) -> Unit = {},
     val onRestart: () -> Unit = {},
 )
@@ -152,6 +158,132 @@ class GpuDriversActions(
 @Composable
 internal fun DeviceDetails(first: FocusRequester) {
     val colors = MaterialTheme.colorScheme
+    val pal = LocalPalette.current
+    var showAll by rememberSaveable { mutableStateOf(false) }
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth().padding(top = 12.dp)) {
+        DeviceCard(s)
+        if (s.gpuFamily == "Arm Mali") {
+            Text(stringResource(R.string.mali_integration_hint), fontSize = 13.sp,
+                color = colors.onSurfaceVariant, modifier = Modifier.padding(vertical = 8.dp))
+        }
+        // How far the GPU is kept out of the guest. Shown where there is a GPU to keep out: on
+        // Adreno the setting is Auto and says so, and nothing in it changes a session.
+        if (s.mali) {
+            SettingsGroup(stringResource(R.string.gpu_safety_title)) {
+                SettingsRow(stringResource(R.string.gpu_safety_label), stringResource(R.string.gpu_safety_hint)) {
+                    SafetyDropdown(s.gpuSafety, a.onGpuSafety)
+                }
+            }
+        }
+        if (!s.unsupported && s.gpuFamily != "Arm Mali") {
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                ModeCard(Icons.Outlined.AutoAwesome, stringResource(R.string.common_auto), stringResource(R.string.gpu_auto_hint), s.auto, Modifier.weight(1f)) { a.onAuto(true) }
+                ModeCard(Icons.Outlined.Tune, stringResource(R.string.mode_suspend_manual), stringResource(R.string.gpu_manual_hint), !s.auto, Modifier.weight(1f)) { a.onAuto(false) }
+            }
+            if (s.auto) AutoCard(s)
+            else {
+                val shown = s.pairs.filter { it.suits || showAll }
+                if (shown.isEmpty()) Text(
+                    if (s.checking) stringResource(R.string.gpu_checking) else stringResource(R.string.gpu_none_listed),
+                    fontSize = 13.sp, color = colors.onSurfaceVariant, modifier = Modifier.padding(vertical = 8.dp),
+                )
+                for (p in shown) PairLine(p, s.busy == p.key, s.percent, enabled = s.busy == null) { a.onPair(p.key) }
+                if (s.pairs.any { !it.suits }) FocusText(
+                    if (showAll) stringResource(R.string.gpu_hide_other) else stringResource(R.string.gpu_show_other), pal.signal,
+                ) { showAll = !showAll }
+            }
+        }
+        SettingsGroup(stringResource(R.string.gpu_advanced)) {
+            SettingsRow(stringResource(R.string.comp_runtime_driver), s.activeBundle?.let { stringResource(R.string.gpu_set_with_display, it) } ?: stringResource(R.string.gpu_runtime_hint)) {
+                DriverDropdown(s.linuxRows, s.linuxSelected, stringResource(R.string.gpu_runtime_default), a.onSelectLinux) { onAdvanced("rt") }
+            }
+            SettingsRow(stringResource(R.string.comp_display_driver), s.activeBundle?.let { stringResource(R.string.gpu_set_with_runtime, it) } ?: stringResource(R.string.gpu_display_hint)) {
+                DriverDropdown(s.androidRows, s.androidSelected, stringResource(R.string.gpu_auto_by_gpu), a.onSelectAndroid) { onAdvanced("panel") }
+            }
+        }
+    }
+}
+
+/**
+ * One driver list as a drop-down: the installed drivers to pick from, and the full page for
+ * downloading and deleting them. An Android + Linux bundle's row is tagged, and picking it sets both.
+ */
+@Composable
+private fun DriverDropdown(rows: List<DriverRow>, selected: String, fallback: String, onSelect: (String) -> Unit, onManage: () -> Unit) {
+    val colors = MaterialTheme.colorScheme
+    val pal = LocalPalette.current
+    var open by remember { mutableStateOf(false) }
+    Box {
+        SecondaryButton((rows.firstOrNull { it.id == selected }?.name ?: fallback) + "  ▾", compact = true) { open = true }
+        DropdownMenu(open, onDismissRequest = { open = false }, modifier = Modifier.heightIn(max = 360.dp)) {
+            for (row in rows) DropdownMenuItem(
+                leadingIcon = { Radio(row.id == selected) },
+                text = {
+                    Column {
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text(row.name, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = if (row.id == selected) pal.signal else colors.onBackground, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            if (row.tag == DriverRow.BUNDLE) Text(driverTagLabel(row.tag), fontSize = 10.5.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.sp, color = colors.onSurfaceVariant)
+                        }
+                        if (row.detail.isNotEmpty()) Text(row.detail, fontSize = 12.sp, color = colors.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
+                },
+                onClick = { open = false; if (row.id != selected) onSelect(row.id) },
+            )
+            HorizontalDivider(color = pal.line)
+            DropdownMenuItem(text = { Text(stringResource(R.string.gpu_manage), fontSize = 14.sp, color = pal.signal) }, onClick = { open = false; onManage() })
+        }
+    }
+}
+
+/**
+ * The GPU safety setting as a drop-down: Auto first, then software, then the experimental Mali
+ * driver. The order is also the order of how much of the GPU each one hands the session, and the
+ * safest is the one an install that has never chosen gets.
+ */
+@Composable
+private fun SafetyDropdown(selected: String, onSelect: (String) -> Unit) {
+    val colors = MaterialTheme.colorScheme
+    val pal = LocalPalette.current
+    var open by remember { mutableStateOf(false) }
+    val rows = com.droiddeck.launcher.gpu.GpuSafety.values.map { value ->
+        value to when (value) {
+            com.droiddeck.launcher.gpu.GpuSafety.SOFTWARE ->
+                stringResource(R.string.gpu_safety_software) to stringResource(R.string.gpu_safety_software_detail)
+            com.droiddeck.launcher.gpu.GpuSafety.MALI ->
+                stringResource(R.string.gpu_safety_mali) to stringResource(R.string.gpu_safety_mali_detail)
+            else ->
+                stringResource(R.string.gpu_safety_auto) to stringResource(R.string.gpu_safety_auto_detail)
+        }
+    }
+    Box {
+        SecondaryButton((rows.firstOrNull { it.first == selected }?.second?.first
+            ?: stringResource(R.string.gpu_safety_auto)) + "  ▾", compact = true) { open = true }
+        DropdownMenu(open, onDismissRequest = { open = false }, modifier = Modifier.heightIn(max = 360.dp)) {
+            for ((value, texts) in rows) DropdownMenuItem(
+                leadingIcon = { Radio(value == selected) },
+                text = {
+                    Column {
+                        Text(texts.first, fontSize = 14.sp, fontWeight = FontWeight.SemiBold,
+                            color = if (value == selected) pal.signal else colors.onBackground,
+                            maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(texts.second, fontSize = 12.sp, color = colors.onSurfaceVariant)
+                    }
+                },
+                onClick = { open = false; if (value != selected) onSelect(value) },
+            )
+        }
+    }
+}
+
+/**
+ * This GPU and how far it is supported. A tap (or A) opens the card onto everything about the chip -
+ * SoC, GPU, CPU, memory, system, the phone's own Vulkan driver, the drivers in use - gathered once,
+ * off the main thread, with a button that copies it for a bug report.
+ */
+@Composable
+private fun DeviceCard(s: GpuDriversState) {
+    val colors = MaterialTheme.colorScheme
+    val pal = LocalPalette.current
     val context = LocalContext.current
     val clipboard = LocalClipboardManager.current
     var details by remember { mutableStateOf<List<DeviceInfo.Section>?>(null) }

@@ -37,6 +37,11 @@ import com.droiddeck.launcher.ui.DroidDeckTheme
 import com.droiddeck.launcher.ui.onSignal
 import com.droiddeck.launcher.ui.LocalPalette
 
+/**
+ * The layout editor, Winlator-style: the pill names the profile being drawn, and the bar acts on
+ * whatever the finger picked - add a control, remove it, its settings (shape, size). Every drag
+ * saves the moment the finger lifts, so adding another control never reshuffles the placed ones.
+ */
 class ControllerEditorActivity : ComponentActivity() {
     override fun attachBaseContext(newBase: android.content.Context) {
         super.attachBaseContext(newBase)
@@ -44,14 +49,38 @@ class ControllerEditorActivity : ComponentActivity() {
     }
 
     private lateinit var controls: OnScreenControls
+    private lateinit var barView: ComposeView
+
+    /** The group the finger last picked in the view; the bar's Quitar/Ajustes act on it. */
+    private var selected by mutableStateOf<String?>(null)
+
+    /** The pill out of the way while a button is being placed under it. */
+    private var barVisible by mutableStateOf(true)
+
+    /** Recentres the pill, or parks a small "Mostrar" chip in a corner. */
+    private fun setBarExpanded(expanded: Boolean) {
+        barVisible = expanded
+        if (!::barView.isInitialized) return
+        val d = resources.displayMetrics.density
+        val lp = barView.layoutParams as FrameLayout.LayoutParams
+        if (expanded) {
+            lp.gravity = Gravity.CENTER
+            lp.setMargins(0, 0, 0, 0)
+        } else {
+            lp.gravity = Gravity.TOP or Gravity.END
+            lp.setMargins((12 * d).toInt(), (12 * d).toInt(), (12 * d).toInt(), 0)
+        }
+        barView.layoutParams = lp
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         requestedOrientation = com.droiddeck.launcher.session.SessionPrefs.orientation(this)
         immersive()
+        val layoutId = ControllerPrefs.activeLayoutId(this)
         val root = FrameLayout(this)
         root.setBackgroundColor(0xFF0B0F14.toInt())
-        controls = OnScreenControls(this, null, editing = true)
+        controls = OnScreenControls(this, null, editing = true, onSelection = { selected = it })
         root.addView(controls, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
         val bar = ComposeView(this).apply {
             setContent {
@@ -83,15 +112,57 @@ class ControllerEditorActivity : ComponentActivity() {
             }
         }
         root.addView(bar, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.CENTER))
+        barView = bar
         setContentView(root)
     }
 
     @Composable
-    private fun EditorButton(label: String, primary: Boolean, selected: Boolean? = null, onClick: () -> Unit) {
+    private fun EditorBar(layoutId: String) {
+        val activity = this
+        val custom = layoutId != ControllerPrefs.LAYOUT_DEFAULT
+        val name = if (custom) ControllerPrefs.layoutById(activity, layoutId)?.name ?: "" else stringResource(R.string.ctrl_profile_default)
+        if (!barVisible) {
+            EditorButton(stringResource(R.string.common_show), false) { setBarExpanded(true) }
+            return
+        }
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            modifier = Modifier
+                .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.9f), RoundedCornerShape(50))
+                .padding(start = 14.dp, end = 5.dp, top = 5.dp, bottom = 5.dp),
+        ) {
+            Text(name, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(end = 4.dp))
+            if (custom) EditorButton(stringResource(R.string.touchkeys_add), false) {
+                ControllerCustoms.showAdd(activity) { controls.rebuild() }
+            }
+            if (custom) EditorButton(stringResource(R.string.touchkeys_remove), false, enabled = selected != null) {
+                val group = selected ?: return@EditorButton
+                ControllerPrefs.removeControl(activity, layoutId, group)
+                selected = null
+                controls.rebuild()
+            }
+            if (custom) EditorButton(stringResource(R.string.ctrl_settings), false, enabled = selected != null) {
+                val group = selected ?: return@EditorButton
+                ControllerCustoms.showElementSettings(activity, layoutId, group) { controls.rebuild() }
+            }
+            EditorButton(stringResource(R.string.ctrl_reset), false) { controls.resetLayout() }
+            EditorButton(stringResource(R.string.common_cancel), false) { finish() }
+            EditorButton(stringResource(R.string.ctrl_editor_save), true) {
+                controls.saveLayout()
+                finish()
+            }
+            EditorButton(stringResource(R.string.common_hide), false) { setBarExpanded(false) }
+        }
+    }
+
+    @Composable
+    private fun EditorButton(label: String, primary: Boolean, enabled: Boolean = true, selected: Boolean? = null, onClick: () -> Unit) {
         val pal = LocalPalette.current
         Text(
             label, fontSize = 12.sp, fontWeight = FontWeight.SemiBold,
             color = when {
+                !enabled -> Color.White.copy(alpha = 0.3f)
                 primary -> pal.onSignal
                 selected == true -> pal.signal
                 else -> MaterialTheme.colorScheme.onBackground
@@ -99,14 +170,15 @@ class ControllerEditorActivity : ComponentActivity() {
             modifier = Modifier.clip(RoundedCornerShape(50))
                 .background(
                     when {
+                        !enabled -> Color.White.copy(alpha = 0.03f)
                         primary -> pal.signal
                         selected == true -> pal.signal.copy(alpha = 0.18f)
                         else -> Color.White.copy(alpha = 0.06f)
                     },
                 )
                 .then(
-                    if (selected == null) Modifier.clickable(onClick = onClick)
-                    else Modifier.toggleable(value = selected, role = Role.Switch, onValueChange = { onClick() }),
+                    if (selected != null) Modifier.toggleable(value = selected, role = Role.Switch, onValueChange = { onClick() })
+                    else if (enabled) Modifier.clickable(onClick = onClick) else Modifier,
                 )
                 .padding(horizontal = 12.dp, vertical = 6.dp),
         )

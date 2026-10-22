@@ -349,6 +349,15 @@ else
     fi
 fi
 
+# A build published as an update of the last one needs a version code above it (see the override
+# in app/build.gradle). CI is what knows that number; a local build leaves it out and gets 45.
+# A plain string, not an array: an empty "${arr[@]}" is an unbound variable on macOS's bash 3.2,
+# and this script is run there too.
+gradle_version_arg=
+if [[ -n "${DROIDDECK_VERSION_CODE:-}" ]]; then
+    gradle_version_arg="-PblVersionCode=${DROIDDECK_VERSION_CODE}"
+fi
+
 cd "${repo_root}"
 python3 tools/quest/build-driver.py "${NDK}"
 comet_out="${linuxfs_dir}/usr/local/lib/droiddeck-comet"
@@ -358,7 +367,7 @@ if ! restore_step comet "${comet_key}" "${comet_out}"; then
     save_step comet "${comet_key}" "${comet_out}"
 fi
 python3 tools/release/runtime_inputs.py record
-./gradlew "${gradle_task}" --console=plain -PndkVersion="${ndk_version}" ${gradle_rust_arg}
+./gradlew "${gradle_task}" --console=plain -PndkVersion="${ndk_version}" ${gradle_rust_arg} ${gradle_version_arg}
 python3 tools/release/check_session_assets.py "app/build/outputs/apk/${build_variant}/app-${build_variant}.apk"
 python3 tools/release/runtime_inputs.py apk "app/build/outputs/apk/${build_variant}/app-${build_variant}.apk"
 

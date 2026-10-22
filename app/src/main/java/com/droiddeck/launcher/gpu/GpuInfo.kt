@@ -21,6 +21,8 @@ data class GpuInfo(
         A7XX("Adreno 7xx"),
         A6XX("Adreno 6xx"),
         ADRENO_UNKNOWN("Adreno"),
+        /** Experimental PanVK-kbase integration; validated locally only at adapter level. */
+        MALI("Arm Mali"),
         NOT_ADRENO("Not an Adreno GPU");
 
         fun label(context: Context): String = if (this == NOT_ADRENO) context.getString(R.string.gpuinfo_not_adreno) else label
@@ -30,6 +32,10 @@ data class GpuInfo(
 
     val support: Support
         get() = when {
+            // Mali is offered on every Android the app installs on: the driver's own kbase
+            // front end (CSF or JM) is what decides, not the Android release. R20 removed the
+            // 15+ requirement for the label and the session start; this is the last of it.
+            family == Family.MALI -> Support.UNTESTED
             family == Family.NOT_ADRENO -> Support.UNSUPPORTED
             family == Family.A6XX && model == 650 -> Support.TESTED
             family == Family.A8XX -> Support.TESTED
@@ -40,12 +46,15 @@ data class GpuInfo(
     val supportText: String
         get() = when (support) {
             Support.TESTED -> "Supported"
-            Support.UNTESTED -> if (family == Family.A7XX_LOW) "Experimental: its drivers are test builds"
+            Support.UNTESTED -> if (family == Family.MALI) "Experimental Mali/Immortalis (v9-v13, CSF or JM): import PanVK-kbase; validated on Mali-G615 here, this GPU is untested"
+                else if (family == Family.A7XX_LOW) "Experimental: its drivers are test builds"
                 else "Outside tested hardware (Adreno 650, 725 and newer): it may not run"
             Support.UNSUPPORTED -> "Not supported: DroidDeck needs an Adreno (Snapdragon) GPU"
         }
 
-    fun supportText(context: Context): String = context.getString(when (support) {
+    /** [supportText] in the app's language. */
+    fun supportText(context: Context): String = if (family == Family.MALI)
+        context.getString(R.string.gpuinfo_mali_experimental) else context.getString(when (support) {
         Support.TESTED -> R.string.gpuinfo_supported
         Support.UNTESTED -> if (family == Family.A7XX_LOW) R.string.gpuinfo_experimental else R.string.gpuinfo_below_tested
         Support.UNSUPPORTED -> R.string.gpuinfo_unsupported
@@ -58,6 +67,19 @@ data class GpuInfo(
 
         fun detect(): GpuInfo {
             val adreno = File("/sys/class/kgsl/kgsl-3d0").exists() || File("/vendor/lib64/hw/vulkan.adreno.so").exists()
+            if (!adreno && com.droiddeck.launcher.core.DeviceSupport.mali()) {
+                val fromVk = VulkanInfo.cachedOrNull()?.get("device").orEmpty()
+                val fromKernel = listOf("/sys/class/misc/mali0/device/gpuinfo", "/sys/devices/platform/mali/gpuinfo")
+                    .firstNotNullOfOrNull { FileUtils.readString(File(it))?.trim()?.takeIf(String::isNotEmpty) }.orEmpty()
+                val rawMali = fromKernel.ifBlank { fromVk }
+                val named = MaliProfile.name(rawMali)
+                val soc = if (Build.VERSION.SDK_INT >= 31) Build.SOC_MODEL.takeIf { it != Build.UNKNOWN }.orEmpty() else ""
+                return GpuInfo(
+                    name = named.ifBlank { "Mali" }, model = MaliProfile.model(rawMali), family = Family.MALI,
+                    soc = soc, oneUi8Gen2 = false,
+                    modelSource = if (named.isBlank()) "" else if (fromKernel.isNotBlank()) "kernel" else "vulkan",
+                )
+            }
             val raw = listOf("/sys/class/kgsl/kgsl-3d0/gpu_model", "/sys/class/kgsl/kgsl-3d0/gpu_chipid")
                 .firstNotNullOfOrNull { FileUtils.readString(File(it))?.trim()?.takeIf(String::isNotEmpty) }
             val soc = if (adreno) SocNames.label() else ""

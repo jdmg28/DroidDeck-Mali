@@ -1,7 +1,29 @@
 /*
- * Ported from WinNative (maxjivi05, feature/wayland-gamescope, 2026-09-18/19), GPL-3.0.
+ * Ported from WinNative (maxjivi05, feature/wayland-gamescope, 2026-09-18/19), GPL-3.0, with the
+ * symbol prefix changed to match this library. The reasoning below is the original author's.
+ *
+ * udev's netlink monitor, stood in for where the sandbox refuses the socket it is built on.
+ *
+ * The app sandbox denies a NETLINK_KOBJECT_UEVENT socket outright. libudev cannot create a
+ * monitor without one, and SDL's HID layer cannot start without a monitor: every SDL_hid_init()
+ * fails, the Steam client's controller code retries it hundreds of times a second, its main loop
+ * stalls, and the client asserts out from under the running game. Refusing SDL the library
+ * altogether (the earlier answer here) is what produced that failure.
+ *
+ * So the socket is answered instead: one end of a datagram socketpair stands in for the netlink
+ * socket, its peer held open so it never reads as hung up, and the few calls libudev makes on
+ * the socket that only a netlink one could answer are answered here. Nothing is ever written to
+ * it, so the monitor is live and silent, which is the most the kernel would deliver in a
+ * container anyway. The real socket is tried first, so this stays out of the way wherever a
+ * monitor could genuinely be created.
+ *
+ * The stand-in can also carry events after all (bl_udevmon_inject, below): libfakeinput plugs
+ * Steam's touch controller in and out of the client that way.
+ *
+ * Wine is left without one. Its HID bus reads the session's pads itself only when its SDL bus
+ * cannot start, and that is the path inputudev.c describes them on. Given a monitor the SDL bus
+ * comes up and takes the pads over from it.
  */
-
 #define _GNU_SOURCE
 #include <dlfcn.h>
 #include <errno.h>
@@ -17,9 +39,9 @@
 #include <unistd.h>
 
 struct stand_in {
-  int fd;
-  int peer;
-  ino_t inode;
+  int fd;       /* the descriptor handed out, -1 when the slot is free */
+  int peer;     /* the other end, kept open */
+  ino_t inode;  /* identifies the socket after fd is closed and its number reused */
 };
 
 static struct stand_in stand_ins[16];
@@ -40,6 +62,8 @@ static ino_t socket_inode(int fd) {
   return fstat(fd, &st) == 0 ? st.st_ino : 0;
 }
 
+/* Whether fd is one of the stand-in sockets. A slot whose descriptor was closed and reused by
+ * something else is retired on sight, so a later socket with the same number is not mistaken. */
 static int is_stand_in(int fd) {
   int found = 0;
   if (fd < 0)
@@ -84,6 +108,7 @@ static int make_stand_in(int type) {
     errno = saved;
     return -1;
   }
+  /* The peer is ours alone: it must not follow the socket into a child. */
   fcntl(sv[1], F_SETFD, FD_CLOEXEC);
   pthread_mutex_lock(&lock);
   for (size_t i = 0; i < sizeof(stand_ins) / sizeof(stand_ins[0]); i++) {
@@ -122,6 +147,7 @@ int socket(int domain, int type, int protocol) {
   return make_stand_in(type);
 }
 
+/* For net.c's bind(): whether fd is a stand-in, which accepts any netlink address as bound. */
 __attribute__((visibility("hidden"))) int bl_udevmon_stand_in(int fd) {
   return is_stand_in(fd);
 }
@@ -154,6 +180,8 @@ int setsockopt(int fd, int level, int optname, const void *optval, socklen_t opt
   static int (*real_setsockopt)(int, int, int, const void *, socklen_t);
 
   if (is_stand_in(fd)) {
+    /* Group membership and packet filters only mean something on a socket that receives; this
+     * one never does, so they are accepted as set. The rest is genuine on a unix socket. */
     if (level == SOL_NETLINK)
       return 0;
     if (level == SOL_SOCKET && (optname == SO_ATTACH_FILTER || optname == SO_DETACH_FILTER))
@@ -167,6 +195,8 @@ int setsockopt(int fd, int level, int optname, const void *optval, socklen_t opt
   return real_setsockopt(fd, level, optname, optval, optlen);
 }
 
+/* udevd's message to the "udev" multicast group (systemd, device-monitor.c): this header, then the
+ * properties as NUL-separated KEY=VALUE strings. */
 struct monitor_netlink_header {
   char prefix[8];
   unsigned magic;
@@ -179,6 +209,7 @@ struct monitor_netlink_header {
   unsigned filter_tag_bloom_lo;
 };
 
+/* systemd's string_hash32: MurmurHash2, seed 0. */
 static unsigned murmur_hash2(const char *key, size_t len) {
   const unsigned m = 0x5bd1e995;
   unsigned h = (unsigned)len;
@@ -205,6 +236,8 @@ static unsigned murmur_hash2(const char *key, size_t len) {
   return h;
 }
 
+/* Sends a device event to every stand-in in this process, as udevd would; returns how many got it.
+ * For libfakeinput (found with dlsym), which knows when its devices come and go. */
 __attribute__((visibility("default"))) int bl_udevmon_inject(const char *action, const char *devpath,
                                                              const char *subsystem, const char *devname,
                                                              unsigned major, unsigned minor) {
@@ -214,7 +247,7 @@ __attribute__((visibility("default"))) int bl_udevmon_inject(const char *action,
                       action, 0, devpath, 0, subsystem, 0, devname, 0, major, 0, minor, 0,
                       __atomic_add_fetch(&seqnum, 1, __ATOMIC_RELAXED));
   if (used <= 0 || (size_t)used >= sizeof(props)) return -1;
-  used++;
+  used++; /* the last string's NUL */
   struct monitor_netlink_header header;
   memset(&header, 0, sizeof(header));
   memcpy(header.prefix, "libudev", 8);
@@ -236,6 +269,10 @@ __attribute__((visibility("default"))) int bl_udevmon_inject(const char *action,
   return sent;
 }
 
+/* For ntsync.c's recvmsg(), which owns the symbol: 1 when fd is a stand-in, answered here (*result
+ * is what recvmsg returns), 0 otherwise. A message is dressed as udevd's: libudev drops one that
+ * does not come from the udev multicast group with root credentials. The sender address goes in
+ * the room msg_namelen had before the call; a unix socket sets it to 0. */
 __attribute__((visibility("hidden"))) int bl_udevmon_recvmsg(int fd, struct msghdr *msg, int flags,
                                                              ssize_t (*real_recvmsg)(int, struct msghdr *, int),
                                                              ssize_t *result) {
@@ -249,7 +286,7 @@ __attribute__((visibility("hidden"))) int bl_udevmon_recvmsg(int fd, struct msgh
     struct sockaddr_nl nl;
     memset(&nl, 0, sizeof(nl));
     nl.nl_family = AF_NETLINK;
-    nl.nl_groups = 2;
+    nl.nl_groups = 2; /* udev's group */
     memcpy(msg->msg_name, &nl, sizeof(nl));
     msg->msg_namelen = sizeof(nl);
   }

@@ -105,7 +105,11 @@ android {
         applicationId "com.droiddeck.launcher"
         minSdkVersion 26
         targetSdkVersion 28
-        versionCode 14
+        versionCode 45
+        // CI passes 450000 + run number, so every build installs as an update.
+        if (project.hasProperty('blVersionCode')) {
+            versionCode project.property('blVersionCode').toString().toInteger()
+        }
         versionName "0.5.0"
         buildConfigField "String", "BUILD_LABEL", "\"${escapedBuildLabel}\""
         buildConfigField "String", "SOURCE_COMMIT", "\"${sourceCommit}\""
@@ -125,7 +129,10 @@ android {
         }
         externalNativeBuild {
             cmake {
-                arguments '-DANDROID_STL=c++_shared'
+                // c++_shared: one libc++ for every native target. FLEXIBLE_PAGE_SIZES: NDK r27's
+                // switch for 16 KB-page devices (2026 SoCs boot Android 16 that way); the
+                // explicit -Wl,-z,max-page-size in CMakeLists covers anything the switch misses.
+                arguments '-DANDROID_STL=c++_shared', '-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON'
                 arguments "-DDROIDDECK_VITURE_SDK_DIR=${vitureSdkDir.toString().replace('\\', '/')}"
                 arguments "-DDROIDDECK_UVC_DIR=${uvcDir.toString().replace('\\', '/')}"
             }
@@ -154,6 +161,8 @@ android {
 
     buildTypes {
         debug {
+            applicationIdSuffix ".mali.g615"
+            versionNameSuffix "-mali-g615-experimental"
             minifyEnabled false
             signingConfig signingConfigs.testkey
             def localSuffix = localBuildOptions.getProperty('droiddeck.debugApplicationIdSuffix')

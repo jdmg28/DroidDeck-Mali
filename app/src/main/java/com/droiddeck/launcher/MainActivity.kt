@@ -44,6 +44,7 @@ import com.droiddeck.launcher.session.ComponentsManager
 import com.droiddeck.launcher.ui.ComponentsPage
 import com.droiddeck.launcher.session.GameSaves
 import com.droiddeck.launcher.session.SessionLogShare
+import com.droiddeck.launcher.session.RebootGuard
 import com.droiddeck.launcher.session.SessionPrefs
 import com.droiddeck.launcher.session.SteamRepair
 import com.droiddeck.launcher.core.CpuCores
@@ -120,6 +121,15 @@ class MainActivity : ComponentActivity() {
     private var noGlError by mutableStateOf(true)
     private var steamRepairQueued by mutableStateOf(false)
     private var mangoapp by mutableStateOf(true)
+    private var steamUiOnGpu by mutableStateOf(false)
+    private var steamUiGpuBackend by mutableStateOf(SessionPrefs.UI_GPU_GL)
+    private var steamUiMaxFps by mutableStateOf(true)
+    private var gameBrowserBudget by mutableStateOf(true)
+    private var safeLevel by mutableStateOf(0)
+    private var safeRestarts by mutableStateOf(0)
+    private var steamUiRawFps by mutableStateOf(false)
+    private var maliGamePresent by mutableStateOf(SessionPrefs.GAME_PRESENT_DRI3)
+    private var gamePresentWait by mutableStateOf(false)
     private var steamController by mutableStateOf(SessionPrefs.CONTROLLER_DECK)
     private var showComponents by mutableStateOf(false)
     private var focusComponentsContent by mutableStateOf(true)
@@ -360,6 +370,26 @@ class MainActivity : ComponentActivity() {
     }
     private var addedGamesArt by mutableStateOf(true)
     @Volatile private var artFetchRunning = false
+    private var addedGames by mutableStateOf<List<com.droiddeck.launcher.ui.AddedGameRow>>(emptyList())
+    private var importingGame by mutableStateOf<String?>(null)
+    private val pickAddedGameZip = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { r ->
+        if (r.resultCode == RESULT_OK) InAppFilePicker.pickedFile(r.data)?.let { zip ->
+            importingGame = zip.nameWithoutExtension.ifEmpty { zip.name }
+            Thread({
+                val message = runCatching {
+                    val folder = com.droiddeck.launcher.frontend.GameImport.importZip(this, zip)
+                    getString(R.string.main_added_zip_imported, folder.name)
+                }.getOrElse { e -> getString(R.string.main_action_failed, importingGame ?: "import", e.message ?: e.javaClass.simpleName) }
+                ui.post {
+                    importingGame = null
+                    addedGamesDirs = SessionPrefs.addedGamesDirs(this)
+                    refreshAddedGames()
+                    refresh()
+                    android.widget.Toast.makeText(this, message, android.widget.Toast.LENGTH_LONG).show()
+                }
+            }, "game-import").start()
+        }
+    }
     private var sgdbUserKey by mutableStateOf(false)
     private val pickRomsDir = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { r ->
         if (r.resultCode == RESULT_OK) InAppFilePicker.pickedPath(r.data)?.let { path ->
@@ -747,6 +777,8 @@ class MainActivity : ComponentActivity() {
         storesView = SessionPrefs.storesView(this)
         applyLauncherFullscreen()
         updates.start()
+        // The driver a Mali phone came for, installed and set before anything asks for it.
+        com.droiddeck.launcher.gpu.MaliAutoSetup.ensure(this)
         setContent {
             DroidDeckTheme(theme, appScale = appScale) {
             com.droiddeck.launcher.ui.FocusGlideHost(androidx.compose.ui.Modifier.fillMaxSize().exposeTestTags()) {
@@ -1072,7 +1104,31 @@ class MainActivity : ComponentActivity() {
                             onJoyConVr = { on -> ControllerPrefs.setJoyConVr(this, on); refreshController() },
                             onEditLayout = { startActivity(Intent(this, ControllerEditorActivity::class.java)) },
                             onResetLayout = { ControllerPrefs.resetAllLayouts(this); refreshController() },
-                            onMapping = { showPerformance = false; showComponents = false; showMapping = true },
+                            onPickLayout = { id -> ControllerPrefs.setActiveLayout(this, id); refreshController() },
+                            onNewLayout = { com.droiddeck.launcher.input.ControllerCustoms.prompt(this, R.string.ctrl_layout_name, null) { name ->
+                                ControllerPrefs.setActiveLayout(this, ControllerPrefs.newLayout(this, name).id)
+                                refreshController()
+                            } },
+                            onRenameLayout = {
+                                val id = ControllerPrefs.activeLayoutId(this)
+                                if (id != ControllerPrefs.LAYOUT_DEFAULT) {
+                                    val name = ControllerPrefs.layoutById(this, id)?.name
+                                    com.droiddeck.launcher.input.ControllerCustoms.prompt(this, R.string.ctrl_layout_name, name) { next ->
+                                        ControllerPrefs.renameLayout(this, id, next)
+                                        refreshController()
+                                    }
+                                }
+                            },
+                            onRemoveLayout = {
+                                val id = ControllerPrefs.activeLayoutId(this)
+                                if (id != ControllerPrefs.LAYOUT_DEFAULT) {
+                                    com.droiddeck.launcher.input.ControllerCustoms.confirm(this, R.string.ctrl_layout_remove_hint) {
+                                        ControllerPrefs.removeLayout(this, id)
+                                        refreshController()
+                                    }
+                                }
+                            },
+                            onMapping = { settingsMode = null; showPerformance = false; showProtons = false; showComponents = false; showMapping = true },
                             onResetAll = { ControllerPrefs.resetAll(this); refreshController() },
                         ),
                     ),
@@ -1472,6 +1528,7 @@ class MainActivity : ComponentActivity() {
                 onImportAndroid = { pickAndroidDriver.launch(InAppFilePicker.buildIntent(this, ZIP_EXT, getString(R.string.drivers_pick_android))) },
                 onImportZip = { pickAnyDriver.launch(InAppFilePicker.buildIntent(this, ZIP_EXT, getString(R.string.drivers_pick_any))) },
                 onRestoreBundled = { TurnipDriver(this).restoreBundled(); drivers.refreshDrivers() },
+                onGpuSafety = { value -> drivers.setGpuSafety(value) },
                 onMode = { m -> drivers.chooseMode(m) },
                 onRestart = { drivers.restartApp() },
             ),
@@ -1580,6 +1637,16 @@ class MainActivity : ComponentActivity() {
                 steamClientArch = if (mode == SessionService.MODE_STEAM) steamClientArch else null,
                 steamRepairQueued = steamRepairQueued,
                 mangoapp = mangoapp,
+                steamUiOnGpu = steamUiOnGpu,
+                steamUiGpuBackend = if (mode == SessionService.MODE_STEAM) steamUiGpuBackend else null,
+                steamUiMaxFps = steamUiMaxFps,
+                gameBrowserBudget = gameBrowserBudget,
+                safeLevel = if (mode == SessionService.MODE_STEAM) safeLevel else 0,
+                safeRestarts = if (mode == SessionService.MODE_STEAM) safeRestarts else 0,
+                steamUiRawFps = steamUiRawFps,
+                maliGamePresent = if (mode == SessionService.MODE_STEAM && com.droiddeck.launcher.core.DeviceSupport.mali())
+                    maliGamePresent else null,
+                gamePresentWait = gamePresentWait,
                 steamController = if (mode == SessionService.MODE_STEAM) steamController else null,
                 runSteamAtStartup = mode == SessionService.MODE_STEAM && runSteamAtStartup,
                 bootMovie = if (mode == SessionService.MODE_STEAM) bootMovie else null,
@@ -1592,6 +1659,10 @@ class MainActivity : ComponentActivity() {
                 wifiDiscoveryLocation = wifiDiscoveryLocation,
                 wifiDiscoveryAsked = wifiDiscoveryAsked,
                 wifiDiscoveryBlocked = wifiDiscoveryBlocked,
+                addedGamesDirs = if (mode == SessionService.MODE_STEAM) addedGamesDirs else null,
+                addedGames = if (mode == SessionService.MODE_STEAM) addedGames else emptyList(),
+                addedGamesArt = addedGamesArt,
+                importingGame = if (mode == SessionService.MODE_STEAM) importingGame else null,
                 deckyInstalled = if (mode == SessionService.MODE_STEAM) decky.deckyInstalled else null,
                 deckyLatestRelease = if (mode == SessionService.MODE_STEAM) decky.deckyReleases.firstOrNull() else null,
                 deckyChecking = decky.deckyChecking, deckyStage = decky.deckyStage, deckyPercent = decky.deckyPercent,
@@ -1663,10 +1734,31 @@ class MainActivity : ComponentActivity() {
                 onSteamRepair = { steamRepairQueued = SteamRepair.queue(this) },
                 onSteamClientArch = { id -> SessionPrefs.setSteamClientArch(this, id); steamClientArch = id; refresh() },
                 onMangoapp = { on -> SessionPrefs.setMangoapp(this, on); mangoapp = on },
+                onSteamUiOnGpu = { on -> SessionPrefs.setSteamUiOnGpu(this, on); steamUiOnGpu = on },
+                onSteamUiGpuBackend = { id -> SessionPrefs.setSteamUiGpuBackend(this, id); steamUiGpuBackend = id },
+                onSteamUiMaxFps = { on -> SessionPrefs.setSteamUiMaxFps(this, on); steamUiMaxFps = on },
+                onGameBrowserBudget = { on -> SessionPrefs.setGameBrowserBudget(this, on); gameBrowserBudget = on },
+                onResetSafeMode = {
+                    RebootGuard.clear(this)
+                    safeLevel = 0
+                    safeRestarts = 0
+                },
+                onSteamUiRawFps = { on -> SessionPrefs.setSteamUiRawFps(this, on); steamUiRawFps = on },
+                onMaliGamePresent = { id -> SessionPrefs.setMaliGamePresent(this, id); maliGamePresent = id },
+                onGamePresentWait = { on -> SessionPrefs.setGamePresentWait(this, on); gamePresentWait = on },
                 onSteamController = { id -> SessionPrefs.setSteamController(this, id); steamController = id },
                 onRunSteamAtStartup = { on ->
                     SessionPrefs.setRunSteamAtStartup(this, on)
                     runSteamAtStartup = on
+                },
+                onPickAddedGamesDir = { pickAddedGamesDir.launch(InAppFilePicker.buildDirIntent(this, getString(R.string.main_pick_added_games), addedGamesDirs.lastOrNull())) },
+                onImportGameZip = { pickAddedGameZip.launch(InAppFilePicker.buildIntent(this, listOf("zip"), getString(R.string.mode_added_import_zip), addedGamesDirs.lastOrNull())) },
+                onAddedGamesArt = { on -> SessionPrefs.setAddedGamesArt(this, on); addedGamesArt = on; if (on) refreshAddedGames() },
+                onForgetAddedGamesDir = { dir -> SessionPrefs.setAddedGamesDirs(this, addedGamesDirs - dir); addedGamesDirs = SessionPrefs.addedGamesDirs(this); refreshAddedGames(); refresh() },
+                onAddedGameExe = { folder, path -> SessionPrefs.setAddedGameExe(this, folder, path); refreshAddedGames(); refresh() },
+                onPickAddedGameExe = { folder ->
+                    pendingAddedGame = folder
+                    pickAddedGameExe.launch(InAppFilePicker.buildIntent(this, listOf("exe"), getString(R.string.main_pick_game_exe), folder))
                 },
                 onBootMovie = { id -> SessionPrefs.setBootMovie(this, id); loadBootMovie() },
                 onBootMovieSound = { on -> SessionPrefs.setBootMovieSound(this, on); bootMovieSound = on },
@@ -1804,6 +1896,15 @@ class MainActivity : ComponentActivity() {
         steamClientArch = SessionPrefs.steamClientArch(this)
         steamRepairQueued = SteamRepair.queued(this)
         mangoapp = SessionPrefs.mangoapp(this)
+        steamUiOnGpu = SessionPrefs.steamUiOnGpu(this)
+        steamUiGpuBackend = SessionPrefs.steamUiGpuBackend(this)
+        steamUiMaxFps = SessionPrefs.steamUiMaxFps(this)
+        gameBrowserBudget = SessionPrefs.gameBrowserBudget(this)
+        safeLevel = RebootGuard.level(this)
+        safeRestarts = RebootGuard.trail(this).size
+        steamUiRawFps = SessionPrefs.steamUiRawFps(this)
+        maliGamePresent = SessionPrefs.maliGamePresent(this)
+        gamePresentWait = SessionPrefs.gamePresentWait(this)
         steamController = SessionPrefs.steamController(this)
         runSteamAtStartup = SessionPrefs.runSteamAtStartup(this)
         loadBootMovie()
@@ -1968,7 +2069,10 @@ class MainActivity : ComponentActivity() {
             Thread({ checkCatalog() }, "catalog").start()
             return
         }
-        if (installed == null && !com.droiddeck.launcher.core.DeviceSupport.adreno()) { showNonAdreno = release; return }
+        // The runtime draws with Turnip, an Adreno driver: on Mali, Xclipse or PowerVR the
+        // compositor gets no usable Vulkan device and a session is sound over a black screen.
+        // Said before the download, not after it; the user may still go ahead.
+        if (installed == null && !com.droiddeck.launcher.core.DeviceSupport.canTry()) { showNonAdreno = release; return }
         install(release)
     }
 
@@ -1983,7 +2087,7 @@ class MainActivity : ComponentActivity() {
             showPhantomGate = true
             return false
         }
-        val warn = installed == null && !com.droiddeck.launcher.core.DeviceSupport.adreno()
+        val warn = installed == null && !com.droiddeck.launcher.core.DeviceSupport.canTry()
         if (warn && available != null) { showNonAdreno = available; return false }
         startActivity(intent)
         return true

@@ -368,7 +368,7 @@ class FocusWatcher(threading.Thread):
             try:
                 x = X(os.environ["DISPLAY"])
                 wanted = {x.atom(name) for name in FOCUS_PROPS}
-                x.select(x.root, 0x400000)
+                x.select(x.root, 0x400000)  # PropertyChangeMask
                 x.s.settimeout(None)
                 self.changed.set()
                 while True:

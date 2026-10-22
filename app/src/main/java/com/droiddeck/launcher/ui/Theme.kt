@@ -25,12 +25,21 @@ class Palette(
 )
 
 object Themes {
+    /** The fork's default: Steam in purple - black fill, bright purple edges. */
+    const val STEAM_PURPLE = "steam_purple"
     const val GRAPHITE = "graphite"
     const val PAPER = "paper"
     const val ICON_BLUE = "blue"
     const val ELECTRIC = "electric"
 
     val all: List<Palette> = listOf(
+        Palette(
+            STEAM_PURPLE, R.string.theme_steam_purple, R.string.theme_steam_purple_detail,
+            background = Color(0xFF000000), surface = Color(0xFF0B0713), surfaceVariant = Color(0xFF140D22), line = Color(0xFF3A2266), line2 = Color(0xFF6C3FC0),
+            onBackground = Color(0xFFF3EFFA), onSurfaceVariant = Color(0xFFA798C9),
+            primary = Color(0xFFA855F7), primary2 = Color(0xFF8B2FD6), onPrimary = Color(0xFF0B0713), signal = Color(0xFFB44BFF),
+            good = Color(0xFF4CD37F),
+        ),
         Palette(
             GRAPHITE, R.string.theme_graphite, R.string.theme_graphite_detail,
             background = Color(0xFF0A0B0D), surface = Color(0xFF121417), surfaceVariant = Color(0xFF1A1D22), line = Color(0xFF262A31), line2 = Color(0xFF343A43),
@@ -42,7 +51,7 @@ object Themes {
             PAPER, R.string.theme_paper, R.string.theme_paper_detail,
             background = Color(0xFF000000), surface = Color(0xFF0F0F10), surfaceVariant = Color(0xFF191A1C), line = Color(0xFF262729), line2 = Color(0xFF343638),
             onBackground = Color(0xFFF9F9F9), onSurfaceVariant = Color(0xFF8E9196),
-            primary = Color(0xFFF9F9F9), primary2 = Color(0xFFD9DADD), onPrimary = Color(0xFF000000), signal = Color(0xFFF9F9F9),
+            primary = Color(0xFFF9F9F9), primary2 = Color(0xFFD9DADD), onPrimary = Color(0xFF000000), signal = Color(0xFF136CE0),
             good = Color(0xFF4CD37F),
         ),
         Palette(
@@ -64,8 +73,12 @@ object Themes {
     fun byId(id: String): Palette = all.firstOrNull { it.id == id } ?: all[0]
 }
 
-val LocalPalette = staticCompositionLocalOf { Themes.byId(Themes.GRAPHITE) }
+val LocalPalette = staticCompositionLocalOf { Themes.byId(Themes.STEAM_PURPLE) }
 
+/**
+ * Text and icons drawn on a [Palette.signal] fill: near-black where the blue is light enough that
+ * white would not read (Graphite's #1A9FFF gives white 2.8:1), white where it is deep.
+ */
 val Palette.onSignal: Color get() = if (signal.luminance() > 0.18f) Color(0xFF03111F) else Color.White
 
 @Composable

@@ -412,7 +412,7 @@
     <string name="comp_import_turnip">匯入 Turnip zip…</string>
     <string name="comp_display_driver">顯示驅動程式</string>
     <string name="comp_display_driver_hint">在兩種模式下都負責將畫面輸出到螢幕。重新啟動應用程式後生效。</string>
-    <string name="comp_import_adrenotools">匯入 AdrenoTools zip…</string>
+    <string name="comp_import_adrenotools">Import a display driver zip…</string>
     <string name="comp_never">從未</string>
     <string name="comp_nightlies_checked">Nightlies 檢查時間：%1$s</string>
     <string name="comp_title">元件</string>
@@ -533,10 +533,10 @@
     <string name="perf_gsrealtime_hint">提高合成器 GPU 工作的優先順序。可能改善影格時間穩定性，但會佔用一部分遊戲效能。</string>
     <string name="perf_gpu">GPU</string>
     <string name="perf_gpuclock">讓 GPU 保持最高頻率</string>
-    <string name="perf_gpuclock_hint">僅適用於 Adreno。卡頓更少，但耗電和發熱更多。</string>
+    <string name="perf_gpuclock_hint">Fewer hitches, more battery use and heat.</string>
     <string name="perf_fixes">工作階段修復</string>
     <string name="perf_sysmem">Turnip：sysmem 渲染</string>
-    <string name="perf_sysmem_hint">Steam 和大多數遊戲會更快。Adreno 710/720/722 必需。</string>
+    <string name="perf_sysmem_hint">Faster for Steam and most games. Required on some GPUs.</string>
     <string name="perf_xalia">跳過 Steam 的 xalia 輔助程式</string>
     <string name="perf_fastsync">droiddeck-ntsync（實驗性）</string>
     <string name="perf_fastsync_hint">以使用者空間替代 Linux ntsync 驅動程式，供測試使用。開啟時，Proton 會使用它來取代 droiddeck-esync 和 droiddeck-fsync。適用於 Proton Experimental ARM64、GE-Proton 和 proton-cachyos。下次工作階段生效。</string>
@@ -674,7 +674,7 @@
     <string name="setup_gpu_unsupported">GPU 不受支援</string>
     <string name="setup_gpu_detail">%1$s · %2$s</string>
     <string name="setup_gpu_untested_detail">%1$s：%2$s</string>
-    <string name="setup_gpu_unsupported_detail">Steam 需要 Adreno 驅動程式；%1$s 可能出現黑畫面。</string>
+    <string name="setup_gpu_unsupported_detail">DroidDeck-Mali needs a Mali (CSF) GPU; %1$s may show a black screen</string>
     <string name="setup_runtime">Linux 執行環境</string>
     <string name="setup_runtime_progress">%1$s · %2$d%%</string>
     <string name="setup_runtime_missing">未安裝 · 約 3 GB，首次點擊「執行」時安裝</string>
@@ -1198,8 +1198,10 @@
     <string name="main_wadb_unavailable">無法使用無線偵錯</string>
     <string name="main_adb_copied">已複製 ADB 指令</string>
     <string name="main_pick_roms">選擇 ROM 資料夾</string>
-    <string name="main_non_adreno_title">不是 Adreno GPU</string>
-    <string name="main_non_adreno_text">Turnip 支援 Adreno GPU。在 %1$s 上，Steam 可能會出現黑畫面。下載大小：%2$.0f MB。</string>
+    <string name="main_non_adreno_title">Unsupported GPU</string>
+
+    <!-- %1$s is the GPU's name, %2$.0f the download size in MB -->
+    <string name="main_non_adreno_text">DroidDeck-Mali draws with a Mali (CSF) GPU. On %1$s, Steam may show a black screen. Download: %2$.0f MB.</string>
     <string name="main_install_anyway">仍要安裝</string>
     <string name="main_remove_runtime_title">移除 Linux 執行環境</string>
     <string name="main_remove_runtime_text">這會刪除執行環境、其中的 Steam 用戶端，以及安裝在其中的所有遊戲。</string>
@@ -1220,7 +1222,7 @@
     <string name="comp_stored">已儲存 %1$s</string>
     <string name="comp_download_failed">下載失敗：%1$s</string>
     <string name="drivers_pick_linux">選擇 Linux 執行環境驅動程式（-Linux zip 或 Android + Linux 套件組合）</string>
-    <string name="drivers_pick_android">選擇顯示驅動程式（AdrenoTools zip 或 Android + Linux 套件組合）</string>
+    <string name="drivers_pick_android">Choose a display driver</string>
     <string name="drivers_pick_any">選擇驅動程式 zip 或 Android + Linux 套件組合</string>
     <string name="main_pkg_problem">%1$s：%2$s</string>
     <string name="main_removing_named">正在移除 %1$s…</string>
@@ -1273,9 +1275,9 @@
     <string name="drivers_switched_to_restart">已切換到 %1$s %2$s。顯示驅動程式會在 DroidDeck 重新啟動後生效。</string>
     <string name="drivers_using">正在使用 %1$s %2$s。</string>
     <string name="drivers_using_restart">正在使用 %1$s %2$s。顯示驅動程式會在 DroidDeck 重新啟動後生效。</string>
-    <string name="drivers_using_quest">使用內建的 Quest 顯示驅動程式與執行環境預設值。</string>
-    <string name="drivers_using_quest_restart">使用內建的 Quest 顯示驅動程式與執行環境預設值。顯示驅動程式將在 DroidDeck 重新啟動後生效。</string>
-    <string name="drivers_not_a_driver">不是驅動程式 zip：既不是 AdrenoTools 驅動程式、-Linux Turnip，也不是 Android + Linux 套件組合</string>
+    <string name="drivers_not_a_driver">Not a driver zip</string>
+<string name="drivers_using_quest">使用內建的 Quest 顯示驅動程式與執行環境預設值。</string>
+<string name="drivers_using_quest_restart">使用內建的 Quest 顯示驅動程式與執行環境預設值。顯示驅動程式將在 DroidDeck 重新啟動後生效。</string>
     <string name="drivers_import_failed">匯入失敗：%1$s</string>
     <string name="drivers_imported_unnamed">已匯入的驅動程式</string>
     <string name="drivers_using_bundle">正在將 %1$s 同時用作執行環境驅動程式和顯示驅動程式。</string>
@@ -1775,27 +1777,32 @@
     <string name="look_anime_edge">動畫描邊</string>
     <string name="look_anime_edge_desc">卡通描邊加上銳化。</string>
 
-    <string name="gpuinfo_not_adreno">不是 Adreno GPU</string>
+    <!-- GPU support line -->
+    <string name="gpuinfo_not_adreno">Unsupported GPU</string>
     <string name="gpuinfo_supported">受支援</string>
     <string name="gpuinfo_experimental">實驗性：其驅動程式為測試版本</string>
-    <string name="gpuinfo_below_tested">低於已測試的硬體（Adreno 725 及更新機型）：可能無法執行</string>
-    <string name="gpuinfo_unsupported">不受支援：DroidDeck 需要 Adreno（Snapdragon）GPU</string>
+    <string name="gpuinfo_below_tested">Outside tested hardware: it may not run</string>
+    <string name="gpuinfo_unsupported">Not supported: DroidDeck-Mali needs a Mali (CSF) GPU</string>
 
     <string name="turnip_rate_limited">已達 GitHub 速率限制 - 請稍後再試</string>
     <string name="turnip_github_http">GitHub 回應 HTTP %1$d</string>
     <string name="turnip_download_failed">下載失敗</string>
     <string name="turnip_list_predates_checksums">此驅動程式清單早於校驗碼機制 - 請重新整理後再試一次</string>
     <string name="turnip_checksum_mismatch">校驗碼不符 - 已捨棄下載內容</string>
-    <string name="turnip_not_adrenotools">不是 AdrenoTools 驅動程式：%1$s</string>
+
+    <!-- %1$s is one of the turnip_reject_* reasons -->
+    <string name="turnip_not_adrenotools">Not a display driver zip: %1$s</string>
     <string name="turnip_reject_no_meta">沒有 meta.json</string>
     <string name="turnip_reject_meta_unreadable">無法讀取 meta.json（%1$s）</string>
     <string name="turnip_reject_linux_driver">這是 Linux 執行環境驅動程式（請在「執行環境驅動程式」下匯入）</string>
     <string name="turnip_reject_wayland">這是 Wayland 遊戲驅動程式，此應用程式用不到</string>
-    <string name="turnip_reject_no_library_name">meta.json 未指定 libraryName，因此無法交給 AdrenoTools</string>
+    <string name="turnip_reject_no_library_name">meta.json names no libraryName, so the display driver could not be set up</string>
+
+    <!-- %1$s is a library file name -->
     <string name="turnip_reject_library_missing">meta.json 指定了 %1$s，但 zip 中沒有此檔案</string>
     <string name="turnip_reject_not_aarch64">%1$s 不是 64 位元 AArch64 ELF 共用程式庫</string>
     <string name="turnip_reject_glibc">%1$s 連結 glibc - 這是「-Linux」Turnip，應放在「執行環境驅動程式」下</string>
-    <string name="lvd_no_library">此 zip 中沒有 libvulkan_freedreno*.so。Android（AdrenoTools）或 -Wayland Turnip zip 不是 Linux 執行環境驅動程式。</string>
+    <string name="lvd_no_library">No Linux Vulkan driver in this zip. A display-driver zip is not a runtime driver.</string>
     <string name="lvd_not_aarch64">%1$s 不是 64 位元 AArch64 ELF 共用程式庫。</string>
     <string name="lvd_not_glibc">%1$s 不是 glibc 驅動程式 - 它連結的是 Android 的 libc。Linux 執行環境需要「-Linux」zip；一般或「-Wayland」Turnip 完全無法由 Steam 用戶端載入。</string>
     <string name="bundle_no_manifest">不是驅動程式套件組合：沒有指定 Android 與 Linux 驅動程式的 manifest.json</string>

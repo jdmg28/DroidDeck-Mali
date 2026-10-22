@@ -134,4 +134,27 @@ class DesktopSteamLaunchTest(unittest.TestCase):
                 result = subprocess.check_output(['bash', '-c', setup + '\nprintf "%s\\n" "${_bl_cef[@]}"'],
                                                  env=env, text=True)
                 self.assertEqual('-cef-disable-gpu' in result, software)
-                self.assertEqual('-cef-use-angle=vulkan' in result, not software)
+
+    def test_cef_gpu_paths_are_opt_in(self):
+        # The fork's browser policy: the CPU browser is the default (Mali, R24) and every GPU path
+        # is reached only through BL_CEF_GPU=1. Upstream's default was -cef-force-gpu for everyone,
+        # which is the combination that restarted the X6 Pro.
+        source = (BIN / 'droiddeck-session').read_text()
+        region = source[source.index('    _bl_cef=(-no-cef-sandbox -cef-ozone-platform=x11)'):
+                        source.index('    echo "== steam args:')]
+        cases = [
+            ('yes', '0', 'mali', 'gl', False, None),
+            ('no', '0', 'mali', 'gl', False, None),
+            ('no', '1', 'mali', 'gl', True, 'gl'),
+            ('no', '1', 'mali', 'vulkan', True, 'vulkan'),
+            ('no', '1', 'other', 'gl', True, 'vulkan'),
+        ]
+        for software, gpu, family, backend, on_gpu, angle in cases:
+            with self.subTest(software=software, gpu=gpu, family=family, backend=backend):
+                env = dict(self.env, software=software, BL_CEF_GPU=gpu, BL_GPU_FAMILY=family,
+                           BL_CEF_BACKEND=backend, BL_STEAM_ARGS='')
+                result = subprocess.check_output(
+                    ['bash', '-c', region + '\nprintf "%s\\n" "${_bl_cef[@]}"'], env=env, text=True)
+                self.assertEqual('-cef-force-gpu' in result, on_gpu, result)
+                self.assertEqual('-cef-disable-gpu' in result, not on_gpu, result)
+                self.assertEqual('-cef-use-angle=%s' % angle in result, on_gpu, result)

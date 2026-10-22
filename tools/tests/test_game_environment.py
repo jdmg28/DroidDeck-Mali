@@ -238,6 +238,22 @@ class GameEnvironmentTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 MODULE["apply_config"]({}, {**config, "dxvkConfig": bad}, "42")
 
+    def test_a_games_present_path_is_its_own_switch(self):
+        # The session's DRI3 stays as it is; only the game process takes the chosen path, and the
+        # other variables it already had are kept (wsi_no_afbc is added to, never replaces, them).
+        self.assertEqual(MODULE["present_env"]({"BL_GAME_PRESENT": "shm"}), {})
+        self.assertEqual(MODULE["present_env"]({"BL_GPU_FAMILY": "mali", "BL_GAME_PRESENT": "dri3"}), {})
+        self.assertEqual(MODULE["present_env"]({"BL_GPU_FAMILY": "mali"}), {})
+        self.assertEqual(
+            MODULE["present_env"]({"BL_GPU_FAMILY": "mali", "BL_GAME_PRESENT": "shm"}),
+            {"PANVK_KBASE_DRI3": "0"})
+        self.assertEqual(
+            MODULE["present_env"]({"BL_GPU_FAMILY": "mali", "BL_GAME_PRESENT": "noafbc", "PANVK_DEBUG": "no_crc"}),
+            {"PANVK_DEBUG": "no_crc,wsi_no_afbc"})
+        self.assertEqual(
+            MODULE["present_env"]({"BL_GPU_FAMILY": "mali", "BL_GAME_PRESENT": "noafbc", "PANVK_DEBUG": "wsi_no_afbc"}),
+            {"PANVK_DEBUG": "wsi_no_afbc"})
+
     def test_game_texture_filtering_overrides_default_without_leaking(self):
         default = "d3d9.samplerAnisotropy = 16"
         game = "d3d9.samplerAnisotropy = 4"
@@ -308,6 +324,44 @@ class GameEnvironmentTest(unittest.TestCase):
                     text=True, capture_output=True)
                 self.assertEqual(result.returncode, 7, result.stderr)
                 self.assertEqual(json.loads(result.stdout), ["specific", ["waitforexitandrun", "game with spaces.exe"]])
+                # Steam's post-logon d3ddriverquery64.exe probe exits 0 without starting Proton.
+                probe = subprocess.run([str(wrapper), "run", "/steam/bin/d3ddriverquery64.exe", "-d3d12"],
+                    env={"PATH": os.defpath, "HOME": tmp, "STEAM_COMPAT_DATA_PATH": "/compatdata/0", "STEAM_COMPAT_CLIENT_INSTALL_PATH": str(steam)},
+                    text=True, capture_output=True)
+                self.assertEqual((probe.returncode, probe.stdout), (0, ""), probe.stderr)
+            for base in (depot, extra):
+                (base / "proton").write_text("#!/usr/bin/python3\nimport json, os\nprint(json.dumps({k: os.environ.get(k) for k in ('DXVK_CONFIG', 'FEX_DISABLEL2CACHE', 'FEX_DYNAMICL1CACHE', 'FEX_SILENTLOG', 'PROTON_FSR4_UPGRADE', 'WINE_SKIP_OPENGL_GPU_PROBE', 'WINEDLLOVERRIDES', 'heap_memory_percent', 'DISABLE_VK_LAYER_VALVE_steam_fossilize_1')}))\n")
+            for wrapper in wrappers:
+                result = subprocess.run([str(wrapper), "waitforexitandrun", "Game.exe"],
+                    env={"PATH": os.defpath, "HOME": tmp, "STEAM_COMPAT_DATA_PATH": "/compatdata/42", "STEAM_COMPAT_CLIENT_INSTALL_PATH": str(steam), "BL_GPU_FAMILY": "mali"},
+                    text=True, capture_output=True, check=True)
+                seen = json.loads(result.stdout)
+                self.assertEqual(seen["DXVK_CONFIG"],
+                    "dxvk.numCompilerThreads=4;dxvk.enableGraphicsPipelineLibrary=True;dxvk.trackPipelineLifetime=False;"
+                    "dxvk.enableMemoryDefrag=False;d3d11.cachedDynamicResources=a;"
+                    "dxvk.maxMemoryBudget=384;dxgi.maxDeviceMemory=384;dxgi.maxFrameLatency=3;d3d9.maxFrameLatency=3;"
+                    "dxgi.maxSharedMemory=384;"
+                    # No FIFO present-wait on Mali by default: mailbox plus DXVK's own limiter.
+                    "dxvk.tearFree=True;dxgi.syncInterval=0;dxvk.maxFrameRate=60;"
+                    "dxvk.enableAsync=True;dxvk.gplAsyncCache=True")
+                self.assertEqual((seen["FEX_DISABLEL2CACHE"], seen["FEX_DYNAMICL1CACHE"], seen["FEX_SILENTLOG"], seen["PROTON_FSR4_UPGRADE"]),
+                    ("1", "1", "1", "0"))
+                self.assertEqual((seen["WINE_SKIP_OPENGL_GPU_PROBE"], seen["WINEDLLOVERRIDES"], seen["heap_memory_percent"], seen["DISABLE_VK_LAYER_VALVE_steam_fossilize_1"]),
+                    ("1", "nsiproxy.sys=d", "0.12", "1"))
+                # The mailbox path is what a Mali session gets unless it asks for FIFO back, and
+                # the session's own fps ceiling wins over the built-in 60 when one is set.
+                env = {"PATH": os.defpath, "HOME": tmp, "STEAM_COMPAT_DATA_PATH": "/compatdata/42",
+                       "STEAM_COMPAT_CLIENT_INSTALL_PATH": str(steam), "BL_GPU_FAMILY": "mali"}
+                fifo = subprocess.run([str(wrapper), "waitforexitandrun", "Game.exe"],
+                    env={**env, "BL_DXVK_PRESENT_WAIT": "1"}, text=True, capture_output=True, check=True)
+                self.assertNotIn("dxgi.syncInterval", json.loads(fifo.stdout)["DXVK_CONFIG"])
+                capped = subprocess.run([str(wrapper), "waitforexitandrun", "Game.exe"],
+                    env={**env, "BL_FPS": "45"}, text=True, capture_output=True, check=True)
+                self.assertIn("dxvk.maxFrameRate=45;", json.loads(capped.stdout)["DXVK_CONFIG"])
+                # Off Mali the present path is left exactly as it was.
+                other = subprocess.run([str(wrapper), "waitforexitandrun", "Game.exe"],
+                    env={**env, "BL_GPU_FAMILY": "adreno"}, text=True, capture_output=True, check=True)
+                self.assertNotIn("dxgi.syncInterval", json.loads(other.stdout)["DXVK_CONFIG"])
 
     def test_default_is_compatible_tool_and_labels_mark_it(self):
         with tempfile.TemporaryDirectory() as tmp:

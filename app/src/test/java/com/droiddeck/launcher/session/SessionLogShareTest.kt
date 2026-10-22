@@ -27,16 +27,18 @@ class SessionLogShareTest {
             z.entries().toList().associate { it.name.substringAfter('/') to z.getInputStream(it).bufferedReader().readText() }
         }
 
+    /** A record as the session's ending writes it, listing [files] as they stand now. */
     private fun record(folder: File, vararg files: String, rules: Int = LogRedactor.RULES_VERSION) {
         File(folder, SessionArtifacts.SCRUBBED_TREE_MARKER).writeText(
             "rules $rules\n" + files.joinToString("") { val f = File(folder, it); "${f.length()}\t${f.lastModified()}\t$it\n" })
     }
 
-    @Test fun aRecordedUnchangedFileIsScrubbedAgainOnTheWayIntoTheZip() {
+    @Test fun aRecordedUnchangedFileGoesInAsItIs() {
         val folder = tmp.newFolder("2026-10-06-01-steam")
+        // Stands in for a file the ending scrubbed; the share must not pass it through again.
         File(folder, "session.log").writeText("$secret\n")
         record(folder, "session.log")
-        assertFalse(zip(folder).getValue("session.log").contains(leaked))
+        assertTrue(zip(folder).getValue("session.log").contains(leaked))
     }
 
     @Test fun anythingTheRecordDoesNotVouchForIsScrubbed() {
@@ -47,6 +49,7 @@ class SessionLogShareTest {
         File(folder, "steam/deep/nested.txt").writeText("$secret\n")
         File(folder, ".hidden.txt").writeText("$secret\n")
         record(folder, "app.log", "session.log")
+        // Appended to after the ending (the app's log capture), and touched with an older time.
         File(folder, "app.log").appendText("$secret\n")
         File(folder, "session.log").apply { writeText("$secret\n".padEnd(3, ' ')); setLastModified(1_000L) }
         File(folder, "events.jsonl").writeText("$secret\n")
@@ -105,7 +108,7 @@ class SessionLogShareTest {
     @Test fun aFileThatCouldNotBeScrubbedLeavesTheFolderUnrecorded() {
         val folder = tmp.newFolder("2026-10-06-06-steam")
         File(folder, "session.log").writeText("$secret\n")
-        org.junit.Assume.assumeFalse(System.getProperty("os.name").startsWith("Windows"))
+        // A folder the scrubbed copy cannot be written into: the scrub fails, the original stays.
         folder.setWritable(false)
         try {
             SessionArtifacts.scrubAndMark(folder)
@@ -118,17 +121,26 @@ class SessionLogShareTest {
         assertTrue(zip(folder).values.none { it.contains(leaked) })
     }
 
-    @Test fun steamLogsPastTheSizeLimitStayOut() {
+    @Test fun steamLogsPastTheSizeLimitGoInAsTheirTail() {
         val folder = tmp.newFolder("2026-10-06-07-steam")
         File(folder, "session.log").writeText("ok\n")
         File(folder, "steam").mkdirs()
         File(folder, "steam/console_log.txt").writeText("ok\n")
-        File(folder, "steam/cef_log.previous.txt").outputStream().use { out ->
-            val line = ByteArray(1024) { 'x'.code.toByte() }.also { it[it.size - 1] = '\n'.code.toByte() }
-            repeat(9 * 1024) { out.write(line) }
-        }
-        val names = zip(folder).keys
-        assertTrue("steam/console_log.txt" in names)
-        assertFalse("steam/cef_log.previous.txt" in names)
+        val big = File(folder, "steam/cef_log.previous.txt")
+        // Lines that read like a log: a wall of one letter is 1024 opaque characters, and the
+        // redactor, rightly, turns a run that long into <redacted:token>.
+        val text = "proton: [pid 1234] loaded /usr/lib/x86_64-linux-gnu/libfoo.so for appid 363970"
+        val line = (text.padEnd(1024, ' ') + "\n").toByteArray()
+        big.outputStream().use { out -> repeat(9 * 1024) { out.write(line) } }
+        val out = zip(folder)
+        // A log under the limit is still whole.
+        assertEquals("ok\n", out.getValue("steam/console_log.txt"))
+        // One over it is in, as its end: cut on a line, and saying what was left out. The last line
+        // is the one that says why a game stopped, which is the point of keeping it.
+        val tail = out["steam/cef_log.previous.txt"] ?: error("the log past the limit was left out")
+        val over = big.length() - 8L * 1024 * 1024
+        assertTrue(tail.endsWith("... (this log was trimmed: its first ${over / 1024} KB were left out)\n"))
+        assertEquals(1024, tail.substringBefore('\n').length)
+        assertTrue(tail.length <= 8L * 1024 * 1024 + 100)
     }
 }

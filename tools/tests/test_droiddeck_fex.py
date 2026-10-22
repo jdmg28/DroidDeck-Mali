@@ -504,6 +504,16 @@ class LaunchTest(FexTestCase):
         guest = FEX["guest_environment"]({"portable": False}, {"LD_PRELOAD": str(arm), "FEX_PORTABLE": "1", "FEX_OUTPUTLOG": "/tmp/fex.log",
                                                                "GC_DISABLE_INCREMENTAL": "0"})
         self.assertEqual((guest["FEX_OUTPUTLOG"], guest["GC_DISABLE_INCREMENTAL"]), ("/tmp/fex.log", "0"))
+        # The Epic launcher's own newer glibc loader dies under the thunks' preload; the session
+        # asks for a thunkless run and the guest gets no thunk libraries at all.
+        fex = {"portable": True, "rootfs": str(self.tmp / "rootfs"), "host_thunks": str(self.tmp / "host"),
+               "guest_thunks": str(self.tmp / "guest"), "thunks_db": str(self.tmp / "db.json")}
+        guest = FEX["guest_environment"](fex, {"BL_FEX_NO_THUNKS": "1"})
+        self.assertNotIn("FEX_THUNKCONFIG", guest)
+        guest = FEX["guest_environment"](fex, {})
+        self.assertIn("FEX_THUNKCONFIG", guest)
+        guest = FEX["guest_environment"]({"portable": False}, {"LD_PRELOAD": str(arm), "FEX_PORTABLE": "1", "FEX_OUTPUTLOG": "/tmp/fex.log"})
+        self.assertEqual(guest["FEX_OUTPUTLOG"], "/tmp/fex.log")
         self.assertNotIn("LD_PRELOAD", guest)
         self.assertNotIn("FEX_PORTABLE", guest)
 

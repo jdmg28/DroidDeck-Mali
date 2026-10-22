@@ -54,6 +54,31 @@ def game_files(exe):
     return names
 
 
+def present_env(env):
+    """The game's swapchain path, as the session asked it (BL_GAME_PRESENT), Mali builds only.
+
+    On this stack a reboot has come out of a game's teardown, not out of the store: the game's
+    frame is a dma-buf PanVK exports and gamescope imports, and freeing it while the firmware
+    still reads it is what the kernel cannot contain. Only the game process takes this one:
+
+      dri3    - the fast path: dma-bufs and AFBC (the default);
+      noafbc  - dma-bufs without AFBC on the swapchain (PANVK_DEBUG=wsi_no_afbc);
+      shm     - no dma-buf at all (PANVK_KBASE_DRI3=0): one copy more per frame, nothing for
+                the GPU to free on the way out.
+    """
+    if env.get("BL_GPU_FAMILY") != "mali":
+        return {}
+    mode = env.get("BL_GAME_PRESENT", "dri3")
+    if mode == "shm":
+        return {"PANVK_KBASE_DRI3": "0"}
+    if mode == "noafbc":
+        flags = [f for f in env.get("PANVK_DEBUG", "").split(",") if f]
+        if "wsi_no_afbc" not in flags:
+            flags.append("wsi_no_afbc")
+        return {"PANVK_DEBUG": ",".join(flags)}
+    return {}
+
+
 class Game:
     """What a fix gets to look at: the executable, its launch arguments and the files beside it."""
 
@@ -281,8 +306,16 @@ def main():
     mic_enabled = env.get("BL_MIC_ENABLED")
     mark_install_scripts(command, env)
     app_id = game_id(env)
+    base = dict(env)
     if app_id:
         waiting = len(command) > 1 and command[1] == "waitforexitandrun"
+        if waiting:
+            present = present_env(env)
+            if present:
+                env.update(present)
+                print("droiddeck-game-env: present %s (%s)" % (
+                    env.get("BL_GAME_PRESENT", "dri3"),
+                    ", ".join(sorted("%s=%s" % item for item in present.items()))), file=sys.stderr)
         fixes = {}
         if waiting:
             command = skip_red_launcher(command)
@@ -307,6 +340,13 @@ def main():
                 env = apply_config(env, {"version": 1}, app_id, fixes)
         except (OSError, ValueError, TypeError, AttributeError):
             print("droiddeck-game-env: invalid configuration; using inherited environment", file=sys.stderr)
+    # What the configuration and the engine fixes actually changed, one line for the session log:
+    # a knob asked about in a bug report ("was PANVK_BC_AFRC on?") reads its answer here.
+    overrides = sorted((k, str(env[k])) for k in env if base.get(k) != env[k])
+    if overrides:
+        print("droiddeck-game-env: env: " + ", ".join(
+            "%s=%s" % (name, value if len(value) <= 24 else value[:21] + "...") for name, value in overrides),
+            file=sys.stderr)
     if mic_enabled == "0":
         env["BANNER_AUDIO_DIRECT_MIC"] = "0"
     env = force_ssbs(command, env)

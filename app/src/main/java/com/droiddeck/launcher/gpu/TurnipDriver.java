@@ -272,6 +272,10 @@ public final class TurnipDriver {
     }
 
     private String chooseByDevice() {
+        if (com.droiddeck.launcher.core.DeviceSupport.mali()) {
+            Log.i(TAG, "Mali experiment: no Turnip; use the Android system Vulkan compositor");
+            return null;
+        }
         File override = new File(Environment.getExternalStorageDirectory(), OVERRIDE_FILE);
         String forced = override.isFile() ? FileUtils.readString(override) : null;
         if (forced != null) {

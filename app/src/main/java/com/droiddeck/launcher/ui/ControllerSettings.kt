@@ -7,6 +7,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.layout.ColumnScope
@@ -32,6 +33,11 @@ class ControllerActions(
     val onJoyConVr: (Boolean) -> Unit,
     val onEditLayout: () -> Unit,
     val onResetLayout: () -> Unit,
+    /** Winlator-style HUD profiles: pick the active layout, or build the list. */
+    val onPickLayout: (String) -> Unit = {},
+    val onNewLayout: () -> Unit = {},
+    val onRenameLayout: () -> Unit = {},
+    val onRemoveLayout: () -> Unit = {},
     val onMapping: () -> Unit,
     val onResetAll: () -> Unit,
 )
@@ -74,11 +80,34 @@ fun ColumnScope.ControllerRows(host: MenuHost, oscMode: String, c: ControllerPre
     ToggleRow(host, "controller-keyboard", stringResource(R.string.ctrl_keyboard_button), null, c.keyboardButton, onChange = a.onKeyboardButton)
     ToggleRow(host, "controller-select-steam", stringResource(R.string.ctrl_select_steam), stringResource(R.string.ctrl_select_steam_hint), c.selectSteam, onChange = a.onSelectSteam)
     ToggleRow(host, "controller-joycon-vr", stringResource(R.string.ctrl_joycon_vr), stringResource(R.string.ctrl_joycon_vr_hint), c.joyConVr, onChange = a.onJoyConVr)
-    SettingsRow(stringResource(R.string.ctrl_layout), if (c.customLayout) stringResource(R.string.ctrl_layout_custom) else stringResource(R.string.ctrl_layout_default)) {
-        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            SecondaryButton(stringResource(R.string.ctrl_edit)) { a.onEditLayout() }
-            SecondaryButton(stringResource(R.string.ctrl_reset), enabled = c.customLayout) { a.onResetLayout() }
+    // HUD profiles, Winlator-style: the fitted pad is "Por defecto", every other entry is a
+    // canvas the user built and can switch to per game. Nueva makes an empty one; Editar opens
+    // the full-screen editor on the active one; Quitar takes a custom one away.
+    val activeName = if (c.activeLayoutId == ControllerPrefs.LAYOUT_DEFAULT) stringResource(R.string.ctrl_profile_default)
+        else c.layoutNames.firstOrNull { it.first == c.activeLayoutId }?.second ?: stringResource(R.string.ctrl_profile_default)
+    val profileOpen = host.open == "controller-profile"
+    SettingsRow(stringResource(R.string.ctrl_layout), activeName, highlighted = profileOpen) {
+        Box {
+            ValueChip(activeName, profileOpen) { host.open = if (profileOpen) null else "controller-profile" }
+            AnchoredMenu(profileOpen, onDismiss = { if (host.open == "controller-profile") host.open = null }, title = stringResource(R.string.ctrl_layout_pick)) { firstItemFocus ->
+                MenuItem(stringResource(R.string.ctrl_profile_default), checked = c.activeLayoutId == ControllerPrefs.LAYOUT_DEFAULT, focusRequester = firstItemFocus) {
+                    a.onPickLayout(ControllerPrefs.LAYOUT_DEFAULT)
+                    host.open = null
+                }
+                c.layoutNames.forEach { (id, name) ->
+                    MenuItem(name, checked = c.activeLayoutId == id) {
+                        a.onPickLayout(id)
+                        host.open = null
+                    }
+                }
+            }
         }
+    }
+    Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.padding(start = 16.dp, bottom = 10.dp)) {
+        SecondaryButton(stringResource(R.string.ctrl_layout_new)) { a.onNewLayout() }
+        SecondaryButton(stringResource(R.string.ctrl_edit)) { a.onEditLayout() }
+        SecondaryButton(stringResource(R.string.ctrl_layout_rename)) { a.onRenameLayout() }
+        SecondaryButton(stringResource(R.string.ctrl_layout_remove), enabled = c.activeLayoutId != ControllerPrefs.LAYOUT_DEFAULT) { a.onRemoveLayout() }
     }
     val remapped = c.mapping.count { (id, target) -> id != target }
     ActionRow(stringResource(R.string.ctrl_mapping), if (remapped == 0) stringResource(R.string.ctrl_mapping_default) else stringResource(R.string.ctrl_mapping_count, remapped, c.mapping.size), stringResource(R.string.ctrl_configure), a.onMapping)

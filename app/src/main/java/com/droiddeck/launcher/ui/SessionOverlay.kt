@@ -231,6 +231,7 @@ class DrawerActions(
     val onAchievements: (() -> Unit)? = null,
     val achievementsProgress: Pair<Int, Int>? = null,
     val onOsc: (String) -> Unit,
+    /** Edits the Steam touch layout of the game in front, when Steam's controls are up. */
     val onEditSteamTouch: (() -> Unit)? = null,
     val controller: com.droiddeck.launcher.input.ControllerPrefs.Settings? = null,
     val onRumble: (Boolean) -> Unit = {},
@@ -505,6 +506,7 @@ internal fun SessionDrawer(open: Boolean, requestedPage: SessionDrawerPage, cont
                                 ChoiceRow(host, "osc", stringResource(R.string.mode_osc), null,
                                     if (a.steam) listOf(SessionPrefs.OSC_AUTO to stringResource(R.string.common_auto), SessionPrefs.OSC_ALWAYS to stringResource(R.string.common_always), SessionPrefs.OSC_STEAM_TOUCH to stringResource(R.string.osc_steam_touch), SessionPrefs.OSC_STEAM_QAM to stringResource(R.string.mode_osc_qam), SessionPrefs.OSC_NEVER to stringResource(R.string.common_never))
                                     else listOf(SessionPrefs.OSC_AUTO to stringResource(R.string.common_auto), SessionPrefs.OSC_ALWAYS to stringResource(R.string.common_always), SessionPrefs.OSC_NEVER to stringResource(R.string.common_never)),
+                                    // Steam's touch controller is Steam's alone; elsewhere that choice behaves as Auto.
                                     if (!a.steam && a.oscMode == SessionPrefs.OSC_STEAM_TOUCH) SessionPrefs.OSC_AUTO else a.oscMode,
                                     chipModifier = focus.track(page, "osc"), onPick = a.onOsc)
                                 a.onEditSteamTouch?.let { edit ->

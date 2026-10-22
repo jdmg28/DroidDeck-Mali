@@ -15,6 +15,7 @@ import com.droiddeck.launcher.gpu.AutoDriverTrial
 import com.droiddeck.launcher.gpu.DriverBundle
 import com.droiddeck.launcher.gpu.DriverPairs
 import com.droiddeck.launcher.gpu.GpuInfo
+import com.droiddeck.launcher.gpu.GpuSafety
 import com.droiddeck.launcher.gpu.LinuxVulkanDriver
 import com.droiddeck.launcher.gpu.LinuxVulkanDriverManager
 import com.droiddeck.launcher.gpu.TurnipDriver
@@ -69,6 +70,8 @@ internal class DriverMenus(private val activity: Activity, private val ui: Handl
         linuxRows = linuxRows, linuxSelected = linuxSelected, androidRows = androidRows, androidSelected = androidSelected,
         linuxDownloads = linuxDownloads, androidDownloads = androidDownloads, canRestoreBundled = canRestoreBundled,
         activeBundle = activeBundle,
+        mali = com.droiddeck.launcher.core.DeviceSupport.mali(),
+        gpuSafety = GpuSafety.profile(activity),
         mode = uiMode, display = displaySlot(), runtime = runtimeSlot(),
         canRestart = !sessionRunning,
         checkedAt = TurnipReleases.cached(activity)?.checkedAt ?: 0L,
@@ -140,11 +143,17 @@ internal class DriverMenus(private val activity: Activity, private val ui: Handl
                 true, origin(id),
             )
         }
-        linuxSelected = SessionPrefs.linuxDriver(activity)
+        // What a session actually draws with: in software mode that is the software driver, and
+        // showing the stored one would say a Mali driver is in use when it is not.
+        linuxSelected = GpuSafety.linuxDriver(activity)
         mode = SessionPrefs.gpuDriverMode(activity)
         val td = TurnipDriver(activity)
         val auto = td.autoId()
-        androidRows = buildList {
+        val mali = com.droiddeck.launcher.core.DeviceSupport.mali()
+        androidRows = if (mali) listOf(DriverRow(
+            TurnipDriver.AUTO, activity.getString(R.string.mali_display_driver),
+            activity.getString(R.string.mali_integration_hint), false,
+        )) else buildList {
             add(DriverRow(
                 TurnipDriver.AUTO, activity.getString(R.string.gpu_auto_by_gpu),
                 if (auto == "system") activity.getString(R.string.drivers_system_vulkan) else activity.getString(R.string.drivers_bundled, td.displayName(auto)),
@@ -154,7 +163,7 @@ internal class DriverMenus(private val activity: Activity, private val ui: Handl
             for (id in td.enumerateImported()) add(bundleRow(id, linux = false) ?: DriverRow(id, td.displayName(id), td.driverVersion(id), true, origin(id)))
         }
         canRestoreBundled = td.hiddenBundled().isNotEmpty()
-        androidSelected = SessionPrefs.androidDriver(activity)
+        androidSelected = if (mali) TurnipDriver.AUTO else SessionPrefs.androidDriver(activity)
         activeBundle = DriverBundle.active(activity)?.label
         restartPending = CompositorHost.isStarted && CompositorHost.displayChoice.let { it != null && it != androidSelected }
         sessionRunning = SessionState.running
@@ -375,16 +384,17 @@ internal class DriverMenus(private val activity: Activity, private val ui: Handl
         val name = activity.displayNameOf(uri)
         Thread({
             var bundle: DriverBundle.Bundle? = null
+            var importedLinuxId: String? = null
             val problem = try {
                 when {
                     DriverBundle.isBundle(activity, uri) -> bundle = DriverBundle.install(activity, uri)
-                    linux == true -> LinuxVulkanDriverManager(activity).installDriver(uri, name)
+                    linux == true -> { importedLinuxId = LinuxVulkanDriverManager(activity).installDriver(uri, name) }
                     linux == false -> TurnipDriver(activity).installFromZip(uri, name)
                     else -> try {
                         TurnipDriver(activity).installFromZip(uri, name)
                     } catch (display: IllegalArgumentException) {
                         try {
-                            LinuxVulkanDriverManager(activity).installDriver(uri, name)
+                            importedLinuxId = LinuxVulkanDriverManager(activity).installDriver(uri, name)
                         } catch (runtime: IllegalArgumentException) {
                             throw IllegalArgumentException(activity.getString(R.string.drivers_not_a_driver))
                         }
@@ -398,6 +408,11 @@ internal class DriverMenus(private val activity: Activity, private val ui: Handl
                 activity.getString(R.string.drivers_import_failed, e.message)
             }
             ui.post {
+                if (problem == null && com.droiddeck.launcher.core.DeviceSupport.mali()) {
+                    importedLinuxId?.let { SessionPrefs.setLinuxDriver(activity, it) }
+                    SessionPrefs.setAndroidDriver(activity, TurnipDriver.AUTO)
+                    setMode(false)
+                }
                 val done = bundle?.let { useBundle(it) }
                     ?: name?.let { activity.getString(R.string.comp_imported, it) } ?: activity.getString(R.string.drivers_imported_unnamed)
                 android.widget.Toast.makeText(
@@ -413,7 +428,19 @@ internal class DriverMenus(private val activity: Activity, private val ui: Handl
         val bundle = DriverBundle.containing(activity, id, linux)
         when {
             bundle != null -> useBundle(bundle)
-            linux -> SessionPrefs.setLinuxDriver(activity, id)
+            linux -> {
+                SessionPrefs.setLinuxDriver(activity, id)
+                // An experimental Mali driver is only ever used when it is picked by name: that
+                // choice is what turns the GPU safety switch over to the Mali setting, and it is
+                // the only way it ever leaves software on this device.
+                if (LinuxVulkanDriverManager(activity).isMaliRuntimeDriver(id)) {
+                    GpuSafety.setProfile(activity, GpuSafety.MALI)
+                    android.widget.Toast.makeText(
+                        activity, activity.getString(R.string.gpu_safety_mali_picked),
+                        android.widget.Toast.LENGTH_LONG,
+                    ).show()
+                }
+            }
             else -> SessionPrefs.setAndroidDriver(activity, id)
         }
         pairModeOpen = false
@@ -421,6 +448,13 @@ internal class DriverMenus(private val activity: Activity, private val ui: Handl
         refreshDrivers()
     }
 
+    /** The GPU safety setting (GpuSafety): auto, software, or the experimental Mali driver. */
+    fun setGpuSafety(value: String) {
+        GpuSafety.setProfile(activity, value)
+        refreshDrivers()
+    }
+
+    /** Set both halves of [bundle] as the drivers in use; returns what to tell the user. */
     private fun useBundle(bundle: DriverBundle.Bundle): String {
         val displayChanged = SessionPrefs.androidDriver(activity) != bundle.androidId
         DriverBundle.select(activity, bundle)
@@ -454,6 +488,23 @@ internal class DriverMenus(private val activity: Activity, private val ui: Handl
     }
 
     fun refreshReleaseRows() {
+        if (com.droiddeck.launcher.core.DeviceSupport.mali()) {
+            // This fork's own packages, offered in place of the Adreno (Turnip) release lists a
+            // Mali phone has no use for. The list is static - both zips are always published by
+            // this repository's workflows - so the refresh only rechecks what is installed.
+            val done = SessionPrefs.maliDownloaded(activity)
+            linuxDownloads = com.droiddeck.launcher.gpu.MaliReleases.all()
+                .filter { it.name !in done }
+                .map { e ->
+                    com.droiddeck.launcher.ui.DownloadRow(
+                        e.name, e.label, activity.getString(e.detail), releaseProgress[e.name],
+                    )
+                }
+            androidDownloads = emptyList()
+            releaseStatus = if (!releaseChecking)
+                activity.getString(R.string.drivers_mali_source) else releaseStatus
+            return
+        }
         val check = TurnipReleases.cached(activity)
         fun rows(linux: Boolean) = check?.assets.orEmpty()
             .filter { it.bundle || it.linux == linux }
@@ -485,6 +536,12 @@ internal class DriverMenus(private val activity: Activity, private val ui: Handl
     }
 
     fun checkLatestTurnip() {
+        if (com.droiddeck.launcher.core.DeviceSupport.mali()) {
+            // No Turnip repo to ask on a Mali device: the packages come from this repository.
+            refreshReleaseRows()
+            refreshPairs()
+            return
+        }
         if (releaseChecking) return
         releaseChecking = true
         releaseStatus = activity.getString(R.string.drivers_checking_sources)
@@ -502,6 +559,10 @@ internal class DriverMenus(private val activity: Activity, private val ui: Handl
     }
 
     fun downloadReleaseDriver(assetName: String) {
+        if (com.droiddeck.launcher.gpu.MaliReleases.isOurs(assetName)) {
+            downloadMaliDriver(com.droiddeck.launcher.gpu.MaliReleases.byName(assetName)!!)
+            return
+        }
         val asset = TurnipReleases.cached(activity)?.assets?.firstOrNull { it.name == assetName } ?: return
         if (releaseProgress.containsKey(assetName)) return
         releaseProgress[assetName] = 0
@@ -529,6 +590,47 @@ internal class DriverMenus(private val activity: Activity, private val ui: Handl
                 refreshDrivers()
             }
         }, "download-turnip").start()
+    }
+
+    /**
+     * One of this fork's own packages, downloaded from this repository's releases and installed
+     * through the same importer an imported zip goes through - then selected, the way a Mali
+     * import is: the driver becomes the runtime driver and the Mali GPU-safety setting follows.
+     */
+    private fun downloadMaliDriver(entry: com.droiddeck.launcher.gpu.MaliReleases.Entry) {
+        if (releaseProgress.containsKey(entry.name)) return
+        releaseProgress[entry.name] = 0
+        refreshReleaseRows()
+        Thread({
+            var file: File? = null
+            val problem = try {
+                file = com.droiddeck.launcher.gpu.MaliReleases.download(activity, entry) { pct ->
+                    ui.post { releaseProgress[entry.name] = pct; refreshReleaseRows() }
+                }
+                val id = LinuxVulkanDriverManager(activity).installDriver(Uri.fromFile(file), entry.name)
+                SessionPrefs.setMaliDownloaded(activity, SessionPrefs.maliDownloaded(activity) + entry.name)
+                ui.post {
+                    SessionPrefs.setLinuxDriver(activity, id)
+                    GpuSafety.setProfile(activity, GpuSafety.MALI)
+                }
+                null
+            } catch (e: IllegalArgumentException) {
+                e.message
+            } catch (e: Exception) {
+                Log.w(TAG, "mali driver download", e)
+                activity.getString(R.string.comp_download_failed, e.message)
+            } finally {
+                file?.let { com.droiddeck.launcher.core.FileUtils.delete(it) }
+            }
+            ui.post {
+                releaseProgress.remove(entry.name)
+                android.widget.Toast.makeText(
+                    activity, problem ?: activity.getString(R.string.drivers_installed_pick, entry.name.removeSuffix(".zip")),
+                    android.widget.Toast.LENGTH_LONG,
+                ).show()
+                refreshDrivers()
+            }
+        }, "download-mali").start()
     }
 
     private companion object {

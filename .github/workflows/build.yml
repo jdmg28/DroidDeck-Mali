@@ -3,7 +3,7 @@ run-name: ${{ github.event_name == 'pull_request' && format('building pr {0} on 
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, 'arena/**' ]
     paths-ignore:
       - '**/*.md'
       - 'LICENSE'
@@ -480,6 +480,15 @@ jobs:
           python3 tools/quest/build-driver.py "$ANDROID_HOME/ndk/$NDK_VERSION"
           python3 tools/release/runtime_inputs.py record
           ./gradlew assembleRelease --console=plain -PndkVersion="$NDK_VERSION" 2>&1 | tee /tmp/build.log
+
+      - name: Say why the build failed
+        if: failure()
+        run: |
+          # The build log itself is only on the runner; these annotations travel with the check
+          # run and are readable through the API, which is how a branch build's errors get read.
+          grep -nE "^e: |error: |FAILURE:|Execution failed" /tmp/build.log | head -20 |
+            while IFS= read -r line; do echo "::error::${line:0:300}"; done
+          { echo "### Build log tail"; echo '```'; tail -n 80 /tmp/build.log; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
           python3 tools/release/check_session_assets.py app/build/outputs/apk/release/app-release.apk
           python3 tools/release/runtime_inputs.py apk app/build/outputs/apk/release/app-release.apk
 
@@ -536,6 +545,10 @@ jobs:
           set -euo pipefail
           APK=$(find app/build/outputs/apk -name '*.apk' | head -1)
           TOOLS=$(find "$ANDROID_HOME/build-tools" -maxdepth 1 -type d | sort -V | tail -1)
+          # No -P 16: the app ships legacy packaging (extractNativeLibs), so the loader never
+          # maps a library in place from the apk and page alignment of the entries is moot;
+          # 16 KB readiness comes from the ELF -z max-page-size flags instead. (A zipalign
+          # without -P is also what the toolchain here is known to accept.)
           "$TOOLS/zipalign" -p -f 4 "$APK" "$APK.aligned"
           "$TOOLS/apksigner" sign \
             --ks keystore/testkey.p12 --ks-type PKCS12 --ks-pass pass:android \

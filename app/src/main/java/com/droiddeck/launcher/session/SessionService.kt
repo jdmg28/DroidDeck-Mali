@@ -293,6 +293,56 @@ class SessionService : Service() {
         return lines
     }
 
+    /** PANVK_KBASE_DRI3, unless Download/droiddeck-mali-dri3 says otherwise ("0"/"raw"/"termux"). */
+    private fun maliDri3(): String {
+        val override = File(Environment.getExternalStorageDirectory(), "Download/droiddeck-mali-dri3")
+            .takeIf { it.isFile }?.let { FileUtils.readString(it)?.trim() }
+        return override?.takeIf { it.isNotEmpty() && it.matches(Regex("[0-9a-z]+")) } ?: "1"
+    }
+
+    /**
+     * PANVK_BC_AFRC, only when Download/droiddeck-mali-afrc says so ("0"/"16"/"24"/"32"). The
+     * rc3-lowmem driver stores BC1/BC7 textures Arm-fixed-rate-compressed (8bpp - the R8 RAM
+     * win); a game whose videos and menus come up as TV colour bars over static (Dark Souls,
+     * 2026-10-16 22:04) is the signature of that compression disagreeing with a texture, and
+     * "0" stores them exact again at the old RAM cost. Unset = the driver's own choice; a game
+     * can also set just itself through its launch settings' PANVK_BC_AFRC.
+     */
+    private fun maliBcAfrc(): String? {
+        val override = File(Environment.getExternalStorageDirectory(), "Download/droiddeck-mali-afrc")
+            .takeIf { it.isFile }?.let { FileUtils.readString(it)?.trim() }
+        return override?.takeIf { it in setOf("0", "16", "24", "32") }
+    }
+
+    /**
+     * The gamescope WSI layer (the XWayland-bypass swapchain) for games, on by default upstream and
+     * bypassed here on hardware Mali. Both 2026-10-12 (Clicker Heroes) and 2026-10-14 (Craft. Sell.
+     * Goblin. Repeat) sessions froze the same way with it on: the layer logged its swapchain created
+     * (imageCount 4) and then nothing - no error back to the game, audio and input alive, frames
+     * gone. The layer's present path crosses game→gamescope over dma-buf + explicit-sync fences,
+     * and on panvk-kbase that handoff stalls after the first frame; PANVK_KBASE_DRI3 never reaches
+     * it, which is why the R5 store fix did not touch games. Bypassed, a game presents through
+     * panvk's own X11 DRI3 - the exact transport the client and gamescope's output already use.
+     * Download/droiddeck-mali-gamescope-wsi with "1" puts the layer back for an experiment.
+     */
+    private fun maliGamescopeWsi(): Boolean {
+        val override = File(Environment.getExternalStorageDirectory(), "Download/droiddeck-mali-gamescope-wsi")
+            .takeIf { it.isFile }?.let { FileUtils.readString(it)?.trim() }
+        return override == "1"
+    }
+
+    /**
+     * PANVK_KBASE_GPU_SEMAPHORE_WAITS: 1 executes semaphore waits inside the submit ring instead
+     * of polling from the host - fewer CPU-GPU round trips per frame, which is where the R7
+     * sessions were bound (a 2D game burned 64-96% CPU under FEX+Wine). Upstream keeps it opt-in,
+     * so it ships default-on here with a way out: Download/droiddeck-mali-semawaits with "0".
+     */
+    private fun maliSemaphoreWaits(): Boolean {
+        val override = File(Environment.getExternalStorageDirectory(), "Download/droiddeck-mali-semawaits")
+            .takeIf { it.isFile }?.let { FileUtils.readString(it)?.trim() }
+        return override != "0"
+    }
+
     private fun tuDebug(linuxDriverId: String): String? {
         val override = File(Environment.getExternalStorageDirectory(), TU_DEBUG_SWITCH)
             .takeIf { it.isFile }?.let { FileUtils.readString(it)?.trim() }
@@ -315,6 +365,22 @@ class SessionService : Service() {
             return
         }
 
+        // Software mode (GpuSafety) is exempt from this gate: it asks for the one driver the
+        // session is deliberately not going to use, and it stopped a software session dead before
+        // proot had even started - a guest that exits in 80 ms with status -1 and a toast telling
+        // you to import PanVK, while the driver you did import is the CPU one. Outside software
+        // mode nothing changes: on Mali a session still needs the imported PanVK package.
+        if (!com.droiddeck.launcher.gpu.GpuSafety.software(this) &&
+            com.droiddeck.launcher.core.DeviceSupport.mali() &&
+            (LinuxVulkanDriver.resolveIcdPath(this, SessionPrefs.linuxDriver(this)) == null ||
+             !LinuxVulkanDriverManager(this).isMaliRuntimeDriver(SessionPrefs.linuxDriver(this)))) {
+            Log.e(TAG, getString(com.droiddeck.launcher.R.string.mali_driver_needed))
+            android.os.Handler(android.os.Looper.getMainLooper()).post {
+                android.widget.Toast.makeText(this, getString(com.droiddeck.launcher.R.string.mali_driver_needed), android.widget.Toast.LENGTH_LONG).show()
+            }
+            stopSession(-1)
+            return
+        }
         val root = LinuxRuntime.rootDir(this)
         val sessionRoot = LinuxRuntime.sessionRoot(this).apply { mkdirs() }
         val runtimeDir = File(filesDir, ".wayland-rt").apply { mkdirs() }
@@ -543,6 +609,12 @@ class SessionService : Service() {
     }
 
     private fun addClientEnvironment(guest: MutableList<String>, steamHere: Boolean) {
+        // A phone that kept restarting inside games gets the next session one rung lower
+        // (RebootGuard). The user's switches are untouched; this only changes what the session is
+        // started with, and the log and the app both say which rung was used.
+        val safeLevel = RebootGuard.level(this)
+        if (safeLevel > 0) Log.w(TAG, "safe mode level $safeLevel: ${RebootGuard.trail(this).size} " +
+            "restart(s) with a game inside the last 48 hours")
         guest.add("/usr/bin/env")
         guest.add("-i")
         guest.add("DROIDDECK_BWRAP_SOCKET=" + com.droiddeck.launcher.runtime.BwrapSpawner.socket(this))
@@ -560,12 +632,92 @@ class SessionService : Service() {
         guest.add("XDG_SESSION_TYPE=wayland")
         guest.add("WAYLAND_DISPLAY=wayland-0")
         guest.add("BL_ANDROID_CLIPBOARD=" + File(filesDir, "session/android-clipboard").path)
-        guest.add("GAMESCOPE_FORCE_GENERAL_QUEUE=1")
-        guest.add("MESA_LOADER_DRIVER_OVERRIDE=zink")
-        guest.add("GALLIUM_DRIVER=zink")
-        guest.add("LIBGL_KOPPER_DRI2=true")
-        LinuxRuntime.vulkanIcd(this)?.let { guest.add("VK_ICD_FILENAMES=" + it.path) }
-        val linuxDriverId = SessionPrefs.linuxDriver(this)
+        val mali = com.droiddeck.launcher.core.DeviceSupport.mali()
+        // A Turnip/gamescope quirk. On Mali it works against panvk: the driver schedules its
+        // kbase queues itself, and pinning the general queue serialises graphics and present.
+        if (!mali) guest.add("GAMESCOPE_FORCE_GENERAL_QUEUE=1")
+        // GpuSafety: in software mode the guest is given no GPU node at all (LinuxRuntime) and
+        // draws with an imported CPU driver. The switch is handed to the session script, which
+        // drops the Mali driver's own requirements and its probe for it.
+        val software = com.droiddeck.launcher.gpu.GpuSafety.software(this)
+        // Steam's CEF needs GL and the rootfs ships no native GL driver: route it through Zink,
+        // over whatever Vulkan driver the session is drawing with. Not in software mode, where
+        // there is no GPU to put under Zink and forcing it costs more than it gives: Mesa loads
+        // zink for every GL client then, its own software fallback included
+        // ("failed to load driver: zink" after "glx: failed to create drisw screen"), GLX is left
+        // with no visual at all, and the client's vgui2 surfaces abort on glXChooseVisual - which
+        // is how a software session ended, with the update window on screen and nothing after it.
+        // Mesa's own software GL is asked for instead; it is the renderer the client's own system
+        // report already prints for this runtime (llvmpipe).
+        if (software) {
+            guest.add("GALLIUM_DRIVER=llvmpipe")
+            guest.add("MESA_LOADER_DRIVER_OVERRIDE=llvmpipe")
+            guest.add("LIBGL_ALWAYS_SOFTWARE=1")
+        } else {
+            guest.add("MESA_LOADER_DRIVER_OVERRIDE=zink")
+            guest.add("GALLIUM_DRIVER=zink")
+            guest.add("LIBGL_KOPPER_DRI2=true")
+        }
+        guest.add("BL_GPU_SAFETY=" + if (software) "software" else "device")
+        if (software) {
+            // How many device nodes the app covered up, for the session log to print beside what
+            // the guest itself finds there: the two only agree when the hide really took.
+            guest.add("BL_GPU_HIDDEN=" + LinuxRuntime.gpuNodesHidden(this))
+            Log.i(TAG, "gpu safety: software - no GPU node in the guest, drawing on the CPU")
+        }
+        if (!mali) LinuxRuntime.vulkanIcd(this)?.let { guest.add("VK_ICD_FILENAMES=" + it.path) }
+        if (mali) {
+            guest.add("BL_GPU_FAMILY=mali")
+            if (!software) {
+                // Hardware rendering. PANVK_KBASE_DRI3: 0 forced panvk's WSI to CPU/SHM with
+                // format modifiers off - every frame a linear copy, no AFBC, and the kind of
+                // store-at-3-fps a G720-class phone reported. 1 lets the driver export dma-bufs
+                // from the dma heap and allocate AFBC when the kernel supports it; gamescope's
+                // buffers then stay on the GPU all the way to the app's compositor.
+                // Download/droiddeck-mali-dri3 overrides for debugging ("0", "raw", "termux").
+                guest.add("PANVK_KBASE_DRI3=" + maliDri3())
+                guest.add("LIBGL_KOPPER_DISABLE=false")
+                // The present-path fix for games stuck at their logo (see maliGamescopeWsi()).
+                guest.add("BL_MALI_GAMESCOPE_WSI=" + if (maliGamescopeWsi()) "1" else "0")
+                // In-ring semaphore waits on the driver (see maliSemaphoreWaits()); the highest
+                // safe-mode rung turns them off, because a submit that waits inside the ring is
+                // what a job timeout - and a soft reset - is made of.
+                val semaWaits = maliSemaphoreWaits() && safeLevel < RebootGuard.LEVEL_NO_SEMA
+                guest.add("PANVK_KBASE_GPU_SEMAPHORE_WAITS=" + if (semaWaits) "1" else "0")
+                // Exact BC textures when the switch asks (see maliBcAfrc()); the log line says
+                // what the session chose, beside the driver's other knobs.
+                maliBcAfrc()?.let {
+                    guest.add("PANVK_BC_AFRC=" + it)
+                    Log.i(TAG, "mali: PANVK_BC_AFRC=$it (Download/droiddeck-mali-afrc)")
+                }
+                // Games' own present path, applied by droiddeck-game-env to the game's process
+                // only (the store and the compositor keep the session's setting). See
+                // SessionPrefs.maliGamePresent: the two device restarts came out of a game's
+                // teardown, not out of the store.
+                guest.add("BL_SAFE_LEVEL=" + safeLevel)
+                guest.add("BL_GAME_PRESENT=" + if (safeLevel >= RebootGuard.LEVEL_SAFE_PRESENT)
+                    SessionPrefs.GAME_PRESENT_SHM else SessionPrefs.maliGamePresent(this))
+                // Whether a game's DXVK waits for the display to show each frame, read by the
+                // compatibility tool when it builds DXVK_CONFIG: off means a mailbox swapchain and
+                // DXVK's own limiter, which is the only present path PanVK-kbase survives (see
+                // SessionPrefs.gamePresentWait).
+                guest.add("BL_DXVK_PRESENT_WAIT=" + if (SessionPrefs.gamePresentWait(this)) "1" else "0")
+                guest.add("BL_DXVK_FPS_CAP=" + SessionPrefs.GAME_FPS_CAP)
+                // While a game runs, the client's browser holds a budget of its own
+                // (SessionPrefs.gameBrowserBudget): 1.4-2.0 GB in eight processes beside a game
+                // is memory the game does not get.
+                if (SessionPrefs.gameBrowserBudget(this)) {
+                    guest.add("BL_WEB_MB=600")
+                    guest.add("BL_WEB_GAME_MB=350")
+                }
+            }
+        }
+        // An imported glibc Turnip, when one is set (by the user, or by Auto): the session script
+        // checks the manifest and its library from inside and points the loader at it with
+        // VK_DRIVER_FILES, so the runtime's own driver above stays untouched and is what a bad
+        // import falls back to. One driver for every session: the driver's shader cache is keyed on
+        // its build, and with one per mode every emulator compiled its shaders twice.
+        val linuxDriverId = com.droiddeck.launcher.gpu.GpuSafety.linuxDriver(this)
         SessionState.runtimeDriver = linuxDriverId
         com.droiddeck.launcher.gpu.AutoDriverTrial.sessionStarting(
             this,
@@ -575,8 +727,16 @@ class SessionService : Service() {
         )
         LinuxVulkanDriver.resolveIcdPath(this, linuxDriverId)
             ?.let { guest.add(LinuxVulkanDriver.ENV + "=" + it) }
-        tuDebug(linuxDriverId)?.let { guest.add("TU_DEBUG=$it") }
+        // Turnip's own debug switches, for the runtime's driver and everything on it. The file in
+        // Downloads holds the value verbatim ("sysmem", "sysmem,deck_emu"); with nothing there, an
+        // imported driver from the A710/A720/A722 legs gets "sysmem" on its own, which is what both
+        // its authors advise for those GPUs and what nothing else in the list needs.
+        if (!mali) tuDebug(linuxDriverId)?.let { guest.add("TU_DEBUG=$it") }
         com.droiddeck.launcher.gpu.TpUbwcHint.forThisDevice()?.let { guest.add("${com.droiddeck.launcher.gpu.TpUbwcHint.ENV}=$it") }
+        // Zink renders the client's UI (Chromium -> ANGLE -> Zink -> Turnip). Lazy descriptors is
+        // the mode Zink recommends where the driver has no descriptor buffer, and what Ludashi ships
+        // by default for its Zink path; a switch here because on one Fold the menus run at 14 fps.
+        // compact packs Zink's descriptor sets into fewer, so a draw binds less (WinNative's default).
         if (SessionPrefs.zinkLazy(this)) {
             guest.add("ZINK_DESCRIPTORS=lazy")
             guest.add("ZINK_DEBUG=compact")
@@ -585,7 +745,48 @@ class SessionService : Service() {
         if (SessionPrefs.noGlError(this)) guest.add("MESA_NO_ERROR=1")
         guest.add("MESA_DISK_CACHE_DATABASE=1")
         guest.add("GLIBC_TUNABLES=glibc.pthread.rseq=0:glibc.malloc.top_pad=16777216")
-        if (SessionState.mode == MODE_STEAM) guest.add("BL_MANGOAPP=" + (if (SessionPrefs.mangoapp(this)) "1" else "0"))
+        if (SessionState.mode == MODE_STEAM) guest.add("BL_MANGOAPP=" + (if (!mali && SessionPrefs.mangoapp(this)) "1" else "0"))
+        // The client's browser (CEF) on the GPU; off unless asked, so a browser that panics the
+        // GPU driver does not take the phone with it (droiddeck-session reads BL_CEF_GPU).
+        //
+        // On Mali it only goes to the GPU with the driver this repository builds
+        // (PanVK-kbase rc3 + driver-patches/0001, "fn64" in the package name). The imported rc3
+        // keeps the provoking-vertex helper's GPU address in 32 bits; on kbase that address is
+        // high, the firmware prefetches 0xfffef000, the whole command-stream front end faults and
+        // the phone went down with it (2026-10-14). With any other driver the browser stays on
+        // the CPU and the log says which driver was refused.
+        if (SessionState.mode == MODE_STEAM) {
+            val uiOnGpu = SessionPrefs.steamUiOnGpu(this)
+            val driverName = if (linuxDriverId.isEmpty()) "" else
+                LinuxVulkanDriverManager(this).getDriverName(linuxDriverId)
+            val driverVersion = if (linuxDriverId.isEmpty()) "" else
+                LinuxVulkanDriverManager(this).getDriverVersion(linuxDriverId)
+            val uiGpuOn = uiOnGpu && SessionPrefs.steamUiGpuAllowed(mali, driverName, driverVersion) &&
+                safeLevel < RebootGuard.LEVEL_SAFE_PRESENT
+            if (uiOnGpu && !uiGpuOn && safeLevel >= RebootGuard.LEVEL_SAFE_PRESENT) {
+                Log.w(TAG, "safe mode level $safeLevel: the client's browser stays on the CPU " +
+                    "after a restart with a game running (Steam > Modo seguro: Volver a normal)")
+            } else if (uiOnGpu && !uiGpuOn) {
+                Log.w(TAG, "Steam UI on GPU asked for, but \"$driverName\" is not the fn64 driver: " +
+                    "keeping the client's browser on the CPU")
+            }
+            guest.add("BL_CEF_GPU=" + (if (uiGpuOn) "1" else "0"))
+            // Which way the browser reaches the GPU: ANGLE on OpenGL (Zink) or ANGLE on Vulkan.
+            // Only meaningful when it is on the GPU at all; the session script prints the one it
+            // took, and a Vulkan path on Mali is still an experiment (fn64 required).
+            guest.add("BL_CEF_BACKEND=" + SessionPrefs.steamUiGpuBackend(this))
+            // The browser's own frame ceiling, off when asked (SessionPrefs.steamUiMaxFps), and
+            // Chromium's two raw switches only when the user turned them on (steamUiRawFps).
+            guest.add("BL_CEF_MAXFPS=" + (if (SessionPrefs.steamUiMaxFps(this)) "1" else "0"))
+            guest.add("BL_CEF_RAWFPS=" + (if (SessionPrefs.steamUiRawFps(this)) "1" else "0"))
+            if (uiGpuOn) Log.i(TAG, "Steam UI on GPU: backend " + SessionPrefs.steamUiGpuBackend(this))
+            // Remembered in the session folder so an abandoned session (a reboot, mostly) can
+            // turn the switch back off at the next start (SessionArtifacts.finishAbandoned).
+            SessionPaths.current()?.let { dir ->
+                runCatching { File(dir, "cef-gpu.txt").writeText(if (uiGpuOn) "1" else "0") }
+                    .onFailure { Log.w(TAG, "could not record the CEF GPU choice", it) }
+            }
+        }
         SessionState.steamClientArch = if (steamHere) SessionPrefs.steamClientArch(this) else null
         SessionState.steamClientArch?.let { arch ->
             guest.add("BL_STEAM_CLIENT_ARCH=$arch")
@@ -597,8 +798,19 @@ class SessionService : Service() {
         }
         if (SessionPrefs.noXalia(this)) guest.add("PROTON_USE_XALIA=0")
         guest.add("BL_SYNC=" + (if (SessionPrefs.fastSync(this)) "1" else "0"))
-        guest.add("BL_SYNC_FALLBACK=" + (if (SessionPrefs.syncFallback(this)) "1" else "0"))
-        guest.add("BL_FSYNC_FIRST=" + (if (SessionPrefs.fsyncFirst(this)) "1" else "0"))
+        // A hardware-Mali session with every sync switch off lands on wineserver-only sync - the
+        // slowest path, and where the R7/R8 CPU-bound sessions ran (device.txt said "wineserver").
+        // Nothing steers a new install there on purpose, so until one of the switches is chosen,
+        // put Proton's own fsync first: stock binaries, no esync pack needed, and droiddeck-esync
+        // falls back cleanly when the kernel or the tool lacks it. An explicit pick still wins.
+        val blFastSync = SessionPrefs.fastSync(this)
+        val blFsyncFirst = SessionPrefs.fsyncFirst(this)
+        val blSyncFallback = SessionPrefs.syncFallback(this)
+        val blSyncRescue = mali && !software && !blFastSync && !blFsyncFirst && !blSyncFallback
+        guest.add("BL_FSYNC_FIRST=" + (if (blFsyncFirst || blSyncRescue) "1" else "0"))
+        guest.add("BL_SYNC_FALLBACK=" + (if (blSyncFallback) "1" else "0"))
+        // gamescope's realtime Vulkan queues (the session script turns this into
+        // GAMESCOPE_FORCE_VULKAN_REALTIME); off unless the user turns it on.
         guest.add("BL_GAMESCOPE_REALTIME=" + (if (SessionPrefs.gamescopeRealtime(this)) "1" else "0"))
         if (SessionState.mode == MODE_STEAM && SessionPrefs.zramCompression(this) &&
             com.droiddeck.launcher.core.ZramSupport.supported()) guest.add("BL_ZRAM=1")
@@ -1703,6 +1915,7 @@ class SessionService : Service() {
         private const val NO_UINPUT_SWITCH = "Download/droiddeck-no-uinput"
         private const val NO_DECK_PAD_SWITCH = "Download/droiddeck-no-deck-pad"
         private const val NO_STEAM_TOUCH_SWITCH = "Download/droiddeck-no-steam-touch"
+        /** libfakeinput numbers the pads made through its /dev/uinput stand-in from here. */
         private const val FIRST_VIRTUAL_PAD = 16
 
         const val EXTRA_MODE = "mode"

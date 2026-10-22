@@ -83,6 +83,25 @@ class ModeSettings(
     val steamClientArch: String? = null,
     val steamRepairQueued: Boolean = false,
     val mangoapp: Boolean = true,
+    /** Steam only: the client's browser runs on the GPU instead of the CPU (SessionPrefs.steamUiOnGpu). */
+    val steamUiOnGpu: Boolean = false,
+    /** Steam only: the GPU path the browser takes (SessionPrefs.UI_GPU_*); null outside Steam. */
+    val steamUiGpuBackend: String? = null,
+    /** Steam only: let the browser draw without its own frame ceiling (SessionPrefs.steamUiMaxFps). */
+    val steamUiMaxFps: Boolean = true,
+    /** Steam only: hold the browser to 350 MB while a game runs (SessionPrefs.gameBrowserBudget). */
+    val gameBrowserBudget: Boolean = true,
+    /** Steam only: current safe-mode rung (RebootGuard.level), 0 = none. */
+    val safeLevel: Int = 0,
+    /** Steam only: restarts with a game still inside the 48 h window. */
+    val safeRestarts: Int = 0,
+    /** Steam only: Chromium's raw vsync switches, off by default (SessionPrefs.steamUiRawFps). */
+    val steamUiRawFps: Boolean = false,
+    /** Steam only, Mali: how a game presents to gamescope (SessionPrefs.GAME_PRESENT_*); null elsewhere. */
+    val maliGamePresent: String? = null,
+    /** Steam only, Mali: DXVK waits for the display before drawing the next frame (SessionPrefs.gamePresentWait). */
+    val gamePresentWait: Boolean = false,
+    /** Steam only: what the pad is to the client (SessionPrefs.CONTROLLER_*); null outside Steam. */
     val steamController: String? = null,
     val unfoldedControls: Boolean? = null,
     val runSteamAtStartup: Boolean = false,
@@ -96,6 +115,14 @@ class ModeSettings(
     val wifiDiscoveryLocation: Boolean = false,
     val wifiDiscoveryAsked: Boolean = false,
     val wifiDiscoveryBlocked: Boolean = false,
+    /** Steam only: the user's chosen Games folders; null outside Steam. */
+    val addedGamesDirs: List<String>? = null,
+    val addedGames: List<AddedGameRow> = emptyList(),
+    val addedGamesArt: Boolean = true,
+    /** A game .zip being extracted for the library, by its name. */
+    val importingGame: String? = null,
+    /** Latest Banners-Turnip release: what each driver menu offers to download, and the refresh line. */
+    /** Steam only: Decky Loader is managed from the Steam session settings. */
     val deckyInstalled: String? = null,
     val deckyLatestRelease: DeckyManager.Release? = null,
     val deckyChecking: Boolean = false,
@@ -133,6 +160,14 @@ class ModeSettingsActions(
     val onSteamRepair: () -> Unit = {},
     val onSteamClientArch: (String) -> Unit = {},
     val onMangoapp: (Boolean) -> Unit = {},
+    val onSteamUiOnGpu: (Boolean) -> Unit = {},
+    val onSteamUiGpuBackend: (String) -> Unit = {},
+    val onSteamUiMaxFps: (Boolean) -> Unit = {},
+    val onGameBrowserBudget: (Boolean) -> Unit = {},
+    val onResetSafeMode: () -> Unit = {},
+    val onSteamUiRawFps: (Boolean) -> Unit = {},
+    val onMaliGamePresent: (String) -> Unit = {},
+    val onGamePresentWait: (Boolean) -> Unit = {},
     val onSteamController: (String) -> Unit = {},
     val onUnfoldedControls: (Boolean) -> Unit = {},
     val onRunSteamAtStartup: (Boolean) -> Unit = {},
@@ -142,6 +177,12 @@ class ModeSettingsActions(
     val onRemoveBootMovie: () -> Unit = {},
     val onWifiDiscovery: (Boolean) -> Unit = {},
     val onWifiDiscoverySettings: () -> Unit = {},
+    val onPickAddedGamesDir: () -> Unit = {},
+    val onImportGameZip: () -> Unit = {},
+    val onForgetAddedGamesDir: (path: String) -> Unit = {},
+    val onAddedGamesArt: (Boolean) -> Unit = {},
+    val onAddedGameExe: (folderPath: String, path: String) -> Unit = { _, _ -> },
+    val onPickAddedGameExe: (folderPath: String) -> Unit = {},
     val onDeckyInstall: (DeckyManager.Release) -> Unit = {},
     val onDeckyCheck: () -> Unit = {},
     val onDeckyEnabled: (Boolean) -> Unit = {},
@@ -219,17 +260,6 @@ fun ModeSheetRows(s: ModeSettings, a: ModeSettingsActions, tab: String, extras: 
                     listOf(false to stringResource(R.string.display_preserve), true to stringResource(R.string.display_stretch)),
                     s.stretch16x9 && canStretch, enabled = canStretch, onPick = a.onStretch16x9)
             }
-        }
-        SettingsGroup(stringResource(R.string.display_image_scaling)) {
-            ChoiceRow(
-                host, "upscaler", stringResource(R.string.display_filter), null,
-                SessionPrefs.upscalerChoices(LocalContext.current), s.upscaler,
-                note = stringResource(R.string.display_filter_note), onPick = a.onUpscaler,
-            )
-            if (SessionPrefs.upscalerHasSharpness(s.upscaler)) SliderRow(
-                stringResource(R.string.display_sharpness), null, s.upscaleSharpness, 0..100, step = 5,
-                format = { "$it%" }, onChange = a.onUpscaleSharpness,
-            )
         }
         SettingsGroup(stringResource(R.string.display_frame_rate)) {
             ChoiceRow(host, "fps", stringResource(R.string.mode_fps), stringResource(R.string.common_applies_next_session),
@@ -454,6 +484,63 @@ fun ModeSheetRows(s: ModeSettings, a: ModeSettingsActions, tab: String, extras: 
                 stringResource(R.string.mode_mangoapp_hint),
                 s.mangoapp, onChange = a.onMangoapp,
             )
+            if (s.safeLevel > 0) SettingsRow(
+                stringResource(R.string.mode_safe_mode),
+                stringResource(R.string.mode_safe_mode_hint, s.safeLevel, s.safeRestarts),
+            ) {
+                SecondaryButton(stringResource(R.string.mode_safe_mode_reset)) { a.onResetSafeMode() }
+            }
+            ToggleRow(
+                host, "steamUiGpu", stringResource(R.string.mode_steam_ui_gpu),
+                stringResource(R.string.mode_steam_ui_gpu_hint),
+                s.steamUiOnGpu, onChange = a.onSteamUiOnGpu,
+            )
+            if (s.steamUiOnGpu) {
+                ChoiceRow(
+                    host, "steamUiGpuBackend", stringResource(R.string.mode_steam_ui_backend),
+                    stringResource(R.string.mode_steam_ui_backend_hint),
+                    listOf(
+                        SessionPrefs.UI_GPU_GL to stringResource(R.string.mode_steam_ui_backend_gl),
+                        SessionPrefs.UI_GPU_VULKAN to stringResource(R.string.mode_steam_ui_backend_vulkan),
+                    ),
+                    s.steamUiGpuBackend ?: SessionPrefs.UI_GPU_GL,
+                    note = stringResource(R.string.mode_steam_ui_backend_note),
+                    onPick = a.onSteamUiGpuBackend,
+                )
+                ToggleRow(
+                    host, "steamUiMaxFps", stringResource(R.string.mode_steam_ui_maxfps),
+                    stringResource(R.string.mode_steam_ui_maxfps_hint),
+                    s.steamUiMaxFps, onChange = a.onSteamUiMaxFps,
+                )
+                if (s.steamUiMaxFps) ToggleRow(
+                    host, "steamUiRawFps", stringResource(R.string.mode_steam_ui_rawfps),
+                    stringResource(R.string.mode_steam_ui_rawfps_hint),
+                    s.steamUiRawFps, onChange = a.onSteamUiRawFps,
+                )
+            }
+            if (s.maliGamePresent != null) {
+                ChoiceRow(
+                    host, "maliPresent", stringResource(R.string.mode_mali_present),
+                    stringResource(R.string.mode_mali_present_hint),
+                    listOf(
+                        SessionPrefs.GAME_PRESENT_DRI3 to stringResource(R.string.mode_mali_present_dri3),
+                        SessionPrefs.GAME_PRESENT_NOAFBC to stringResource(R.string.mode_mali_present_noafbc),
+                        SessionPrefs.GAME_PRESENT_SHM to stringResource(R.string.mode_mali_present_shm),
+                    ),
+                    s.maliGamePresent ?: SessionPrefs.GAME_PRESENT_DRI3,
+                    onPick = a.onMaliGamePresent,
+                )
+                ToggleRow(
+                    host, "gamePresentWait", stringResource(R.string.mode_game_present_wait),
+                    stringResource(R.string.mode_game_present_wait_hint),
+                    s.gamePresentWait, onChange = a.onGamePresentWait,
+                )
+                ToggleRow(
+                    host, "gameWebBudget", stringResource(R.string.mode_game_web_budget),
+                    stringResource(R.string.mode_game_web_budget_hint),
+                    s.gameBrowserBudget, onChange = a.onGameBrowserBudget,
+                )
+            }
             SettingsRow(
                 stringResource(R.string.mode_steam_repair),
                 stringResource(if (s.steamRepairQueued) R.string.mode_steam_repair_queued else R.string.mode_steam_repair_hint),
@@ -520,6 +607,68 @@ fun ModeSheetRows(s: ModeSettings, a: ModeSettingsActions, tab: String, extras: 
                     }
                 }
             }
+        }
+        if (steam && tab == SheetTab.LIBRARY && s.addedGamesDirs != null) SettingsGroup(stringResource(R.string.mode_added_games)) {
+            for (dir in s.addedGamesDirs) {
+                val n = s.addedGames.count { it.folderPath.startsWith("$dir/") }
+                ActionRow(
+                    dir.substringAfterLast('/').ifEmpty { dir }, dir + " · " + (if (n == 0) stringResource(R.string.mode_added_none) else pluralStringResource(R.plurals.mode_added_count, n, n)) + ". " + stringResource(R.string.added_games_forget_hint),
+                    stringResource(R.string.common_forget), onClick = { a.onForgetAddedGamesDir(dir) },
+                )
+            }
+            ActionRow(
+                if (s.addedGamesDirs.isEmpty()) stringResource(R.string.mode_games_folder) else stringResource(R.string.mode_games_folder_another),
+                stringResource(R.string.added_games_import_hint),
+                stringResource(R.string.common_add_ellipsis), onClick = a.onPickAddedGamesDir,
+            )
+            ActionRow(
+                stringResource(R.string.mode_added_import_zip),
+                stringResource(R.string.mode_added_import_zip_hint),
+                stringResource(R.string.common_add_ellipsis), onClick = a.onImportGameZip,
+            )
+            if (s.importingGame != null) {
+                ActionRow(
+                    stringResource(R.string.mode_added_importing, s.importingGame),
+                    null, stringResource(R.string.mode_added_import_working), onClick = {},
+                )
+            }
+            ToggleRow(
+                host, "addedArt", stringResource(R.string.mode_added_art),
+                stringResource(R.string.mode_added_art_hint),
+                s.addedGamesArt, onChange = a.onAddedGamesArt,
+            )
+            for (g in s.addedGames) {
+                ChoiceRow(
+                    host, "added:" + g.folderPath, g.folderName, if (s.addedGamesDirs.size > 1) stringResource(R.string.mode_added_launches_in, g.exeName, g.folderPath.substringBeforeLast('/').substringAfterLast('/')) else stringResource(R.string.mode_added_launches, g.exeName),
+                    g.candidates + ("__pick__" to stringResource(R.string.mode_added_choose)), g.exePath,
+                    note = stringResource(R.string.mode_added_exe_note),
+                    onPick = { path -> if (path == "__pick__") a.onPickAddedGameExe(g.folderPath) else a.onAddedGameExe(g.folderPath, path) },
+                )
+            }
+        }
+        if (steam && tab == SheetTab.LIBRARY && s.fexPreset != null) SettingsGroup(stringResource(R.string.game_settings_title)) {
+            if (s.syncBackend != null) SettingsRow(
+                stringResource(R.string.sync_backend_title),
+                stringResource(R.string.sync_backend_hint),
+            ) {
+                SegmentedTabs(
+                    listOf(
+                        SessionPrefs.SYNC_NTSYNC to stringResource(R.string.sync_backend_ntsync),
+                        SessionPrefs.SYNC_FSYNC to stringResource(R.string.sync_backend_fsync),
+                        SessionPrefs.SYNC_ESYNC to stringResource(R.string.sync_backend_esync),
+                        SessionPrefs.SYNC_WINESERVER to stringResource(R.string.sync_backend_wineserver),
+                    ),
+                    s.syncBackend,
+                ) { id -> host.open = null; a.onSyncBackend(id) }
+            }
+            ChoiceRow(
+                host, "fex", stringResource(R.string.fex_preset_title), stringResource(R.string.fex_next_launch),
+                FexPreset.all.map { it.id to stringResource(it.label) }, s.fexPreset,
+                note = stringResource(FexPreset.byId(s.fexPreset).detail), onPick = a.onFexPreset,
+            )
+            ToggleRow(host, "ssbs", stringResource(R.string.force_ssbs_title), stringResource(R.string.force_ssbs_hint), s.forceSsbs, onChange = a.onForceSsbs)
+            GameEnvironmentRow()
+
         }
     }
     if (explainWifiDiscovery) AlertDialog(

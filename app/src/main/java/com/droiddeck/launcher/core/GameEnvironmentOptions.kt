@@ -12,6 +12,7 @@ object GameEnvironmentOptions {
         Option("VKD3D_SHADER_MODEL", "6_9", R.string.game_env_shader, Type.CHOICE, listOf("6_9", "6_8", "6_7", "6_6", "6_5", "6_4", "6_3", "6_2", "6_1", "6_0", "5_1")),
         Option("VKD3D_CONFIG", "nodxr", R.string.game_env_vkd3d_config, Type.MULTIPLE, listOf("nodxr", "single_queue", "no_upload_hvv")),
         Option("MESA_SHADER_CACHE_MAX_SIZE", "1G", R.string.game_env_cache_size, Type.CHOICE, listOf("512M", "1G", "2G", "4G")),
+        Option("PANVK_BC_AFRC", "0", R.string.game_env_bc_afrc, Type.CHOICE, listOf("0", "16", "24", "32")),
         Option("PROTON_LOG", "1", R.string.game_env_proton_log, Type.TOGGLE, listOf("0", "1")),
         Option("PROTON_USE_WINED3D", "1", R.string.game_env_wined3d, Type.TOGGLE, listOf("0", "1")),
         Option("PROTON_USE_XALIA", "0", R.string.game_env_xalia, Type.TOGGLE, listOf("0", "1")),
@@ -26,10 +27,11 @@ object GameEnvironmentOptions {
         Option("ZINK_DESCRIPTORS", "auto", 0, Type.CHOICE, listOf("auto", "lazy", "cached", "notemplates")),
         Option("ZINK_DEBUG", "nir", 0, Type.MULTIPLE, listOf("nir", "spirv", "tgsi", "validation", "sync", "compact", "noreorder")),
         Option("SteamDeck", "0", 0, Type.TOGGLE, listOf("0", "1")),
-        Option("FD_DEV_FEATURES", "enable_tp_ubwc_flag_hint=1", 0, Type.MULTIPLE, listOf("enable_tp_ubwc_flag_hint=1", "storage_8bit=1")),
-        Option("TU_DEBUG", "forcecb", 0, Type.MULTIPLE, listOf("forcecb", "nocb", "startup", "deck_emu", "nir", "nobin", "sysmem", "gmem", "forcebin", "layout", "noubwc", "nomultipos", "nolrz", "nolrzfc", "perf", "perfc", "flushall", "syncdraw", "push_consts_per_stage", "rast_order", "unaligned_store", "log_skip_gmem_ops", "dynamic", "bos", "3d_load", "fdm", "noconform", "rd")),
-        Option("IR3_SHADER_DEBUG", "nouboopt", 0, Type.MULTIPLE, listOf("nouboopt", "nopreamble", "noearlypreamble")),
-        Option("MESA_EXTENSION_MAX_YEAR", "", 0, Type.TEXT),
+                                Option("MESA_EXTENSION_MAX_YEAR", "", 0, Type.TEXT),
+        // The Mali driver's own switches; nothing applied until one is picked. no_crc renders
+        // without the render-target checksums, the likeliest lever when a game's world draws
+        // black while its menus draw fine.
+        Option("PANVK_DEBUG", "", R.string.game_env_panvk_debug, Type.MULTIPLE, listOf("no_crc", "wsi_no_afbc", "no_bc_emul", "no_gs", "sync", "trace")),
         Option("MESA_GL_VERSION_OVERRIDE", "", 0, Type.TEXT),
         Option("PULSE_LATENCY_MSEC", "", 0, Type.NUMBER),
         Option("WINE_LARGE_ADDRESS_AWARE", "0", 0, Type.TOGGLE, listOf("0", "1")),

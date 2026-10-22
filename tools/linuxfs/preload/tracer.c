@@ -1,10 +1,23 @@
 /*
- * Ported from WinNative (maxjivi05, feature/wayland-gamescope, 2026-09-18/19), GPL-3.0.
+ * Ported from WinNative (maxjivi05, feature/wayland-gamescope, 2026-09-18/19), GPL-3.0, with names
+ * changed to this project's. The reasoning below is the original author's.
+ *
+ * A process status without the container's tracer in it.
+ *
+ * proot runs the session under ptrace, so every process here reads a TracerPid in its
+ * /proc/<pid>/status. The Steam client takes that to mean a debugger is attached, and its arm64
+ * build breaks into the supposed debugger with a bare "svc #0" after every failed assertion. That
+ * is no breakpoint: the registers still hold the call Plat_IsInDebugSession() just made, close(),
+ * with its own result, 1, as the argument - so each assertion closes descriptor 1. The number then
+ * goes to whatever the client opens next, and its standard output is written into that: app
+ * manifests and content chunks, its own connections, and the socket a game's Steam API talks
+ * over, which is how a game that stayed silent while loading found its pipe dead.
+ *
+ * The tracer is part of the container, not something a program should react to, so the status
+ * files are served with TracerPid 0.
  */
-
 #define _GNU_SOURCE
 #include <ctype.h>
-#include <dlfcn.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <stdlib.h>
@@ -22,6 +35,7 @@ static const char *skip_digits(const char *s) {
   return end == s ? NULL : end;
 }
 
+/* /proc/{self,thread-self,<pid>}[/task/<tid>]/status */
 static int is_status_path(const char *path) {
   const char *rest;
   if (path == NULL || strncmp(path, "/proc/", 6) != 0) return 0;
@@ -33,16 +47,25 @@ static int is_status_path(const char *path) {
   return strcmp(rest, "/status") == 0;
 }
 
-static int is_web_helper(const void *caller) {
-  if (strcmp(program_invocation_short_name, "steamwebhelper") != 0 &&
-      strcmp(program_invocation_short_name, "vrwebhelper") != 0)
-    return 0;
-  const char *hide = getenv("BL_WEBHELPER_HIDE_TRACER");
-  Dl_info info;
-  if (hide && hide[0] == '1' && caller && dladdr(caller, &info) && info.dli_fname
-      && strstr(info.dli_fname, "libtier0_s.so"))
-    return 0;
-  return 1;
+/* Chromium stands its hang watchdogs down when it sees a tracer, and the client's web helper does
+ * not come up within their patience here: it is left reading the truth. */
+static int is_web_helper(void) {
+  return strcmp(program_invocation_short_name, "steamwebhelper") == 0;
+}
+
+/* Keep steamwebhelper (browser and --type=gpu-process) off the hardware Vulkan ICD (panvk on
+ * Mali-G615) and Gamescope WSI layer unless BL_CEF_GPU=1 is explicitly enabled. Even with
+ * -cef-disable-gpu, inheriting VK_ICD_FILENAMES and MESA_LOADER_DRIVER_OVERRIDE=zink caused CEF's
+ * browser and gpu-process to initialize four panvk instances and ~220 MB of kbase DMA-BUFs. */
+__attribute__((constructor)) static void bl_webhelper_isolate_gpu(void) {
+  if (!is_web_helper()) return;
+  const char *cef_gpu = getenv("BL_CEF_GPU");
+  if (cef_gpu != NULL && strcmp(cef_gpu, "1") == 0) return;
+  setenv("VK_ICD_FILENAMES", "/dev/null", 1);
+  setenv("VK_DRIVER_FILES", "/dev/null", 1);
+  setenv("LIBGL_ALWAYS_SOFTWARE", "1", 1);
+  unsetenv("MESA_LOADER_DRIVER_OVERRIDE");
+  unsetenv("ENABLE_GAMESCOPE_WSI");
 }
 
 static int write_all(int fd, const char *data, size_t len) {
@@ -56,13 +79,28 @@ static int write_all(int fd, const char *data, size_t len) {
   return 0;
 }
 
-__attribute__((visibility("hidden"))) int bl_status_without_tracer(const char *path, int flags, const void *caller) {
+/* Give Steam's game reaper (and the game subtree it spawns) oom_score_adj 200 (Android
+ * PERCEPTIBLE_APP_ADJ) via raw SYS_openat while opens.c redirects steam-launch-wrapper's 900
+ * (CACHED_APP_MIN_ADJ) to /dev/null. That keeps games immune to normal cached-app lmkd kills while
+ * ensuring a runaway game is killed before the foreground launcher, proot, gamescope, and Steam (0). */
+__attribute__((constructor)) static void bl_reaper_oom_score(void) {
+  if (strcmp(program_invocation_short_name, "reaper") != 0) return;
+  int fd = (int)syscall(SYS_openat, AT_FDCWD, "/proc/self/oom_score_adj", O_WRONLY | O_CLOEXEC);
+  if (fd >= 0) {
+    (void)write_all(fd, "200", 3);
+    close(fd);
+  }
+}
+
+/* The descriptor to hand back for a read-only open of a status file, or -1 with errno untouched
+ * when the path is something else or the copy cannot be made, and the real open should run. */
+__attribute__((visibility("hidden"))) int bl_status_without_tracer(const char *path, int flags) {
   char text[STATUS_MAX];
   size_t len = 0;
   int saved = errno;
   int out = -1;
 
-  if ((flags & O_ACCMODE) != O_RDONLY || !is_status_path(path) || is_web_helper(caller)) return -1;
+  if ((flags & O_ACCMODE) != O_RDONLY || !is_status_path(path) || is_web_helper()) return -1;
   int in = (int)syscall(SYS_openat, AT_FDCWD, path, O_RDONLY | O_CLOEXEC);
   if (in < 0) goto done;
   for (;;) {

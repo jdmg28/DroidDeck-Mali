@@ -31,6 +31,7 @@ object SessionPrefs {
     const val OSC_ALWAYS = "always"
     const val OSC_STEAM_QAM = "steam-qam"
     const val OSC_NEVER = "never"
+    /** Steam's touch controller (SteamTouchControls) in place of the app's pad; Steam sessions only. */
     const val OSC_STEAM_TOUCH = "steam-touch"
 
     val BACK_MENU_THEN_QAM = R.string.back_menu_then_qam
@@ -210,6 +211,31 @@ object SessionPrefs {
         prefs(context).edit().putString("gpuDriverMode", mode).apply()
     }
 
+    /**
+     * How far a session keeps the device's own GPU out of the guest. One of [GPU_SAFETY_AUTO]
+     * (the default, and the safest: software on a Mali device, nothing changes on an Adreno one),
+     * [GPU_SAFETY_SOFTWARE] (always draw on the CPU and never hand the GPU to the guest) and
+     * [GPU_SAFETY_MALI] (the experimental Mali driver may be used, and the GPU with it). Read
+     * through GpuSafety, which is the only thing that interprets it.
+     *
+     * A device that has never been given a value is Auto, so an update that adds this switch
+     * leaves every existing install on the safest setting rather than on the one it had before.
+     */
+    const val GPU_SAFETY_AUTO = "auto"
+    const val GPU_SAFETY_SOFTWARE = "software"
+    const val GPU_SAFETY_MALI = "mali"
+
+    fun gpuSafety(context: Context): String =
+        prefs(context).getString("gpuSafety", GPU_SAFETY_AUTO) ?: GPU_SAFETY_AUTO
+
+    fun setGpuSafety(context: Context, value: String) {
+        prefs(context).edit().putString("gpuSafety", value).apply()
+    }
+
+    /**
+     * Auto arrived after people had picked drivers by hand: an install that chose either driver
+     * keeps its choice (Manual), everyone else is Auto. Decided once, at process start.
+     */
     fun settleGpuDriverMode(context: Context) {
         val p = prefs(context)
         if (p.contains("gpuDriverMode")) return
@@ -224,6 +250,17 @@ object SessionPrefs {
         prefs(context).edit().putStringSet("gpuAutoInstalled", ids.toSet()).apply()
     }
 
+    /** This fork's own release packages (MaliReleases) already downloaded, so they list once. */
+    fun maliDownloaded(context: Context): Set<String> =
+        prefs(context).getStringSet("maliDownloaded", emptySet()).orEmpty()
+
+    fun setMaliDownloaded(context: Context, names: Set<String>) {
+        prefs(context).edit().putStringSet("maliDownloaded", names.toSet()).apply()
+    }
+
+    // The Steam client's own sound has one route now: DirectAudio's engine inside the PulseAudio
+    // daemon (PulseAudioComponent), one step from Android. The old "clientDirectAudio" boolean
+    // (which meant the relay route, one hop more) is no longer read.
 
     fun picturePosition(context: Context): String =
         prefs(context).getString("picturePosition", "center")
@@ -416,6 +453,165 @@ object SessionPrefs {
     fun mangoapp(context: Context): Boolean = prefs(context).getBoolean("mangoapp", true)
     fun setMangoapp(context: Context, on: Boolean) { prefs(context).edit().putBoolean("mangoapp", on).apply() }
 
+    /**
+     * The client's own browser (CEF) on the GPU instead of on the CPU. Off by default, and off is
+     * the safe side: a session on a Mali-G615 had gamescope compositing on the real GPU and both
+     * Xwaylands answering, and the device restarted seconds after the client's browser asked that
+     * GPU for Vulkan. Games use the GPU either way - this is the store and the library only.
+     */
+    fun steamUiOnGpu(context: Context): Boolean = prefs(context).getBoolean("steamUiGpu", false)
+    fun setSteamUiOnGpu(context: Context, on: Boolean) { prefs(context).edit().putBoolean("steamUiGpu", on).apply() }
+
+    /**
+     * Which path the client's browser takes to the GPU, when it is on the GPU at all.
+     *
+     * [UI_GPU_GL] is ANGLE on OpenGL, and OpenGL on this stack is Zink (GL over Vulkan) over
+     * PanVK - two translation layers, and the path the fn64 fix was validated on. [UI_GPU_VULKAN]
+     * is ANGLE straight onto Vulkan: one layer fewer and Chromium's own, native backend, which
+     * should be faster, but it is the path that reset the X6 Pro on 2026-10-14 *before* the
+     * command-address fix existed. Both need the fn64 driver; the app still refuses either
+     * without it. Off Mali only the Vulkan path is meaningful and this value is not used.
+     */
+    const val UI_GPU_GL = "gl"
+    const val UI_GPU_VULKAN = "vulkan"
+
+    fun steamUiGpuBackend(context: Context): String {
+        val value = prefs(context).getString("steamUiGpuBackend", UI_GPU_GL)
+        return if (value == UI_GPU_VULKAN) UI_GPU_VULKAN else UI_GPU_GL
+    }
+
+    fun setSteamUiGpuBackend(context: Context, id: String) {
+        prefs(context).edit().putString("steamUiGpuBackend", if (id == UI_GPU_VULKAN) UI_GPU_VULKAN else UI_GPU_GL).apply()
+    }
+
+    /**
+     * The session script's own restart trail (RebootGuard): epoch milliseconds, comma-separated.
+     * Kept here rather than in a file of its own so it is written with the same SharedPreferences
+     * the app already owns, and read in one place.
+     */
+    fun rebootTrail(context: Context): List<Long> =
+        (prefs(context).getString("rebootTrail", "") ?: "").split(',')
+            .mapNotNull { it.trim().toLongOrNull() }.filter { it > 0 }
+
+    fun saveRebootTrail(context: Context, trail: List<Long>) {
+        prefs(context).edit().putString("rebootTrail", trail.joinToString(",")).apply()
+    }
+
+    /**
+     * Let the browser draw the store as fast as the GPU can, instead of behind its own ceiling.
+     *
+     * Chromium caps its compositor at the display's refresh and, on a window it believes another
+     * window covers, throttles it further; on this stack (ANGLE -> Zink -> PanVK, gamescope
+     * presenting on top) the store measured 30 fps on a 120 Hz panel. The two switches behind
+     * this (`--disable-gpu-vsync`, `--disable-frame-rate-limit`) remove the browser's own limit
+     * - they do not touch the app's FPS limiter or gamescope's `-r`, so a game's cap is still
+     * the game's - and the occlusion switches keep the compositor working when Xwayland says the
+     * store's window is covered. Only sent when the browser is on the GPU: on the CPU path
+     * rendering unthrottled would spend the cores the game needs.
+     */
+    fun steamUiMaxFps(context: Context): Boolean = prefs(context).getBoolean("steamUiMaxFps", true)
+    fun setSteamUiMaxFps(context: Context, on: Boolean) {
+        prefs(context).edit().putBoolean("steamUiMaxFps", on).apply()
+    }
+
+    /**
+     * The two Chromium switches behind "maximum fps" that are not Steam's own: `--disable-gpu-vsync`
+     * and `--disable-frame-rate-limit`. Off by default since 2026-10-20: on the first session that
+     * used them the client's menu drew garbled and the phone restarted, and CEF has a known
+     * regression where `--disable-frame-rate-limit` leaves a white window. The occlusion switch
+     * alone ([steamUiMaxFps]) is Steam's documented answer to a browser that throttles itself.
+     */
+    fun steamUiRawFps(context: Context): Boolean = prefs(context).getBoolean("steamUiRawFps", false)
+
+    fun setSteamUiRawFps(context: Context, on: Boolean) {
+        prefs(context).edit().putBoolean("steamUiRawFps", on).apply()
+    }
+
+    /**
+     * Take memory back from the client's browser while a game runs: renderers over a 350 MB
+     * budget are dropped, one every 30 s, until it fits (the session script's web trim). On this phone the store's browser held 1.4-2.0 GB in eight processes beside a
+     * game that had 878 MB of its own; what the trim frees is memory the game can have, and
+     * cores it does not have to share.
+     */
+    fun gameBrowserBudget(context: Context): Boolean =
+        prefs(context).getBoolean("gameBrowserBudget", true)
+
+    fun setGameBrowserBudget(context: Context, on: Boolean) {
+        prefs(context).edit().putBoolean("gameBrowserBudget", on).apply()
+    }
+
+    /**
+     * How a game's swapchain reaches gamescope, which is where the reboots on this stack have
+     * come from: the game's frame is a dma-buf that PanVK exports and gamescope imports, and the
+     * last two device restarts (2026-10-15 rc3-lowmem, 2026-10-19 fn64) happened while a game
+     * was being torn down - leaving its swapchain, not while the store was in use.
+     *
+     *  - [GAME_PRESENT_DRI3] dma-buf, the fast path (the driver's default and the one 55 fps
+     *    sessions ran on);
+     *  - [GAME_PRESENT_NOAFBC] the same, with AFBC (Arm's fixed-rate compression) off for the
+     *    swapchain only: a compressed image is the one piece of the frame a teardown can free
+     *    while the firmware still reads it, and `PANVK_DEBUG=wsi_no_afbc` is upstream's switch
+     *    for exactly that;
+     *  - [GAME_PRESENT_SHM] no dma-buf at all: PanVK copies the frame to shared memory
+     *    (`PANVK_KBASE_DRI3=0`) and gamescope reads it from there. One copy more per frame and
+     *    the slowest of the three, but nothing for the GPU to free on the way out.
+     *
+     * The store and the compositor keep their own setting; this one is put in the environment of
+     * the games Proton launches, by droiddeck-game-env.
+     */
+    const val GAME_PRESENT_DRI3 = "dri3"
+    const val GAME_PRESENT_NOAFBC = "noafbc"
+    const val GAME_PRESENT_SHM = "shm"
+
+    fun maliGamePresent(context: Context): String {
+        val value = prefs(context).getString("maliGamePresent", GAME_PRESENT_DRI3)
+        return if (value == GAME_PRESENT_NOAFBC || value == GAME_PRESENT_SHM) value else GAME_PRESENT_DRI3
+    }
+
+    fun setMaliGamePresent(context: Context, id: String) {
+        val value = if (id == GAME_PRESENT_NOAFBC || id == GAME_PRESENT_SHM) id else GAME_PRESENT_DRI3
+        prefs(context).edit().putString("maliGamePresent", value).apply()
+    }
+
+    /**
+     * Whether DXVK waits for the display to show each frame before drawing the next one.
+     *
+     * On Mali, no. DXVK's FIFO path asks the driver to time every present (VK_EXT_present_timing)
+     * and then waits for it on a thread of its own (VK_KHR_present_wait2). PanVK-kbase never
+     * retires those records: the timing queue fills up, acquire starts returning
+     * VK_ERROR_PRESENT_TIMING_QUEUE_FULL_EXT (-1000208000), DXVK recreates the swapchain four times
+     * and the next wait comes back VK_ERROR_DEVICE_LOST. The game stops presenting and keeps its
+     * last frame: MiSide's Aihasto splash frozen at "Fps: 0" (2026-10-20, sessions 02 and 04).
+     *
+     * With this off, the game presents at syncInterval 0 to a mailbox swapchain, which DXVK neither
+     * times nor waits on, and DXVK's own limiter paces it at [GAME_FPS_CAP] (or the session's limit
+     * when one is set). The switch is read by the compatibility tool, so it reaches every Proton,
+     * not just Valve's.
+     */
+    fun gamePresentWait(context: Context): Boolean =
+        prefs(context).getBoolean("gamePresentWait", false)
+
+    fun setGamePresentWait(context: Context, on: Boolean) {
+        prefs(context).edit().putBoolean("gamePresentWait", on).apply()
+    }
+
+    /** Ceiling DXVK holds a game to when it is not waiting for the display ([gamePresentWait]). */
+    const val GAME_FPS_CAP = 60
+
+    /**
+     * Whether the client's browser may actually go to the GPU. Off Mali, whatever was asked.
+     * On Mali, only with the driver this repository builds: PanVK-kbase rc3 plus the
+     * provoking-vertex address fix, which its package names "fn64" (driver-patches/0001). The
+     * imported rc3 faults the command stream front end on the renderer path Chromium takes
+     * through Zink, and on kbase that took the whole phone down (X6 Pro, 2026-10-14).
+     */
+    fun steamUiGpuAllowed(mali: Boolean, driverName: String, driverVersion: String): Boolean =
+        !mali || (driverName + " " + driverVersion).contains("fn64", ignoreCase = true)
+
+    /**
+     * Zink's lazy descriptor mode (ZINK_DESCRIPTORS=lazy) with its compact set layout
+     * (ZINK_DEBUG=compact) for the client's GL-on-Vulkan UI, as WinNative runs it. On by default.
+     */
     fun zinkLazy(context: Context): Boolean = prefs(context).getBoolean("zinkLazy", true)
 
     fun setZinkLazy(context: Context, on: Boolean) {
@@ -669,7 +865,8 @@ object SessionPrefs {
             ?: first.also { p.edit().putLong("addedAppId:$folderPath", it).apply() }
     }
 
-    fun theme(context: Context): String = prefs(context).getString("theme", "graphite") ?: "graphite"
+    /** The app's colour theme (ui/Themes ids); Graphite unless chosen otherwise. */
+    fun theme(context: Context): String = prefs(context).getString("theme", "steam_purple") ?: "steam_purple"
 
     fun setTheme(context: Context, id: String) {
         prefs(context).edit().putString("theme", id).apply()

@@ -23,16 +23,35 @@ object GameEnvironment {
     )
 
     fun validName(name: String) = namePattern.matches(name)
-    fun supported(name: String) = name !in unused && !name.startsWith("BOX64_") && !name.startsWith("BOX86_")
+    fun supported(name: String) = name !in unused && !name.startsWith("BOX86_")
     fun validValue(value: String) = '\u0000' !in value && value.length <= 8192
     fun validScope(scope: String) = scope.isEmpty() || (Regex("[1-9][0-9]*").matches(scope) && scope.toLongOrNull()?.let { it in 1..4294967295L } == true)
 
     fun defaults(preset: String, forceSsbs: Boolean = false): Map<String, String?> = linkedMapOf<String, String?>(
         "MESA_SHADER_CACHE_DISABLE" to "false",
+        "MESA_SHADER_CACHE_MAX_SIZE" to "512M",
+        "WINE_SKIP_OPENGL_GPU_PROBE" to "1",
+        "DISABLE_VK_LAYER_VALVE_steam_fossilize_1" to "1",
+        "heap_memory_percent" to "0.12",
         "VKD3D_FEATURE_LEVEL" to "12_2",
         "VKD3D_SHADER_MODEL" to "6_9",
-        "DOTNET_GCRegionRange" to "800000000",
+        // Cap Wine virtual memory allocations (supported by DroidDeck-Proton / Bannerlator Wine) so
+        // runaway game allocations fail gracefully instead of triggering Android LMK.
+        "WINEVMEMMAXSIZE" to "4096",
+        // .NET 7 and later reserve 256 GB of address space for the GC heap at startup, more than an
+        // Android process has free, and the runtime fails to start. 32 GB is plenty for a game.
+        "DOTNET_GCRegionRange" to "0x800000000",
+        // .NET's W^X writes JIT code through a second mapping that FEX does not watch, so FEX keeps
+        // running the stale translation and the game hangs at startup.
         "DOTNET_EnableWriteXorExecute" to "0",
+        // FEX's L2 translation table and unbounded L1 block caches grow by hundreds of MB inside
+        // every Wine process on a JIT-heavy title (Clicker Heroes hit 1.4-1.7 GB on its main menu
+        // with COMPATIBILITY selected). Trim them in every preset unless a profile overrides them.
+        "FEX_DISABLEL2CACHE" to "1",
+        "FEX_DYNAMICL1CACHE" to "1",
+        "FEX_DYNAMICL1CACHEINCREASECOUNTHEURISTIC" to "250",
+        "FEX_DYNAMICL1CACHEDECREASECOUNTHEURISTIC" to "50",
+        "FEX_SILENTLOG" to "1",
     ).apply {
         FexPreset.env(preset).forEach { put(it.substringBefore('='), it.substringAfter('=')) }
         if (forceSsbs) put(FORCE_SSBS, "1")
