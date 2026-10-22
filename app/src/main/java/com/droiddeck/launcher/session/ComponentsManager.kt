@@ -670,8 +670,14 @@ object ComponentsManager {
             return unpacked
         }
 
-        fun managed(comp: String): Set<String> = if (comp == "fex") FEX_FILES.toSet() else buildSet {
-            for (arch in PE_ARCHES) for (dll in COMP_DLLS.getValue(comp)) add("${COMP_DIR.getValue(comp)}/$arch/$dll")
+        // The WoW64 backend is not a folder of DLLs like dxvk: it is a short list of FEX-style
+        // files, and asking COMP_DIR for it would throw instead of writing its rows.
+        fun managed(comp: String): Set<String> = when (comp) {
+            "fex" -> FEX_FILES.toSet()
+            "wowbox64" -> WOWBOX64_FILES.toSet()
+            else -> buildSet {
+                for (arch in PE_ARCHES) for (dll in COMP_DLLS.getValue(comp)) add("${COMP_DIR.getValue(comp)}/$arch/$dll")
+            }
         }
 
         fun append(scope: String, p: Proton, comp: String, key: String, wcp: File) {

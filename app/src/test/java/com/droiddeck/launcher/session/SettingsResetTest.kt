@@ -39,7 +39,7 @@ class SettingsResetTest {
 
         assertTrue(SettingsReset.resetAll(app, gameProfiles = false))
 
-        assertEquals("graphite", SessionPrefs.theme(app))
+        assertEquals("steam_purple", SessionPrefs.theme(app))
         assertTrue(SessionPrefs.noXalia(app))
         assertEquals(0, SessionPrefs.fpsLimit(app, SessionService.MODE_STEAM))
         assertFalse(SessionPrefs.hdr(app, SessionService.MODE_DESKTOP))

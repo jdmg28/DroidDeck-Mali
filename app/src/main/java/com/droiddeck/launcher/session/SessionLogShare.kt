@@ -46,7 +46,9 @@ object SessionLogShare {
         // says it at the end.
         val files = folder.walkTopDown().filter { it.isFile }.toList()
         if (files.isEmpty()) return null
-        val out = File(context.cacheDir, "shared-logs").apply { deleteRecursively(); mkdirs() }
+        // share/ is the one directory log_share_paths.xml hands to the FileProvider, and clear()
+        // empties it; shared-logs/ is only where the trimmed copies are staged.
+        val out = shareDir(context).apply { deleteRecursively(); mkdirs() }
         val zip = File(out, "DroidDeck-${folder.name}.zip")
         val tails = trimmedTails(context, files)
         // Scrubbed on the way into the zip: a session shared while it runs has not had its end-of-
