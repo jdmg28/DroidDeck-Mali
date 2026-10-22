@@ -22,16 +22,35 @@ if [[ ! -x "$CC" ]]; then
 fi
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
+# fetch <file> <sha256> <url> [<url> ...]: the first URL that answers wins, and a URL that
+# answers with an error page (504 from samba.org's front end, seen twice on 2026-10-22) is tried
+# again with the rest. --retry-all-errors covers the connection dying mid-transfer (curl 56),
+# which samba.org does often enough that three retries were not enough.
 fetch() {
-  # --retry-all-errors: samba.org (talloc) drops connections often enough that a branch build
-  # dies in 'Build proot' with curl 56 even after three retries; retry those too, with a pause.
-  curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 -o "$WORK/$1" "$2"
-  echo "$3  $WORK/$1" | shasum -a 256 -c -
-  mkdir -p "$WORK/${1%%.*}"
-  tar -xzf "$WORK/$1" -C "$WORK/${1%%.*}" --strip-components=1
+  file=$1; sum=$2; shift 2
+  for url in "$@"; do
+    for attempt in 1 2; do
+      if curl -fsSL --retry 5 --retry-all-errors --retry-delay 10 --connect-timeout 30 \
+           --max-time 900 -o "$WORK/$file" "$url"; then
+        break 2
+      fi
+      echo "== $file: $url did not answer (attempt $attempt), trying again" >&2
+      sleep $(( attempt * 10 ))
+    done
+  done
+  [ -s "$WORK/$file" ] || { echo "== $file could not be fetched from any URL" >&2; exit 1; }
+  echo "$sum  $WORK/$file" | shasum -a 256 -c -
+  mkdir -p "$WORK/${file%%.*}"
+  tar -xzf "$WORK/$file" -C "$WORK/${file%%.*}" --strip-components=1
 }
-fetch proot.tar.gz "https://github.com/termux/proot/archive/${PROOT_COMMIT}.tar.gz" "$PROOT_SHA256"
-fetch talloc.tar.gz "https://www.samba.org/ftp/talloc/talloc-${TALLOC_VERSION}.tar.gz" "$TALLOC_SHA256"
+fetch proot.tar.gz "$PROOT_SHA256" \
+  "https://github.com/termux/proot/archive/${PROOT_COMMIT}.tar.gz" \
+  "https://codeload.github.com/termux/proot/tar.gz/${PROOT_COMMIT}"
+# samba.org serves talloc from two names for the same tree, and both go through the same front
+# end; the second one is there because a 504 on one has not meant a 504 on the other.
+fetch talloc.tar.gz "$TALLOC_SHA256" \
+  "https://www.samba.org/ftp/talloc/talloc-${TALLOC_VERSION}.tar.gz" \
+  "https://download.samba.org/pub/talloc/talloc-${TALLOC_VERSION}.tar.gz"
 # The statx patch includes "tracee/statx_mnt_id.h" and -I. is the proot source root: the header
 # has to be in the tree before make runs.
 cp "$HERE/statx_mnt_id.h" "$WORK/proot/src/tracee/statx_mnt_id.h"
