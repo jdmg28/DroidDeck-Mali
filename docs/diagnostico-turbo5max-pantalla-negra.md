@@ -1326,8 +1326,9 @@ Qué hace el fork con esto, sin privilegios:
 
 - El heartbeat ya nombraba al que más gasta; ahora el número va con el **techo** al lado, para que
   un 80 % se lea como lo que es: la sesión tiene minutos.
-- La sesión escribe `fd-pressure` en su carpeta cuando el peor proceso pasa del **80 %**, y la app
-  lo enseña al cerrar. Así el próximo informe dice si fue esto y no un cuelgue del driver.
+- La sesión escribe `fd-pressure` en su carpeta cuando el peor proceso pasa del **80 %**; viaja con
+  el informe de la sesión, como `game-started.txt`. Así el próximo dice si fue esto y no un cuelgue
+  del driver.
 - La vía de presentación del juego y la de la interfaz se eligen por separado
   (*Mali: cómo presenta un juego* frente a *Interfaz de Steam en la GPU*), para poder bajar la
   primera sin tocar la segunda.

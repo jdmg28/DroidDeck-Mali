@@ -1163,6 +1163,12 @@ BUSCONF
           if [ "${_bl_fd_soft:-0}" -gt 0 ] &&
              [ $(( _bl_fd_worst * 100 / _bl_fd_soft )) -ge 80 ]; then
             echo "== fd warning: ${_bl_fd_who:-?} holds $_bl_fd_worst of $_bl_fd_soft descriptors; at the ceiling nothing in this session can allocate GPU memory"
+            # Written once, so the report says it happened even when the session then died
+            # without a teardown: it travels with the folder like game-started.txt does.
+            if [ -n "${BL_LAUNCH_DIR:-}" ] && [ ! -e "$BL_LAUNCH_DIR/fd-pressure" ]; then
+              printf '%s of %s descriptors, worst %s\n' "$_bl_fd_worst" "$_bl_fd_soft" "${_bl_fd_who:-?}" \
+                > "$BL_LAUNCH_DIR/fd-pressure" 2>/dev/null || :
+            fi
           fi
         fi
         # Below BL_MEM_LOG_MB the three largest are no longer enough to say anything: sessions have
