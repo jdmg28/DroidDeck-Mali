@@ -158,48 +158,31 @@ class GpuDriversActions(
 @Composable
 internal fun DeviceDetails(first: FocusRequester) {
     val colors = MaterialTheme.colorScheme
-    val pal = LocalPalette.current
-    var showAll by rememberSaveable { mutableStateOf(false) }
-    Column(verticalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth().padding(top = 12.dp)) {
-        DeviceCard(s)
-        if (s.gpuFamily == "Arm Mali") {
-            Text(stringResource(R.string.mali_integration_hint), fontSize = 13.sp,
-                color = colors.onSurfaceVariant, modifier = Modifier.padding(vertical = 8.dp))
-        }
-        // How far the GPU is kept out of the guest. Shown where there is a GPU to keep out: on
-        // Adreno the setting is Auto and says so, and nothing in it changes a session.
-        if (s.mali) {
-            SettingsGroup(stringResource(R.string.gpu_safety_title)) {
-                SettingsRow(stringResource(R.string.gpu_safety_label), stringResource(R.string.gpu_safety_hint)) {
-                    SafetyDropdown(s.gpuSafety, a.onGpuSafety)
+    val context = LocalContext.current
+    val clipboard = LocalClipboardManager.current
+    var details by remember { mutableStateOf<List<DeviceInfo.Section>?>(null) }
+    var copied by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) { details = withContext(Dispatchers.IO) { DeviceInfo.collect(context) } }
+    Column(
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+        modifier = Modifier.fillMaxWidth().heightIn(max = 360.dp).verticalScroll(rememberScrollState()),
+    ) {
+        val sections = details
+        if (sections == null) {
+            Text(stringResource(R.string.device_info_loading), fontSize = 13.sp, color = colors.onSurfaceVariant)
+            LinearProgressIndicator(Modifier.fillMaxWidth())
+        } else {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    stringResource(if (copied) R.string.device_info_copied else R.string.device_info_copy_hint),
+                    fontSize = 12.sp, color = colors.onSurfaceVariant, modifier = Modifier.weight(1f),
+                )
+                SecondaryButton(stringResource(R.string.device_info_copy), compact = true, modifier = Modifier.focusRequester(first)) {
+                    clipboard.setText(AnnotatedString(DeviceInfo.text(sections)))
+                    copied = true
                 }
             }
-        }
-        if (!s.unsupported && s.gpuFamily != "Arm Mali") {
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                ModeCard(Icons.Outlined.AutoAwesome, stringResource(R.string.common_auto), stringResource(R.string.gpu_auto_hint), s.auto, Modifier.weight(1f)) { a.onAuto(true) }
-                ModeCard(Icons.Outlined.Tune, stringResource(R.string.mode_suspend_manual), stringResource(R.string.gpu_manual_hint), !s.auto, Modifier.weight(1f)) { a.onAuto(false) }
-            }
-            if (s.auto) AutoCard(s)
-            else {
-                val shown = s.pairs.filter { it.suits || showAll }
-                if (shown.isEmpty()) Text(
-                    if (s.checking) stringResource(R.string.gpu_checking) else stringResource(R.string.gpu_none_listed),
-                    fontSize = 13.sp, color = colors.onSurfaceVariant, modifier = Modifier.padding(vertical = 8.dp),
-                )
-                for (p in shown) PairLine(p, s.busy == p.key, s.percent, enabled = s.busy == null) { a.onPair(p.key) }
-                if (s.pairs.any { !it.suits }) FocusText(
-                    if (showAll) stringResource(R.string.gpu_hide_other) else stringResource(R.string.gpu_show_other), pal.signal,
-                ) { showAll = !showAll }
-            }
-        }
-        SettingsGroup(stringResource(R.string.gpu_advanced)) {
-            SettingsRow(stringResource(R.string.comp_runtime_driver), s.activeBundle?.let { stringResource(R.string.gpu_set_with_display, it) } ?: stringResource(R.string.gpu_runtime_hint)) {
-                DriverDropdown(s.linuxRows, s.linuxSelected, stringResource(R.string.gpu_runtime_default), a.onSelectLinux) { onAdvanced("rt") }
-            }
-            SettingsRow(stringResource(R.string.comp_display_driver), s.activeBundle?.let { stringResource(R.string.gpu_set_with_runtime, it) } ?: stringResource(R.string.gpu_display_hint)) {
-                DriverDropdown(s.androidRows, s.androidSelected, stringResource(R.string.gpu_auto_by_gpu), a.onSelectAndroid) { onAdvanced("panel") }
-            }
+            for (section in sections) DeviceInfoSection(section)
         }
     }
 }
@@ -281,39 +264,6 @@ private fun SafetyDropdown(selected: String, onSelect: (String) -> Unit) {
  * off the main thread, with a button that copies it for a bug report.
  */
 @Composable
-private fun DeviceCard(s: GpuDriversState) {
-    val colors = MaterialTheme.colorScheme
-    val pal = LocalPalette.current
-    val context = LocalContext.current
-    val clipboard = LocalClipboardManager.current
-    var details by remember { mutableStateOf<List<DeviceInfo.Section>?>(null) }
-    var copied by remember { mutableStateOf(false) }
-    LaunchedEffect(Unit) { details = withContext(Dispatchers.IO) { DeviceInfo.collect(context) } }
-    Column(
-        verticalArrangement = Arrangement.spacedBy(10.dp),
-        modifier = Modifier.fillMaxWidth().heightIn(max = 360.dp).verticalScroll(rememberScrollState()),
-    ) {
-        val sections = details
-        if (sections == null) {
-            Text(stringResource(R.string.device_info_loading), fontSize = 13.sp, color = colors.onSurfaceVariant)
-            LinearProgressIndicator(Modifier.fillMaxWidth())
-        } else {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    stringResource(if (copied) R.string.device_info_copied else R.string.device_info_copy_hint),
-                    fontSize = 12.sp, color = colors.onSurfaceVariant, modifier = Modifier.weight(1f),
-                )
-                SecondaryButton(stringResource(R.string.device_info_copy), compact = true, modifier = Modifier.focusRequester(first)) {
-                    clipboard.setText(AnnotatedString(DeviceInfo.text(sections)))
-                    copied = true
-                }
-            }
-            for (section in sections) DeviceInfoSection(section)
-        }
-    }
-}
-
-@Composable
 private fun DeviceInfoSection(section: DeviceInfo.Section) {
     val colors = MaterialTheme.colorScheme
     val pal = LocalPalette.current
@@ -390,6 +340,35 @@ internal fun GpuDriversBody(
             GPU_MODE_AUTO -> AutoBody(gpu)
             GPU_MODE_PAIR -> PairBody(gpu, actions)
             else -> MixBody(single, actions, slotFocus, onOpenSlot)
+        }
+        // The fork's own piece: on a Mali device the GPU can be kept out of the guest entirely,
+        // and that setting has no meaning anywhere else, so it is not shown there.
+        if (gpu.gpuFamily == "Arm Mali") {
+            Text(
+                stringResource(R.string.mali_integration_hint), fontSize = 13.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 4.dp),
+            )
+            if (gpu.mali) SettingsGroup(stringResource(R.string.gpu_safety_title)) {
+                SettingsRow(stringResource(R.string.gpu_safety_label), stringResource(R.string.gpu_safety_hint)) {
+                    SafetyDropdown(gpu.gpuSafety, actions.onGpuSafety)
+                }
+            }
+        }
+        // The two driver lists on their own, which upstream puts on the driver page instead: here
+        // they are one tap from the tab, and an Android + Linux bundle's row sets both.
+        SettingsGroup(stringResource(R.string.gpu_advanced)) {
+            SettingsRow(
+                stringResource(R.string.comp_runtime_driver),
+                gpu.activeBundle?.let { stringResource(R.string.gpu_set_with_display, it) } ?: stringResource(R.string.gpu_runtime_hint),
+            ) {
+                DriverDropdown(gpu.linuxRows, gpu.linuxSelected, stringResource(R.string.gpu_runtime_default), actions.onSelectLinux) { onOpenSlot("runtime", Rect.Zero) }
+            }
+            SettingsRow(
+                stringResource(R.string.comp_display_driver),
+                gpu.activeBundle?.let { stringResource(R.string.gpu_set_with_runtime, it) } ?: stringResource(R.string.gpu_display_hint),
+            ) {
+                DriverDropdown(gpu.androidRows, gpu.androidSelected, stringResource(R.string.gpu_auto_by_gpu), actions.onSelectAndroid) { onOpenSlot("display", Rect.Zero) }
+            }
         }
     }
 }
@@ -586,5 +565,14 @@ private fun PanelRow(
         }
         if (badge != null) Pill(badge, pal.signal.copy(alpha = 0.16f), pal.signal)
         if (trailing != null) Text(trailing, fontSize = 13.sp, color = colors.onSurfaceVariant, maxLines = 1)
+    }
+}
+
+/** A small radio dot for the drop-downs: drawn, not a Material control, so it takes the palette. */
+@Composable
+private fun Radio(selected: Boolean) {
+    val pal = LocalPalette.current
+    Box(contentAlignment = Alignment.Center, modifier = Modifier.size(20.dp).clip(CircleShape).border(2.dp, if (selected) pal.signal else pal.line2, CircleShape)) {
+        if (selected) Box(Modifier.size(10.dp).clip(CircleShape).background(pal.signal))
     }
 }
