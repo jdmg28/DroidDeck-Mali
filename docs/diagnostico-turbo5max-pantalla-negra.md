@@ -1346,6 +1346,8 @@ parches, y ninguno queda abierto.
 | `test_cef_software_is_scoped_to_the_kde_client` exigía ANGLE/Vulkan por defecto | era la política de 0.5.0 (navegador en la GPU para todos), la que reinició el X6 Pro | el test comprueba ahora la del fork: CPU por defecto y GPU solo con `BL_CEF_GPU=1` |
 | `test_proton_extra` esperaba otra organización | el fork publica los Proton en `The412Banner/DroidDeck-Proton` | el test apunta ahí |
 | `-DANDROID_STL` duplicado en `app/build.gradle` | las dos ramas añadieron el mismo argumento | una sola línea |
+| CI: `tracee/statx_mnt_id.h: file not found` al compilar proot | el merge se dejó el `cp` del encabezado en `tools/proot/build.sh`; el parche lo incluye pero nada lo copiaba al árbol | línea restaurada (y el `strip` del cargador, que también se había perdido) |
+| El cliente arm64 no se sincronizaba con el x86-64, y los ficheros extraídos podían quedar sin permiso de ejecución | `droiddeck-steam-install` se quedó con la versión del fork: sin `--sync`, sin `chmod -R a+x` y con un solo CDN | se le devolvieron las tres cosas de 0.5.0 (sonda de los tres CDN, `--sync` con su manifiesto y `chmod -R a+x`), conservando la reanudación de descargas del fork; dos tests nuevos |
 
 Y la prueba de que el árbol no perdió piezas: **918 tests** de `tools/tests` en verde, salvo los 15
 que necesitan `zstd` (no está en el entorno de revisión; el flujo de CI sí lo tiene).

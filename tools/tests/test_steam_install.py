@@ -43,6 +43,10 @@ while [ $# -gt 0 ]; do
   esac
 done
 printf '%s\\n' "$url" >> "$TEST_REQUESTS"
+case "${TEST_FAIL_HOST:-}" in
+  '') ;;
+  *) case "$url" in *"$TEST_FAIL_HOST"*) echo "curl: (22) 503" >&2; exit 22 ;; esac ;;
+esac
 cp "$TEST_CDN/${url##*/}" "$out"
 ''')
         curl.chmod(0o755)
@@ -71,11 +75,13 @@ cp "$TEST_CDN/${url##*/}" "$out"
                 f'\t\t"file" "{archive.name}"\n\t\t"sha2" "{digest}"\n'
                 '\t}\n}\n')
 
-    def install(self, channel=None):
+    def install(self, channel=None, *args, fail_host=None):
         env = self.env.copy()
         if channel is not None:
             env['BL_STEAM_CHANNEL'] = channel
-        return subprocess.run(['bash', str(SCRIPT)], env=env, text=True, capture_output=True)
+        if fail_host is not None:
+            env['TEST_FAIL_HOST'] = fail_host
+        return subprocess.run(['bash', str(SCRIPT), *args], env=env, text=True, capture_output=True)
 
     def assert_installed(self, channel):
         result = self.install(channel)
@@ -90,6 +96,30 @@ cp "$TEST_CDN/${url##*/}" "$out"
             'https://client-update.fastly.steamstatic.com/steam_client_' + channel + '_linuxarm64',
             'https://client-update.fastly.steamstatic.com/' + channel + '.zip',
         ], self.requests.read_text().splitlines())
+
+    def test_a_cdn_that_does_not_answer_hands_over_to_the_next_one(self):
+        steamstatic = 'https://client-update.steamstatic.com'
+        result = self.install('steamdeck_publicbeta', fail_host='fastly')
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual('123456\n', (self.steam / 'package/droiddeck-installed').read_text())
+        self.assertEqual(steamstatic + '/steam_client_steamdeck_publicbeta_linuxarm64',
+                         self.requests.read_text().splitlines()[1])
+
+    def test_sync_updates_an_installed_client_but_a_plain_run_leaves_it_alone(self):
+        self.assertEqual(0, self.install('steamdeck_publicbeta').returncode)
+        # The stamp is there: without --sync the script has nothing to do, even though the
+        # manifest on disk says the client is older.
+        (self.steam / 'package/steam_client_steamdeck_publicbeta_linuxarm64.manifest').write_text(
+            '"linuxarm64"\n{\n\t"version" "1"\n}\n')
+        self.requests.unlink()
+        self.assertEqual(0, self.install().returncode)
+        self.assertFalse(self.requests.exists())
+        # With --sync it fetches again and keeps the manifest the client compares next time.
+        result = self.install(None, '--sync', 'steamdeck_publicbeta')
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertTrue(self.requests.exists())
+        self.assertIn('"version" "123456"',
+                      (self.steam / 'package/steam_client_steamdeck_publicbeta_linuxarm64.manifest').read_text())
 
     def test_unset_channel_downloads_deck_beta(self):
         result = self.install()
