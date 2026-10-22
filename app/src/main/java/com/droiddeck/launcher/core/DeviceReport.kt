@@ -2,10 +2,15 @@ package com.droiddeck.launcher.core
 
 import android.app.ActivityManager
 import android.content.Context
+import android.hardware.display.DisplayManager
 import android.os.Build
 import android.os.Environment
+import android.os.PerformanceHintManager
+import android.os.PowerManager
 import android.os.StatFs
+import android.provider.Settings
 import android.util.Log
+import android.view.Display
 import com.droiddeck.launcher.gpu.LinuxVulkanDriver
 import com.droiddeck.launcher.gpu.LinuxVulkanDriverManager
 import com.droiddeck.launcher.gpu.TurnipDriver
@@ -21,16 +26,6 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-/**
- * `device.txt`: what this device is and what the session was told to do, written the moment a
- * session starts so a log can be read months later without asking the reporter a single question.
- *
- * **Nothing identifying goes in here.** No serial number, no Android ID, no IMEI, no account name,
- * no network names - only what the hardware is, what the ROM is, and which of our own settings
- * were in effect. The one thing that comes close is the build fingerprint, which names the ROM and
- * its build date and is the same string on every unit of that model.
- */
-/** Committed for a build retry: the previous run lost the proot fetch to the network. */
 object DeviceReport {
     private const val TAG = "DeviceReport"
 
@@ -41,6 +36,57 @@ object DeviceReport {
             Log.w(TAG, "could not write $target", e)
         }
     }
+
+    /** Name of an ApplicationExitInfo reason code, so a report says "LOW_MEMORY" instead of "3". */
+    internal fun exitReasonName(reason: Int): String = when (reason) {
+        0 -> "UNKNOWN"
+        1 -> "EXIT_SELF"
+        2 -> "SIGNALED"
+        3 -> "LOW_MEMORY"
+        4 -> "CRASH"
+        5 -> "CRASH_NATIVE"
+        6 -> "ANR"
+        7 -> "INITIALIZATION_FAILURE"
+        8 -> "PERMISSION_CHANGE"
+        9 -> "EXCESSIVE_RESOURCE_USAGE"
+        10 -> "USER_REQUESTED"
+        11 -> "USER_STOPPED"
+        12 -> "DEPENDENCY_DIED"
+        13 -> "OTHER"
+        14 -> "FREEZER"
+        15 -> "PACKAGE_STATE_CHANGE"
+        16 -> "PACKAGE_UPDATED"
+        else -> "REASON_$reason"
+    }
+
+    internal fun thermalStatusName(status: Int): String = when (status) {
+        0 -> "NONE"
+        1 -> "LIGHT"
+        2 -> "MODERATE"
+        3 -> "SEVERE"
+        4 -> "CRITICAL"
+        5 -> "EMERGENCY"
+        6 -> "SHUTDOWN"
+        else -> "STATUS_$status"
+    }
+
+    internal fun gameModeName(mode: Int): String = when (mode) {
+        0 -> "UNSUPPORTED"
+        1 -> "STANDARD"
+        2 -> "PERFORMANCE"
+        3 -> "BATTERY"
+        4 -> "CUSTOM"
+        else -> "MODE_$mode"
+    }
+
+    internal fun refreshModesSummary(rates: List<Float>): String =
+        rates.map { Math.round(it) }.distinct().sortedDescending().joinToString(", ") { "$it Hz" }
+
+    internal fun exitSummary(processName: String?, reason: Int, status: Int, description: String?): String =
+        buildString {
+            append(processName ?: "?").append("  ").append(exitReasonName(reason)).append("  status=").append(status)
+            if (!description.isNullOrBlank()) append("  ").append(description.trim())
+        }
 
     fun build(context: Context, mode: String): String {
         val b = StringBuilder()
@@ -78,6 +124,20 @@ object DeviceReport {
         k("Fingerprint", Build.FINGERPRINT)
         k("Kernel", System.getProperty("os.version"))
         k("ABIs", Build.SUPPORTED_ABIS.joinToString(", "))
+        k("Memory page size", runCatching { android.system.Os.sysconf(android.system.OsConstants._SC_PAGESIZE) }.getOrNull()?.let { "$it bytes" })
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            h("Recent process exits")
+            val exits = runCatching {
+                context.getSystemService(android.app.ActivityManager::class.java).getHistoricalProcessExitReasons(context.packageName, 0, 5)
+            }.getOrNull().orEmpty()
+            if (exits.isEmpty()) k("Exits", "none recorded") else {
+                val stamp = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US)
+                for (e in exits) {
+                    k(stamp.format(Date(e.timestamp)), exitSummary(e.processName, e.reason, e.status, e.description))
+                }
+            }
+        }
 
         h("CPU and memory")
         k("Cores", CpuCores.all.size)
@@ -93,6 +153,19 @@ object DeviceReport {
             k("RAM available", FileUtils.sizeToString(mi.availMem))
         }
         runCatching {
+            val pm = context.getSystemService(Context.POWER_SERVICE) as PowerManager
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) k("Thermal status", thermalStatusName(pm.currentThermalStatus))
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                k("Thermal headroom (10 s)", pm.getThermalHeadroom(10).let { if (it.isNaN()) "not reported" else String.format(Locale.US, "%.2f", it) })
+            }
+            k("Power saver", pm.isPowerSaveMode)
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            val rate = runCatching { context.getSystemService(PerformanceHintManager::class.java)?.preferredUpdateRateNanos }.getOrNull()
+            k("ADPF hint sessions", if (rate == null || rate <= 0) "not supported" else "supported (preferred update ${rate / 1000} us)")
+            k("Game Mode", runCatching { context.getSystemService(android.app.GameManager::class.java)?.gameMode }.getOrNull()?.let { gameModeName(it) })
+        }
+        runCatching {
             val fs = StatFs(context.filesDir.path)
             k("App storage free", FileUtils.sizeToString(fs.availableBlocksLong * fs.blockSizeLong))
         }
@@ -105,32 +178,17 @@ object DeviceReport {
         k("KGSL gpu_model", readSys("/sys/class/kgsl/kgsl-3d0/gpu_model"))
         k("KGSL chip id", readSys("/sys/class/kgsl/kgsl-3d0/gpu_chipid"))
         k("System Vulkan ICD", if (File("/vendor/lib64/hw/vulkan.adreno.so").exists()) "/vendor/lib64/hw/vulkan.adreno.so" else "not at the usual path")
-        // Mali (this fork): the node the session is given, and the driver the compositor itself
-        // presents with - the one GPU component common to every driver mode, and therefore the
-        // one to check first when a session draws nothing on a device this was not tested on.
-        k("/dev/mali0", if (File("/dev/mali0").exists()) "visible to the app" else "not visible to the app")
-        runCatching {
-            // The kernel's page size, which decides whether 16 KB-class phones (2026 SoCs on
-            // Android 16) can load this build's native code at all. getconf, not Os.conf -
-            // compileSdk 34 has no such API; the app execs system binaries all day (proot).
-            val proc = ProcessBuilder("/system/bin/getconf", "PAGESIZE")
-                .redirectErrorStream(true).start()
-            val out = proc.inputStream.bufferedReader().readText().trim()
-            proc.waitFor()
-            val ps = out.toIntOrNull()
-            if (ps != null && ps > 0) k("Kernel page size", "$ps bytes" + if (ps >= 16384) " (16 KB-class device)" else "")
-            else k("Kernel page size", out.ifEmpty { "unreadable" })
-        }
-        runCatching {
-            val vk = com.droiddeck.launcher.gpu.VulkanInfo.query()
-            k("System Vulkan device", vk["device"])
-            vk["api"]?.let { k("System Vulkan API", it) }
-            vk["error"]?.let { k("System Vulkan error", it) }
-        }
 
         h("Display")
         k("Session output", SessionState.outputSize?.let { "${it.first}x${it.second}" })
         k("Session refresh", String.format(Locale.US, "%.2f Hz", SessionState.refreshHz))
+        runCatching {
+            val display = context.getSystemService(DisplayManager::class.java).getDisplay(Display.DEFAULT_DISPLAY)
+            k("Panel refresh now", String.format(Locale.US, "%.2f Hz", display.refreshRate))
+            k("Panel refresh modes", refreshModesSummary(display.supportedModes.map { it.refreshRate }))
+        }
+        k("peak_refresh_rate", runCatching { Settings.System.getString(context.contentResolver, "peak_refresh_rate") }.getOrNull() ?: "not set")
+        k("refresh_rate_mode", runCatching { Settings.Secure.getString(context.contentResolver, "refresh_rate_mode") }.getOrNull() ?: "not set")
         val panelSize = com.droiddeck.launcher.session.SessionDisplay.panelSize(context)
         for ((label, mode) in listOf("Resolution (Steam)" to SessionService.MODE_STEAM, "Resolution (Desktop)" to SessionService.MODE_DESKTOP)) {
             val choice = SessionPrefs.resolutionChoice(context, mode, panelSize)
@@ -170,31 +228,18 @@ object DeviceReport {
         h("Settings in effect")
         k("Client core override", SessionPrefs.clientCpusOverride(context))
         k("  client cores", CpuCores.listOrAll(SessionPrefs.clientCpus(context)))
-        k("  game cores", CpuCores.restrictionOrEmpty(SessionPrefs.gameCpus(context)).ifEmpty { "every core (nothing sent)" })
+        k("  game cores", CpuCores.restrictionOrEmpty(SessionPrefs.gameCpus(context)).ifEmpty { "every core" })
         k("Turnip sysmem", SessionPrefs.tuSysmem(context))
         k("Zink lazy descriptors", SessionPrefs.zinkLazy(context))
         k("Threaded GL (glthread)", SessionPrefs.glThread(context))
         k("No GL error checks", SessionPrefs.noGlError(context))
-        k("Steam Deck mode", SessionPrefs.steamDeckMode(context))
-        // The rung the safe-mode ladder put this session on, and the restarts behind it: the first
-        // thing to read in a report that says "it restarted again".
-        k("Safe mode (restarts with a game)", "level " + com.droiddeck.launcher.session.RebootGuard.level(context) +
-            " of 3 (" + com.droiddeck.launcher.session.RebootGuard.trail(context).size + " in 48 h)")
         k("Steam controller", SessionPrefs.steamController(context))
         k("Upscaler", (SessionPrefs.upscalerChoices.firstOrNull { it.first == SessionPrefs.upscaler(context) }?.second ?: "Off") +
             " (sharpness ${SessionPrefs.upscaleSharpness(context)}%)")
         k("FEX preset", SessionPrefs.fexPreset(context).ifEmpty { "FEX defaults" })
         k("Skip xalia", SessionPrefs.noXalia(context))
         k("Wine sync", SessionPrefs.syncBackend(context))
-        EsyncPacks.status(LinuxRuntime.rootDir(context)).let { s ->
-            k("droiddeck-esync packs", "${s.installed} installed, ${s.wanted} wanted")
-            // What each installed Proton's sync pair says, with its wine version line: the next
-            // report answers "which token needs a pack published" without another round trip.
-            for (t in s.tools.take(4)) {
-                val version = t.versionLine.trim().take(72).ifEmpty { "version unknown" }
-                k("  ${t.toolDir.trimEnd('/').substringAfterLast('/')}", "${t.state}${t.packId?.let { ", pack $it" } ?: ""} ($version)")
-            }
-        }
+        EsyncPacks.status(LinuxRuntime.rootDir(context)).let { k("droiddeck-esync packs", "${it.installed} installed, ${it.wanted} wanted") }
         k("Linux x86 (FEX)", if (com.droiddeck.launcher.runtime.LinuxFex.ready(context)) "ready" else "not set up")
         k("gamescope realtime", SessionPrefs.gamescopeRealtime(context))
         k("proot without seccomp", SessionPrefs.prootNoSeccomp(context))
@@ -232,62 +277,6 @@ object DeviceReport {
         b.append("\nNothing identifying is collected here: no serial number, no device or advertising\n")
         b.append("id, no account name, no network names. Safe to attach to a bug report as it is.\n")
         return b.toString()
-    }
-
-    /**
-     * The sync backend the games of a finished session really ran on, appended to a finished
-     * session's device report: the choice in the settings above says what was ASKED for, while
-     * wine says on its stderr what answered - "droiddeck-ntsync/esync/fsync: up and running."
-     * from a pack or our userspace stand-ins, "fsync: up and running." from Proton's own, and
-     * nothing at all when every object went through the wineserver. Written at a session's end,
-     * when the log is final (device.txt itself is written at a session's start). The real marker
-     * lands in each game's steam/steam-<appid>.log (one per game wineserver) - the session log
-     * only carries the launcher's own wineserver and often none at all - so the game logs are
-     * read first, newest first, and the session log is the fallback for sessions that never
-     * launched Steam. Within one log the last marker wins: a session can run the client and
-     * then a game that turned esync off.
-     */
-    fun appendSyncInUse(device: File, sessionDir: File?) {
-        try {
-            val sessionLog = sessionDir?.takeIf { it.isDirectory }?.let { File(it, "session.log") }
-            val gameLogs = sessionDir?.takeIf { it.isDirectory }?.let { dir ->
-                runCatching {
-                    File(dir, "steam").listFiles { f -> f.isFile && f.name.startsWith("steam-") && f.name.endsWith(".log") }
-                        ?.sortedByDescending { it.lastModified() }?.take(4)
-                }.getOrNull() ?: emptyList()
-            } ?: emptyList()
-            val backend = (gameLogs + listOfNotNull(sessionLog)).firstNotNullOfOrNull { log ->
-                val lines = log.takeIf { it.isFile }?.let { f ->
-                    runCatching { f.useLines { ls -> ls.take(150_000).toList() } }.getOrNull()
-                } ?: return@firstNotNullOfOrNull null
-                syncBackendInUse(lines)
-            }
-            device.appendText("\n\nSync in use\n-----------\n")
-            device.appendText(backend ?: "no wineserver started (no game ran, or it never got there)")
-            device.appendText("\n")
-        } catch (e: Exception) {
-            Log.w(TAG, "sync-in-use", e)
-        }
-    }
-
-    /** The backend the markers in a session log name; the last one wins, null when none. */
-    fun syncBackendInUse(lines: List<String>): String? {
-        var found: String? = null
-        for (line in lines) {
-            // The droiddeck names first: "droiddeck-fsync: up and running." contains the stock
-            // marker's words, and the pack's wineserver and our stand-ins report their own.
-            val backend = when {
-                "droiddeck-ntsync: up and running" in line -> "ntsync through the pack (in-process)"
-                "droiddeck-esync: up and running" in line -> "esync through the pack (in-process)"
-                "droiddeck-fsync: up and running" in line -> "droiddeck-fsync (in-process)"
-                "/dev/ntsync" in line && "up and running" in line -> "ntsync (kernel driver)"
-                "fsync: up and running" in line -> "fsync (Proton's own, in-process)"
-                "esync: up and running" in line -> "esync (wine's own, in-process)"
-                else -> null
-            }
-            if (backend != null) found = backend
-        }
-        return found
     }
 
     private fun readSys(path: String): String? = FileUtils.readString(File(path))?.trim()?.ifEmpty { null }

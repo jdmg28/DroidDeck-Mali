@@ -14,16 +14,6 @@ object FexPreset {
         Preset("STABILITY", R.string.fex_stability_label, R.string.fex_stability_detail, tso(1, 1, 1, 1) + listOf("FEX_X87REDUCEDPRECISION=0", "FEX_MULTIBLOCK=0")),
         Preset("COMPATIBILITY", R.string.fex_compatibility_label, R.string.fex_compatibility_detail, tso(1, 1, 1, 1) + listOf("FEX_X87REDUCEDPRECISION=0", "FEX_MULTIBLOCK=1")),
         Preset("INTERMEDIATE", R.string.fex_intermediate_label, R.string.fex_intermediate_detail, tso(1, 0, 0, 1) + listOf("FEX_X87REDUCEDPRECISION=1", "FEX_MULTIBLOCK=1")),
-        // INTERMEDIATE with the translation caches trimmed. Those caches are what FEX keeps of
-        // code it has already translated: the L2 lookup table and the blocks on top of it are
-        // hundreds of MB in a long session, and a phone has less of that to spare than a PC does.
-        // Nothing else changes - the same TSO, the same maths - so this is the first thing to try
-        // when a session dies for memory rather than for speed. The cost is real: code that was
-        // thrown away has to be translated again, and that shows as stutter, not as a lower rate.
-        Preset("LOWMEM", R.string.fex_lowmem_label, R.string.fex_lowmem_detail,
-            tso(1, 0, 0, 1) + listOf("FEX_X87REDUCEDPRECISION=1", "FEX_MULTIBLOCK=1",
-                "FEX_DISABLEL2CACHE=1", "FEX_DYNAMICL1CACHE=1",
-                "FEX_DYNAMICL1CACHEINCREASECOUNTHEURISTIC=250", "FEX_DYNAMICL1CACHEDECREASECOUNTHEURISTIC=50")),
         Preset("PERFORMANCE", R.string.fex_performance_label, R.string.fex_performance_detail, tso(0, 0, 0, 0) + listOf("FEX_X87REDUCEDPRECISION=1", "FEX_MULTIBLOCK=1")),
         Preset("PERFORMANCE_TSO", R.string.fex_performance_tso_label, R.string.fex_performance_tso_detail, tso(1, 0, 0, 0) + listOf("FEX_X87REDUCEDPRECISION=1", "FEX_MULTIBLOCK=1")),
         Preset("EXTREME", R.string.fex_extreme_label, R.string.fex_extreme_detail,
@@ -38,6 +28,12 @@ object FexPreset {
 
     fun byId(id: String): Preset = all.firstOrNull { it.id == id } ?: all[0]
 
-    /** Game-launch variables in KEY=VALUE form. */
     fun env(id: String): List<String> = byId(id).env
+
+    val environmentKeys: Set<String> by lazy {
+        all.flatMap { it.env }.mapTo(linkedSetOf()) { it.substringBefore('=') }
+    }
+
+    fun environment(id: String): Map<String, String> =
+        env(id).associate { it.substringBefore('=') to it.substringAfter('=') }
 }

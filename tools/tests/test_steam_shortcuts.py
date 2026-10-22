@@ -147,6 +147,18 @@ class ShortcutsTest(unittest.TestCase):
         self.assertEqual({'1': 'Favorites', '0': shortcuts.TAG}, entry['tags'])
         self.assertEqual({'0': shortcuts.TAG}, shortcuts.merge(shortcuts.shortcut(self.game()), dict(shortcuts.shortcut(self.game()), tags={}), None, 0)[0]['tags'])
 
+    def test_a_copy_the_running_client_added_of_an_added_game_is_dropped(self):
+        self.run_writer(self.game())
+        path = self.config / 'shortcuts.vdf'
+        data = shortcuts.parse(path.read_bytes())['shortcuts']
+        live = dict(shortcuts.shortcut(self.game(appid=0x91234567)), tags={})
+        own = dict(shortcuts.shortcut(self.game(exe='Other.exe', appid=0x92345678)), tags={})
+        renamed = dict(shortcuts.shortcut(self.game(appid=0x93456789, name='My copy')), tags={})
+        data.update({'7': live, '8': own, '9': renamed})
+        path.write_bytes(shortcuts.write({'shortcuts': data}))
+        entries = self.run_writer(self.game())
+        self.assertEqual({APPID, 0x92345678, 0x93456789}, set(entries))
+
     def test_a_damaged_record_is_started_over(self):
         self.run_writer(self.game())
         (self.config / shortcuts.RECORD).write_text('{not json')
@@ -163,6 +175,41 @@ class ShortcutsTest(unittest.TestCase):
         self.assertEqual(shortcuts.AWAY_LIMIT, len(away))
         self.assertNotIn(str(0x80000000), away)
         self.assertIn(str(0x80000000 + shortcuts.AWAY_LIMIT + 3), away)
+
+
+    def test_name_start_in_and_launch_options_set_in_the_app_reach_the_shortcut(self):
+        self.run_writer(self.game())
+        game = dict(self.game(name='Example: Renamed'), dir=GUEST + '/data', launch='-dx11')
+        entry = self.run_writer(game)[APPID]
+        self.assertEqual('Example: Renamed', entry['AppName'])
+        self.assertEqual('"%s/data"' % GUEST, entry['StartDir'])
+        self.assertEqual('-dx11', entry['LaunchOptions'])
+        self.assertEqual([APPID], list(self.run_writer(game)))
+
+    def test_a_target_chosen_in_the_app_updates_the_same_shortcut(self):
+        self.run_writer(self.game())
+        entries = self.run_writer(self.game('bin/Example64.exe'))
+        self.assertEqual([APPID], list(entries))
+        self.assertEqual('"%s/bin/Example64.exe"' % GUEST, entries[APPID]['Exe'])
+        self.assertEqual('"%s/bin"' % GUEST, entries[APPID]['StartDir'])
+
+    def test_launch_options_set_in_steam_stay_over_the_apps_old_value(self):
+        self.run_writer(dict(self.game(), launch='-dx11'))
+        self.steam_edits(LaunchOptions='-vulkan', AppName='Mine')
+        entry = self.run_writer(dict(self.game(), launch='-dx11'))[APPID]
+        self.assertEqual('-vulkan', entry['LaunchOptions'])
+        self.assertEqual('Mine', entry['AppName'])
+        steam = self.record()['games'][str(APPID)]['steam']
+        self.assertEqual('-vulkan', steam['LaunchOptions'])
+        self.assertEqual('Mine', steam['AppName'])
+
+    def test_an_older_record_without_launch_options_still_takes_the_apps(self):
+        self.run_writer(self.game())
+        record = self.record()
+        del record['games'][str(APPID)]['app']['LaunchOptions']
+        (self.config / shortcuts.RECORD).write_text(json.dumps(record))
+        entry = self.run_writer(dict(self.game(), launch='-safe'))[APPID]
+        self.assertEqual('-safe', entry['LaunchOptions'])
 
 
 if __name__ == '__main__':

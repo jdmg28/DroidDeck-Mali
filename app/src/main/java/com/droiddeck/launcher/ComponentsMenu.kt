@@ -8,11 +8,7 @@ import androidx.compose.runtime.setValue
 import com.droiddeck.launcher.session.ComponentsManager
 import com.droiddeck.launcher.session.ProtonDefault
 
-/**
- * The Components page's state and work: the Protons and their DXVK/VKD3D sets, the Nightlies
- * catalog, downloads and the swap/restore actions. The launcher screen keeps one and shows it.
- */
-internal class ComponentsMenu(private val activity: android.app.Activity, private val ui: android.os.Handler) {
+internal class ComponentsMenu(private val activity: android.app.Activity, private val ui: Handler) {
     var compSnapshot by mutableStateOf<ComponentsManager.Snapshot?>(null)
     var compCatalog by mutableStateOf<List<ComponentsManager.CatalogItem>>(emptyList())
     var compCatalogAt by mutableStateOf(0L)
@@ -20,22 +16,22 @@ internal class ComponentsMenu(private val activity: android.app.Activity, privat
     var compComp by mutableStateOf(com.droiddeck.launcher.ui.GPU_TAB)
     var compChecking by mutableStateOf(false)
     var compBusy by mutableStateOf<String?>(null)
-    var compDownloads by mutableStateOf<Map<String, Int>>(emptyMap())
+    var compDownloads: Map<String, Int>
+        get() = downloads
+        private set(value) { downloads = value }
+    val compDownloadRevision: Long get() = downloadRevision
     private var shownDefault: String? = null
 
-    /** Reads the Protons (and on first open saves their originals) off the UI thread; the Nightlies list comes from its cache. */
     fun refreshComponents(snapshotFirst: Boolean = false) {
         Thread({
             if (snapshotFirst) runCatching { ComponentsManager.snapshotAll(activity) }
             runCatching { ComponentsManager.applyQueued(activity) }
             val snap = runCatching { ComponentsManager.snapshot(activity) }.onFailure { Log.w(TAG, "components", it) }.getOrNull()
             val cat = runCatching { ComponentsManager.catalog(activity, false) }.getOrNull()
-            val needsCatalogRefresh = cat == null || cat.fetchedAt <= 0L || cat.items.none { it.comp == "wowbox64" }
             val chosen = snap?.let { s -> runCatching { ProtonDefault.selectedId(activity, s.protons.map { it.proton }) }.getOrNull() }
             ui.post {
                 compSnapshot = snap ?: ComponentsManager.Snapshot(emptyList(), emptyList())
                 if (cat != null && cat.fetchedAt > 0) { compCatalog = cat.items; compCatalogAt = cat.fetchedAt }
-                if (needsCatalogRefresh && !compChecking) refreshComponentCatalog()
                 if (chosen != null && chosen != shownDefault) {
                     shownDefault = chosen
                     compProton = chosen
@@ -74,15 +70,15 @@ internal class ComponentsMenu(private val activity: android.app.Activity, privat
         }, "components-action").start()
     }
 
-    fun refreshComponentCatalog() {
+    fun refreshComponentCatalog(force: Boolean = true) {
         if (compChecking) return
         compChecking = true
         Thread({
-            val cat = runCatching { ComponentsManager.catalog(activity, true) }.getOrNull()
+            val cat = runCatching { ComponentsManager.catalog(activity, force) }.getOrNull()
             ui.post {
                 compChecking = false
-                if (cat == null || cat.items.isEmpty()) android.widget.Toast.makeText(activity, activity.getString(R.string.comp_nightlies_unreachable), android.widget.Toast.LENGTH_LONG).show()
-                else { compCatalog = cat.items; compCatalogAt = cat.fetchedAt }
+                if (cat != null && cat.items.isNotEmpty()) { compCatalog = cat.items; compCatalogAt = cat.fetchedAt }
+                else if (force) android.widget.Toast.makeText(activity, activity.getString(R.string.comp_nightlies_unreachable), android.widget.Toast.LENGTH_LONG).show()
             }
         }, "components-catalog").start()
     }
@@ -97,6 +93,7 @@ internal class ComponentsMenu(private val activity: android.app.Activity, privat
             }.getOrElse { e -> activity.getString(R.string.comp_download_failed, e.message ?: e.javaClass.simpleName) }
             ui.post {
                 compDownloads = compDownloads - item.file
+                downloadRevision++
                 android.widget.Toast.makeText(activity, message, android.widget.Toast.LENGTH_SHORT).show()
                 refreshComponents()
             }
@@ -104,6 +101,8 @@ internal class ComponentsMenu(private val activity: android.app.Activity, privat
     }
 
     private companion object {
-        const val TAG = "MainActivity"
+        const val TAG = "ComponentsMenu"
+        var downloads by mutableStateOf<Map<String, Int>>(emptyMap())
+        var downloadRevision by mutableStateOf(0L)
     }
 }

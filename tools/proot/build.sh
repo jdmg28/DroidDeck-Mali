@@ -23,15 +23,14 @@ fi
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 fetch() {
-  # --retry-all-errors: samba.org (talloc) drops connections often enough that a branch build
-  # dies in 'Build proot' with curl 56 even after three retries; retry those too, with a pause.
-  curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 -o "$WORK/$1" "$2"
+  curl -fsSL --retry 3 -o "$WORK/$1" "$2"
   echo "$3  $WORK/$1" | shasum -a 256 -c -
   mkdir -p "$WORK/${1%%.*}"
   tar -xzf "$WORK/$1" -C "$WORK/${1%%.*}" --strip-components=1
 }
 fetch proot.tar.gz "https://github.com/termux/proot/archive/${PROOT_COMMIT}.tar.gz" "$PROOT_SHA256"
 fetch talloc.tar.gz "https://www.samba.org/ftp/talloc/talloc-${TALLOC_VERSION}.tar.gz" "$TALLOC_SHA256"
+cp "$HERE/statx_mnt_id.h" "$WORK/proot/src/tracee/statx_mnt_id.h"
 for patch in "$HERE"/patches/*.patch; do
   patch -d "$WORK/proot" -p1 --forward --quiet < "$patch"
 done
@@ -43,16 +42,15 @@ cp "$HERE/talloc-config.h" "$WORK/talloc/config/config.h"
 "$TOOLCHAIN/llvm-ar" rcs "$WORK/libtalloc.a" "$WORK/talloc.o"
 mkdir -p "$WORK/bin"
 ln -s "$TOOLCHAIN/llvm-readelf" "$WORK/bin/readelf"
-# max-page-size 16384: proot is exec'd by the app, and 2026 SoCs (Dimensity 9500s and on)
-# boot Android 16 with 16 KB kernels. 16 KB alignment costs nothing on a 4 KB kernel.
 PATH="$WORK/bin:$PATH" make -C "$WORK/proot/src" -j"$(getconf _NPROCESSORS_ONLN)" \
     CC="$CC" STRIP="$TOOLCHAIN/llvm-strip" OBJCOPY="$TOOLCHAIN/llvm-objcopy" OBJDUMP="$TOOLCHAIN/llvm-objdump" \
     CPPFLAGS="-D_FILE_OFFSET_BITS=64 -D_GNU_SOURCE -I. -I$WORK/talloc -DARG_MAX=131072 -Wno-error=implicit-function-declaration" \
-    LDFLAGS="$WORK/libtalloc.a -Wl,-z,noexecstack -Wl,-z,max-page-size=16384" \
+    LDFLAGS="$WORK/libtalloc.a -Wl,-z,noexecstack" \
     PROOT_UNBUNDLE_LOADER=/nonexistent proot loader
 install -m755 "$WORK/proot/src/proot" "$OUTDIR/libproot.so"
 install -m755 "$WORK/proot/src/loader/loader" "$OUTDIR/libproot-loader.so"
 "$TOOLCHAIN/llvm-strip" --strip-unneeded "$OUTDIR/libproot.so"
+"$TOOLCHAIN/llvm-strip" --strip-unneeded "$OUTDIR/libproot-loader.so"
 grep -q '^#define HAVE_SECCOMP_FILTER' "$WORK/proot/src/build.h" || { echo "ERROR: proot was built without seccomp acceleration"; exit 1; }
 grep -q '^#define HAVE_PROCESS_VM' "$WORK/proot/src/build.h" || { echo "ERROR: proot was built without process_vm"; exit 1; }
 NEEDED=$("$TOOLCHAIN/llvm-readelf" -d "$OUTDIR/libproot.so" | sed -n 's/.*NEEDED.*\[\(.*\)\]/\1/p' | tr '\n' ' ')
