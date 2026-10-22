@@ -1266,3 +1266,94 @@ que distingue dos instalaciones de esta app: la de esta rama termina en
 (`com.droiddeck.launcher`, de las compilaciones de `main`) lleva `0.4.0-beta.1` y 45, y **no** se
 puede actualizar con un APK de esta rama (son paquetes distintos): si el teléfono tiene las dos, cada
 una se actualiza con su propio APK.
+
+## R25 (22-10-2026): el fork pasa a 0.5.0, y los dos logs nuevos nombran al culpable
+
+La versión oficial **0.5.0 (14)** salió el 18-10-2026. El fork estaba en 0.4.0-beta.1 sobre la base
+`7c946db`, con 152 rutas propias encima. R25 es esa actualización: el árbol es el de 0.5.0 y encima
+van todos los parches de Mali. Lo que se conserva es exactamente lo que el fork añadió: el driver
+PanVK-kbase construido aquí (r7/fn64 y rc3-lowblk), la presentación del juego por dma-buf (DRI3,
+sin AFBC y memoria compartida), el HUD del panel, los perfiles de mando y su editor, el
+lanzador de escritorio KDE, la galería, la configuración por modo y la escalera de modo seguro.
+
+### Los dos logs nuevos, frente a los cuatro de R24b
+
+Las sesiones 01-04 de R24b murieron dentro del juego (Karlson con el prefijo cortado, MiSide con la
+cola de `VK_EXT_present_timing`). Las dos de ahora (**02** y **03** del 21-10, build **450132**) son
+otra cosa: las dos llegan al juego, las dos terminan con el invitado saliendo con código 0, y
+ninguna de las dos pierde el dispositivo Vulkan.
+
+| Sesión | Interfaz | Juego desde | Fin | Qué dice el log |
+|---|---|---|---|---|
+| 02 (21-10, 22:57) | CPU (`cef-gpu=0`) | 22:58:08 | 23:07 | `XWAYLAND: … dup failed: Too many open files` ×89, Xwayland reinicia y `xwm` aborta: `steam exited rc=1` |
+| 03 (21-10, 23:05) | GPU (`cef-gpu=1`) | 23:05:49 | 23:12 | Sin errores; Steam pide actualización de sí mismo y la sesión se cierra ordenada |
+
+Comparado con R24b: el prefijo de Karlson ya se repara solo (no hay ni una línea de «registry file»
+en estas dos), y la espera de presentación cronometrada ya no aparece (el juego que corre es otro y
+la vía por defecto es la de buzón). Los dos síntomas de R24b siguen cerrados.
+
+### El fallo nuevo: descriptores, no memoria
+
+El heartbeat de la sesión escribe cada 30 s el proceso con más descriptores abiertos. En la 02:
+
+```
+== fds: 358 of 32768 · worst: ncher.mali.g615 [472]
+== fds: 4618 of 32768 · worst: Xwayland [24849]
+== fds: 13359 of 32768 · worst: Xwayland [24849]
+== fds: 23113 of 32768 · worst: Xwayland [24849]
+== fds: 29852 of 32768 · worst: Xwayland [24849]
+== fds: 32769 of 32768 · worst: Xwayland [24849]
+```
+
+Xwayland sube **~60 descriptores por segundo** — uno por fotograma presentado, con su `sync_file`
+— y no los devuelve. Al llegar al techo, Mesa ya no puede ni duplicar un dma-buf
+(`ZINK: failed to dup dmabuf fd: Too many open files`), Xwayland reinicia su servidor, `xwm` aborta
+(`X11 I/O error! This is fatal`) y el cliente se va con `rc=1`. No es memoria: el informe de esa
+misma sesión tenía 1.8 GB libres. Tampoco es el juego: el que corre en la 02 no toca Vulkan.
+
+El techo es **32768** y es el duro: `ulimit -Hn` no se puede subir sin privilegios, así que el
+lanzador ya lo toma entero al arrancar (`== fd limit: soft 32768 hard 32768`). Una sesión con la
+interfaz en la CPU dura lo que tarde Xwayland en gastarlos: unos **9 minutos** en la 02.
+
+En la 03 (interfaz en la GPU) Xwayland también sube, pero más despacio (4.5 k a 8.4 k en cuatro
+minutos) y la sesión se cierra antes de llegar al techo, porque Steam decide actualizarse a mitad.
+De ahí la premisa de esta ronda: **la vía Vulkan deja menos descriptores por fotograma que
+OpenGL-Zink** (un salto menos), así que cuanto antes se pueda usar, mejor. En la app es
+*Ajustes del modo Steam → Steam → Cliente → Interfaz de Steam en la GPU* +
+*Ruta GPU de la interfaz → Vulkan*, y la escalera de modo seguro la apaga sola tras un reinicio.
+
+Qué hace el fork con esto, sin privilegios:
+
+- El heartbeat ya nombraba al que más gasta; ahora el número va con el **techo** al lado, para que
+  un 80 % se lea como lo que es: la sesión tiene minutos.
+- La sesión escribe `fd-pressure` en su carpeta cuando el peor proceso pasa del **80 %**, y la app
+  lo enseña al cerrar. Así el próximo informe dice si fue esto y no un cuelgue del driver.
+- La vía de presentación del juego y la de la interfaz se eligen por separado
+  (*Mali: cómo presenta un juego* frente a *Interfaz de Steam en la GPU*), para poder bajar la
+  primera sin tocar la segunda.
+
+### Los errores del propio rebase, y cómo se cerraron
+
+Actualizar un fork no es copiar: estos son los fallos que aparecieron al juntar 0.5.0 con los
+parches, y ninguno queda abierto.
+
+| Qué se vio | Causa | Arreglo |
+|---|---|---|
+| `test_picture_position_mapping` fallaba al compilar el nativo | `vk_present.c` de 0.5.0 usa `VKP_ALIGN_PICTURE_TOP/BOTTOM` y tres funciones nuevas; el `.h` del fork no las declaraba | enum y las tres funciones añadidas a `vk_present.h` |
+| `ControllerActions(...)` parecía llamarse con 8 argumentos que no existen | falso positivo: los nombres venían de asignaciones dentro de las lambdas (`settingsMode = null`), no de argumentos | sin cambio; el sitio pasa los **20** que la clase declara |
+| 113 cadenas propias del fork iban a desaparecer | la resolución de `strings.xml` se quedó con el fichero de 0.5.0, que no las tiene | las 113 vueltas a `values/` y `values-es/`; ninguna queda sin usar |
+| `test_cef_software_is_scoped_to_the_kde_client` exigía ANGLE/Vulkan por defecto | era la política de 0.5.0 (navegador en la GPU para todos), la que reinició el X6 Pro | el test comprueba ahora la del fork: CPU por defecto y GPU solo con `BL_CEF_GPU=1` |
+| `test_proton_extra` esperaba otra organización | el fork publica los Proton en `The412Banner/DroidDeck-Proton` | el test apunta ahí |
+| `-DANDROID_STL` duplicado en `app/build.gradle` | las dos ramas añadieron el mismo argumento | una sola línea |
+
+Y la prueba de que el árbol no perdió piezas: **918 tests** de `tools/tests` en verde, salvo los 15
+que necesitan `zstd` (no está en el entorno de revisión; el flujo de CI sí lo tiene).
+
+### Qué queda en la build 0.5.0
+
+- `versionName "0.5.0"`; el `versionCode` de CI sigue siendo `450000 + ejecución`, así que el APK
+  entra como actualización del que ya está en el teléfono.
+- Ningún parche de Mali se pierde: el árbol compila los mismos drivers, el mismo compositor y los
+  mismos scripts que R24b, con las correcciones de 0.5.0 encima.
+- Los textos de configuración vuelven a ser una frase por opción y un aviso corto con ⚠️ cuando la
+  opción puede reiniciar el teléfono o calentarlo.
