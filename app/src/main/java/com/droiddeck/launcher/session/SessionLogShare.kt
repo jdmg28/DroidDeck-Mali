@@ -62,7 +62,8 @@ object SessionLogShare {
         val live = liveSteamLogs(context, folder)
         // The stores' own log (last 7 days, app-private, already redacted), under stores/.
         val storeLogs = com.droiddeck.launcher.stores.StoreLogFiles.files(context)
-        val total = (files + live + storeLogs).sumOf { it.length() }.coerceAtLeast(1L)
+        val tools = recent(File(LinuxRuntime.logDir(context), SessionPaths.TOOLS_DIR))
+        val total = (files + live + storeLogs + tools).sumOf { it.length() }.coerceAtLeast(1L)
         var done = 0L
         var shown = -1
         fun advance(f: File) {
@@ -78,7 +79,8 @@ object SessionLogShare {
                 advance(f)
             }
             live.forEach { f -> addEntry(z, folder.name + "/steam/" + f.name, f, false); advance(f) }
-            storeLogs.forEach { f -> addEntry(z, folder.name + "/stores/" + f.name, f, false); advance(f) }
+            storeLogs.forEach { f -> addEntry(z, "$STORES_DIR/" + f.name, f, false); advance(f) }
+            tools.forEach { f -> addEntry(z, SessionPaths.TOOLS_DIR + "/" + f.name, f, false); advance(f) }
         }
         return zip
     }

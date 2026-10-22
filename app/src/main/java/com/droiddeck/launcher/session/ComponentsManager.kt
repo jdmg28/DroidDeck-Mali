@@ -518,8 +518,10 @@ object ComponentsManager {
             }
             check(!mayHaveOverride) { context.getString(R.string.cmgr_original_missing) }
         }
+        // No early return for a component the Proton does not ship: the launch state names every
+        // file a package manages, and a bundle with none of them is what says "this Proton has
+        // no dxvk to put back". Without it the state fails to publish and the swap aborts.
         val rels = compFiles(p.dir, comp)
-        if (rels.isEmpty()) return
         val current = when (comp) {
             "fex" -> fexVersion(p.dir)
             "wowbox64" -> wowbox64Version(p.dir)

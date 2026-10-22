@@ -9,6 +9,7 @@ import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
 import com.droiddeck.launcher.R
 import com.droiddeck.launcher.session.ComponentsManager
 import org.junit.Assert.assertEquals
@@ -20,7 +21,10 @@ import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
 
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [28])
+// A phone-sized window, not Robolectric's 320x470 default: the drawer lists four component groups
+// here (WoW64 is the fork's), and on the default one the dxvk chip fell below the fold where a
+// click lands outside the window and never opens the menu.
+@Config(sdk = [28], qualifiers = "w411dp-h891dp")
 class ComponentDownloadsDrawerTest {
     @get:Rule val compose = createRobolectricComposeRule()
 
@@ -32,7 +36,9 @@ class ComponentDownloadsDrawerTest {
     @Test fun choosingDxvkDownloadsTheCatalogItemAndPreventsStoredOrInFlightDownloads() {
         val requested = mutableListOf<ComponentsManager.CatalogItem>()
         show(downloads = mapOf(inFlight.file to 45), onDownload = requested::add)
-        compose.onNodeWithTag("cmp-download-dxvk").performClick()
+        // The drawer lists four component groups here (WoW64 is one of the fork's), so the dxvk
+        // chip can sit below the fold of the test window; a click there would land outside it.
+        compose.onNodeWithTag("cmp-download-dxvk").performScrollTo().performClick()
         compose.onNodeWithText(stored.file.removeSuffix(".wcp")).assertIsNotEnabled()
         compose.onNodeWithText(inFlight.file.removeSuffix(".wcp")).assertIsNotEnabled()
         compose.onNodeWithText(fex.file.removeSuffix(".wcp")).assertDoesNotExist()
