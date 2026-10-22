@@ -134,6 +134,7 @@ class MainActivity : ComponentActivity() {
     private var showComponents by mutableStateOf(false)
     private var focusComponentsContent by mutableStateOf(true)
     private var showMapping by mutableStateOf(false)
+    private var showProtons by mutableStateOf(false)
     private var saveBusy: String? = null
     private var onSavePicked: ((File) -> Unit)? = null
     private var controllerSettings by mutableStateOf<ControllerPrefs.Settings?>(null)
@@ -369,6 +370,17 @@ class MainActivity : ComponentActivity() {
         }, "add-game-exe").start()
     }
     private var addedGamesArt by mutableStateOf(true)
+    /** The user's own games folders, in the order they were added. */
+    private var addedGamesDirs by mutableStateOf<List<String>>(emptyList())
+    private val pickAddedGamesDir = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { r ->
+        if (r.resultCode == RESULT_OK) InAppFilePicker.pickedPath(r.data)?.let { path ->
+            SessionPrefs.setAddedGamesDirs(this, addedGamesDirs + path)
+            addedGamesDirs = SessionPrefs.addedGamesDirs(this)
+            addedGamesArt = SessionPrefs.addedGamesArt(this)
+            refreshAddedGames()
+            refresh()
+        }
+    }
     @Volatile private var artFetchRunning = false
     private var addedGames by mutableStateOf<List<com.droiddeck.launcher.ui.AddedGameRow>>(emptyList())
     private var importingGame by mutableStateOf<String?>(null)

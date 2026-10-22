@@ -133,6 +133,15 @@ class ModeSettings(
     val deckySessionRunning: Boolean = false,
 )
 
+/** One added game as the settings page shows it: its folder, the chosen .exe, the other .exe files it could be. */
+class AddedGameRow(
+    val folderPath: String,
+    val folderName: String,
+    val exePath: String,
+    val exeName: String,
+    val candidates: List<Pair<String, String>>,
+)
+
 class ModeSettingsActions(
     val onResolution: (String) -> Unit,
     val onHdr: (Boolean) -> Unit,
