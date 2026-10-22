@@ -384,6 +384,17 @@ class MainActivity : ComponentActivity() {
     @Volatile private var artFetchRunning = false
     private var addedGames by mutableStateOf<List<com.droiddeck.launcher.ui.AddedGameRow>>(emptyList())
     private var importingGame by mutableStateOf<String?>(null)
+    /** The added game whose .exe is being picked, until the picker comes back. */
+    private var pendingAddedGame: String? = null
+    private val pickAddedGameExe = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { r ->
+        val folder = pendingAddedGame ?: return@registerForActivityResult
+        pendingAddedGame = null
+        if (r.resultCode == RESULT_OK) InAppFilePicker.pickedPath(r.data)?.let { path ->
+            SessionPrefs.setAddedGameExe(this, folder, path)
+            refreshAddedGames()
+            refresh()
+        }
+    }
     private val pickAddedGameZip = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { r ->
         if (r.resultCode == RESULT_OK) InAppFilePicker.pickedFile(r.data)?.let { zip ->
             importingGame = zip.nameWithoutExtension.ifEmpty { zip.name }

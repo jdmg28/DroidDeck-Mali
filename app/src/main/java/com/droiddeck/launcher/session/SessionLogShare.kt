@@ -46,17 +46,21 @@ object SessionLogShare {
         // says it at the end.
         val files = folder.walkTopDown().filter { it.isFile }.toList()
         if (files.isEmpty()) return null
-        val out = shareDir(context).apply { deleteRecursively(); mkdirs() }
+        val out = File(context.cacheDir, "shared-logs").apply { deleteRecursively(); mkdirs() }
         val zip = File(out, "DroidDeck-${folder.name}.zip")
         val tails = trimmedTails(context, files)
         // Scrubbed on the way into the zip: a session shared while it runs has not had its end-of-
         // session pass yet, and the redactor changes nothing in a line that is already clean.
         LogRedactor.learnFromRuntime(LinuxRuntime.rootDir(context))
+        // A finished folder was scrubbed whole when it ended. A file its record lists, unchanged
+        // since, goes in as it is; anything else (added or changed since, hidden, or any file of a
+        // session still running) is scrubbed again. Scrubbing tens of MB of the client's logs on
+        // every share kept the share sheet from appearing for ten seconds or more.
+        val scrubbed = SessionArtifacts.scrubbedFiles(folder)
         val live = liveSteamLogs(context, folder)
-        val logs = LinuxRuntime.logDir(context)
-        val stores = recent(File(logs, STORES_DIR))
-        val tools = recent(File(logs, SessionPaths.TOOLS_DIR))
-        val total = (files + live + stores + tools).sumOf { it.length() }.coerceAtLeast(1L)
+        // The stores' own log (last 7 days, app-private, already redacted), under stores/.
+        val storeLogs = com.droiddeck.launcher.stores.StoreLogFiles.files(context)
+        val total = (files + live + storeLogs).sumOf { it.length() }.coerceAtLeast(1L)
         var done = 0L
         var shown = -1
         fun advance(f: File) {
@@ -104,11 +108,12 @@ object SessionLogShare {
         return tails
     }
 
+    /** [scrubbed] says the file already went through the redactor when the session ended. */
     private fun addEntry(z: ZipOutputStream, name: String, f: File, scrubbed: Boolean) {
         z.putNextEntry(ZipEntry(name))
-        if (LogRedactor.isText(f)) {
+        if (!scrubbed && LogRedactor.isText(f)) {
             val w = z.bufferedWriter()
-            LogRedactor.scrubForShare(f, w)
+            LogRedactor.scrubTo(f, w)
             w.flush()
         } else {
             f.inputStream().use { it.copyTo(z) }
