@@ -7,17 +7,17 @@
     <string name="mali_download_lavapipe_detail">CPU software fallback · draws without the GPU</string>
     <string name="mali_download_panvk_rc3_detail">Hardware driver for Mali CSF (v9-v13) · exact BC textures - try it when videos or menus of a game show colour bars</string>
     <string name="mali_driver_needed">Mali: no imported Linux Vulkan driver. Import the experimental PanVK package under GPU drivers → Advanced → Runtime driver, then select it.</string>
-    <string name="mali_integration_hint">Experimental Mali/Immortalis (CSF): download the PanVK driver below and start at 720p or 1280x720. Do not turn "Steam interface on the GPU" on - it restarts the phone on Mali; the dma-buf WSI already gives the store its speed. For games: FPS limiter at 60 or Off, FEX preset PERFORMANCE or PERFORMANCE_TSO, and "Wine sync" at fsync or esync (wineserver is the slow path; with nothing picked the session now puts fsync first by itself). Close background apps - a game past ~2.5 GB gets the session killed by Android, and the new lowmem driver cuts texture memory a quarter to a third. Keep HDR and frame generation off.</string>
+    <string name="mali_integration_hint">Import the PanVK driver below and start at 1280x720, FPS 60, Wine sync fsync. \u26a0\ufe0f Leave Steam interface on the GPU off: on Mali it restarts the phone.</string>
 
     <!-- The GPU safety switch: how far the session keeps this device's own GPU out of the guest. -->
     <string name="gpu_safety_title">GPU safety</string>
     <string name="gpu_safety_label">Rendering</string>
-    <string name="gpu_safety_hint">Software keeps the Mali GPU out of the session entirely: no /dev/mali0, no render node, no probe. It is slow - it exists to check the stack, not to play.</string>
+    <string name="gpu_safety_hint">Software draws on the CPU and never touches the GPU. \u26a0\ufe0f Very slow: for checking, not for playing.</string>
     <string name="gpu_safety_auto">Auto (software here)</string>
     <string name="gpu_safety_auto_detail">Software on this Mali GPU; nothing changes on other devices</string>
     <string name="gpu_safety_software">Software (lavapipe)</string>
     <string name="gpu_safety_software_detail">CPU only; the GPU node is never handed to the session</string>
     <string name="gpu_safety_mali">Mali driver (experimental)</string>
-    <string name="gpu_safety_mali_detail">Hands /dev/mali0 to the session as a render node; it has restarted this phone before</string>
-    <string name="gpu_safety_mali_picked">Mali driver selected: GPU safety is now the experimental Mali setting. Auto and Software keep the GPU out of the session.</string>
+    <string name="gpu_safety_mali_detail">Hands /dev/mali0 to the session as a render node. \u26a0\ufe0f Can restart the phone.</string>
+    <string name="gpu_safety_mali_picked">Mali driver selected. \u26a0\ufe0f It can restart the phone; Auto and Software never touch the GPU.</string>
 </resources>

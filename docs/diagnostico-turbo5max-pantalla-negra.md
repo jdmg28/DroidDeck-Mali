@@ -1350,10 +1350,16 @@ parches, y ninguno queda abierto.
 | `GpuDriversPanel.kt` no compilaba: `Unresolved reference 's'` | el rebase puso el cuerpo del panel del fork bajo la firma de `DeviceDetails` de 0.5.0 | `DeviceDetails` vuelve a ser el informe del dispositivo; la nota de Mali, el interruptor de seguridad de la GPU y los dos desplegables de drivers van dentro de `GpuDriversBody`, que es lo que llama la página ya mergeada |
 | `Unresolved reference AddedGameRow / addedGamesDirs / showProtons / pendingAddedGame` | el merge se dejó las declaraciones de los juegos añadidos y del panel de Protones, pero no sus usos | las cuatro vueltas: la clase en `ModeSettingsDialog.kt`, el estado y los dos selectores en `MainActivity.kt` |
 | `SessionLogShare.kt`: `scrubbed`, `storeLogs`, `addEntry` con 4 argumentos y 3 parámetros | el zip de logs quedó mitad de cada lado | la versión del fork entera (recorte de logs grandes, ficheros ya limpiados, logs de tienda), con el `zipFolder` de 0.5.0 alrededor |
+| `ForcedPackageTest`: `wowbox64XzPackageSwapsAndRestoresOriginalWow64Fex` moría en `swap` | `prepareLaunchState` (0.5.0) pregunta a `COMP_DIR` qué ficheros gestiona cada componente, y `wowbox64` no está en ese mapa porque no es una carpeta de DLLs | el paquete WoW64 declara sus ficheros igual que FEX; el resto sigue como estaba |
+| `aKnownEmptyComponentHasAnExplicitOriginalBundle`: «That original bundle is not stored» | `ensureOriginal` salía sin escribir nada cuando el Proton no trae el componente, y el estado de lanzamiento de 0.5.0 exige el paquete para poder escribir las filas `-` | se escribe el paquete vacío (solo `profile.json`), que es lo que ese estado entiende por «este Proton no tiene dxvk» |
+| El zip de logs no llevaba `stores/` ni `tools/`, y el test de 0.5.0 los pide en la raíz | el `zipFolder` mergeado dejó los logs de tienda dentro de la carpeta de sesión y perdió la colección de `tools` | vuelven los dos a la raíz, con `StoreLogFiles` (ya redactados) y `recent()` para `tools` |
+| `deadbeefcafe survived`: un token de CDN llegaba al zip | el paso de fin de sesión usaba `LogRedactor.scrubTo` (solo `redact`, sin `SecretScrub`), y el zip copiaba tal cual los ficheros que ese paso ya había tocado | el paso de fin de sesión escribe el mismo grado que el de compartir (`scrubForShare`), así que su marca sí se puede copiar; lo que no está marcado se limpia al entrar al zip |
+| `ComponentDownloadsDrawerTest` no encontraba el menú de DXVK | el cajón lista ahora cuatro grupos (WoW64 es del fork) y en la ventana de 320x470 de Robolectric el chip de DXVK quedaba fuera: el clic caía fuera de la ventana | el test abre ventana de teléfono (411x891 dp) y hace `performScrollTo` antes del clic |
 | El cliente arm64 no se sincronizaba con el x86-64, y los ficheros extraídos podían quedar sin permiso de ejecución | `droiddeck-steam-install` se quedó con la versión del fork: sin `--sync`, sin `chmod -R a+x` y con un solo CDN | se le devolvieron las tres cosas de 0.5.0 (sonda de los tres CDN, `--sync` con su manifiesto y `chmod -R a+x`), conservando la reanudación de descargas del fork; dos tests nuevos |
 
 Y la prueba de que el árbol no perdió piezas: **918 tests** de `tools/tests` en verde, salvo los 15
-que necesitan `zstd` (no está en el entorno de revisión; el flujo de CI sí lo tiene).
+que necesitan `zstd` (no está en el entorno de revisión; el flujo de CI sí lo tiene), y **1650 tests**
+unitarios de la app en verde en CI (Robolectric incluido) en la ejecución `39805726289`.
 
 ### Qué queda en la build 0.5.0
 
