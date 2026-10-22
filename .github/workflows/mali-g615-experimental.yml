@@ -245,9 +245,11 @@ jobs:
             echo "--- what the failing tests said:"
             grep -h -B 2 -A 8 '<failure\|<error' \
               app/build/test-results/testDebugUnitTest/*.xml 2>/dev/null | head -60
-            echo "--- tests that ran:"
-            grep -ho 'testcase name="[^"]*" classname="[^"]*"' \
-              app/build/test-results/testDebugUnitTest/*.xml 2>/dev/null | head -40
+            # The whole list, not the tail of it: with-report.sh keeps the last 80 lines of this
+            # output, so when several tests fail the names of the first ones were being cut off and
+            # each round of fixes was a guess at what else was red. This is printed last for that.
+            echo "--- every failing test:"
+            python3 -c "import glob,xml.etree.ElementTree as ET;f=[(t.get('classname'),t.get('name'),(x.get('message') or '').replace(chr(10),' ')[:180]) for p in glob.glob('app/build/test-results/testDebugUnitTest/*.xml') for t in ET.parse(p).getroot().iter('testcase') for x in list(t.findall('failure'))+list(t.findall('error'))];print(len(f),'failing');[print(' ',c,'>',n,':',m) for c,n,m in f]"
           fi
           exit $result
           EOS
