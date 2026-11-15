@@ -20,7 +20,7 @@ Vulkan** y, por tanto, en **qué puede tumbar el teléfono**.
 | **A** | **PanVK-kbase + fn64** (nuestra) | PanVK (Mesa, glibc) **dentro del invitado**, sobre `mali_kbase` | **Sí** (nodo vinculado; el compositor lo usa como render node) | Alto en teoría; mitigado por el parche fn64, `RebootGuard` y CEF en CPU | **G615 validada por nosotros** |
 | **B** | **MaliBridge / vkbridge** (upstream) | Driver **biónico del teléfono**, en la app; el invitado solo habla por socket | No | **Bajo**: un fallo mata el servidor, no el kernel | Upstream, con self-test y retroceso automático |
 | **C** | **Venus** (upstream) | Driver **biónico del teléfono** vía virglrenderer; socket | No | **Bajo** | Prototipo en Pixel 9 Pro (G715); upstream avisa de que no valida la integración actual |
-| **D** | **Par PanVK de upstream** | Igual que A, pero **binario de `droiddeck-nonadreno-drivers` (12-10) sin fn64** | Sí (`BL_DRM_STANDIN=/dev/mali0` + `preload/drm.c`) | **Igual que A, sin el parche** | Sin validar en un G615 nuestro |
+| **D** | **Par PanVK de upstream** | Igual que A, con binario de `droiddeck-nonadreno-drivers` (**reconstruido el 25-10**, sí lleva fn64) | Sí (`BL_DRM_STANDIN=/dev/mali0` + `preload/drm.c`) | Como A, con el mismo parche | Sin validar en un G615 nuestro |
 
 **La conclusión no es «elegir una», es ordenarlas.** El fork debe usar **C y B como camino por
 defecto** (no tocan el kernel del teléfono) y quedarse con **A —con el parche fn64— como ruta
@@ -119,19 +119,23 @@ Lo que sabemos:
 - El fallo **existió y reinició el teléfono** (2026-10-14): dirección de 32 bits → prefetch a
   `0xfffef000` → excepción CSF `0xC1`. Nuestro parche lo corrige y está validado (120 gestos en
   Big Picture, UI a 0.45–0.7 GB).
-- **Upstream 0.7.1 no tiene el parche**: `git grep fn64 0.7.1` no devuelve nada y no existe
-  `driver-patches/`.
-- El proyecto del driver **no tiene un parche con ese nombre** ni en `rc4` (20-10) ni en
-  `v26.3.1` (31-10). Sí hay una **reescritura grande del camino de prerrast** (`patches/csf-v11/042`
-  a `067`, `gpu_prerast`), que es donde vivía `get_fb_descs()`.
-- Por tanto: **no se puede afirmar que rc4/v26.3.1 sigan teniendo el fallo, ni que lo hayan
-  arreglado**. Cambiar de binario sin probarlo es exactamente el movimiento que ya nos costó un
-  reinicio.
+- Upstream 0.7.1 no trae parche **en el árbol de la app**: `git grep fn64 0.7.1` no devuelve nada y
+  no existe `driver-patches/`.
+- Pero el binario que la app descarga **sí lo lleva**. El repositorio
+  `The412Banner/droiddeck-nonadreno-drivers` publica un script
+  `patches/panvk_csf_provoking_vertex_u64.py` (crédito a `ryanistr/DroidDeck-Mali`, es decir, este
+  fork) y **reconstruye el mismo tag en el sitio**; el cuerpo del release `panvk-mali-kbase`,
+  fechado **25-10-2026**, dice que la mitad Linux se compila desde `zenithblue @ 9be6dd6` (trabajo
+  de RC5, `csf-v11` hasta el 222) «plus this repo's three fixes (sync-file fd leak,
+  **provoking-vertex**, DRM node)».
+- El proyecto del driver (`zenithblue`) no tiene ese parche ni en `rc4` ni en `v26.3.1`; el arreglo
+  vive en el empaquetado de DroidDeck.
 
-Consecuencia práctica: si el fork adopta el par kbase de upstream **tal cual**, vuelve a ofrecer
-un driver sin el arreglo en el teléfono que se reinició. Eso no se hace. La compilación propia
-(`mali-panvk-fixed-driver.yml`) **se queda**, y si migramos a rc4/v26.3.1 se reaplica el parche y
-se **verifica** que la ruta existe (o que ya no hace falta) antes de publicar.
+**Corrección respecto a la primera versión de este documento**: no es cierto que el par de upstream
+carezca del parche. Lo que sí es cierto es que **nuestro binario es más viejo** (rc3 del 11-10 +
+nuestro parche) que el suyo (fuente del 23-10 + tres parches). La decisión cambia de signo: no hay
+que evitar el par de upstream por fn64, hay que **adoptar su driver** (o reconstruir el nuestro
+desde esa misma fuente) y quedarse con nuestros ajustes de app encima.
 
 ---
 
@@ -226,5 +230,8 @@ Nada de esto se puede validar en el sandbox: no hay Kotlin/NDK ni teléfono.
   tumbar el kernel si el driver falla. Por eso no puede ser el camino por defecto.
 - **Licencias**: MaliBridge es GPL-3.0-or-later con `NOTICE`; se distribuye como submódulo, sin
   modificar, como ya hace upstream.
-- **Sin verificar**: si rc4/v26.3.1 ya no tienen el fallo fn64. Se comprueba compilando con y sin
-  el parche y mirando la ruta, no adivinando.
+- **Sin verificar**: si la fuente del 23-10 (`9be6dd6`) todavía necesita el parche fn64 o si el
+  arreglo ya está arriba (Mesa main usa `uint64_t`). El script del empaquetado es idempotente y lo
+  dice, así que se puede comprobar en un build sin adivinar.
+- **Driver más nuevo del lado oficial**: el suyo (25-10) trae heaps de tiler y pools más pequeños,
+  arreglos de superficie/damage en X11 y un cuelgue de `vkd3d`; el nuestro (rc3 + parche) no.
