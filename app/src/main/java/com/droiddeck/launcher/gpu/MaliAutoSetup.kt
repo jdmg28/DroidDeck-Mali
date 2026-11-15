@@ -7,12 +7,13 @@ import com.droiddeck.launcher.core.DeviceSupport
 import com.droiddeck.launcher.session.SessionPrefs
 
 /**
- * The Mali driver, installed and set on a Mali phone without the user finding the drivers tab:
- * on the first start the universal PanVK-kbase package is downloaded from this repository's
- * release, installed through the same importer a picked zip uses, made the runtime driver, and
- * the GPU-safety switch turned to Mali - the state a user who picked it in the drivers tab would
- * end at. Once (a stored flag; a failure retries the next start), and only on a device the Mali
- * detection recognises. Anything it needs again lives in the drivers tab.
+ * A Mali phone, set up for its first start without the user finding the drivers tab: the GPU-safety
+ * switch is turned to Mali (Auto keeps the GPU out of the guest), and only when nothing else can
+ * draw with the GPU is this repository's own PanVK package downloaded and selected. The official
+ * driver pairs are left alone: 0.7.1 installs and picks those itself.
+ *
+ * Once (a stored flag; a failure retries the next start), and only on a device the Mali detection
+ * recognises. Anything it needs again lives in the drivers tab.
  */
 object MaliAutoSetup {
     private const val TAG = "MaliAutoSetup"
@@ -24,9 +25,14 @@ object MaliAutoSetup {
         if (done.getBoolean("done", false)) return
         Thread({
             try {
+                if (GpuSafety.profile(app) == GpuSafety.AUTO) GpuSafety.setProfile(app, GpuSafety.MALI)
                 val manager = LinuxVulkanDriverManager(app)
                 val installed = manager.enumerateInstalledDrivers().any { manager.isMaliRuntimeDriver(it) }
-                if (!installed) {
+                val chosen = SessionPrefs.linuxDriver(app)
+                // A driver already chosen, or a pair the release check found for this GPU, is
+                // what 0.7.1's Auto mode draws with: leave it alone.
+                val pair = DriverPairs.recommendedKey(GpuInfo.detect(), DriverPairs.from(TurnipReleases.cached(app)))
+                if (!installed && chosen.isEmpty() && pair == null) {
                     val entry = MaliReleases.byName(MaliReleases.PANVK) ?: return@Thread
                     val file = MaliReleases.download(app, entry) { }
                     val id = try {
@@ -36,9 +42,10 @@ object MaliAutoSetup {
                     }
                     SessionPrefs.setLinuxDriver(app, id)
                     SessionPrefs.setAndroidDriver(app, TurnipDriver.AUTO)
-                    GpuSafety.setProfile(app, GpuSafety.MALI)
                     SessionPrefs.setMaliDownloaded(app, SessionPrefs.maliDownloaded(app) + entry.name)
                     Log.i(TAG, "the bundled driver setup installed and selected $id")
+                } else {
+                    Log.i(TAG, "auto setup: leaving the driver to Auto (installed=$installed, chosen=$chosen, pair=$pair)")
                 }
                 done.edit().putBoolean("done", true).apply()
             } catch (e: Exception) {
