@@ -1267,6 +1267,26 @@ que distingue dos instalaciones de esta app: la de esta rama termina en
 puede actualizar con un APK de esta rama (son paquetes distintos): si el teléfono tiene las dos, cada
 una se actualiza con su propio APK.
 
+## R26 (15-11-2026): análisis de estado, y qué ha cambiado arriba mientras tanto
+
+Han pasado ~24 días sin tocar la rama (último APK: **450147**, run `39809771557`, 22-10). El
+proyecto ha seguido: la oficial va ya por **0.7.1** (10-11), y desde la base de esta rama hay
+**2.047 commits** en 2.095 ficheros. Lo importante: **0.7.0 trajo soporte Mali de serie**
+(MaliBridge + Venus + pares PanVK), así que el fork ya no es el único que hace funcionar Mali.
+
+El análisis completo, con las cuatro rutas comparadas y el plan de merge, está en
+[`docs/analisis-mali-0.7.1.md`](analisis-mali-0.7.1.md). Resumen:
+
+- Nuestra ruta (PanVK-kbase + fn64, nodo `/dev/mali0` en el invitado) sigue siendo la única
+  **validada en el G615** y la única que puede tumbar el kernel si falla.
+- Venus y MaliBridge de upstream ejecutan el driver del teléfono **fuera del invitado**: un fallo
+  mata un proceso, no el teléfono. Son estructuralmente más seguras y deberían ser el camino por
+  defecto.
+- El par PanVK de upstream (`nad:panvk-mali-kbase`) **no lleva el parche fn64**: ofrecerlo en un
+  G615 es volver al fallo del 14-10. Nuestra compilación propia se queda.
+- `RebootGuard`, `GpuSafety`, la política CEF en CPU y la presentación dma-buf/AFBC se conservan
+  enteras; lo que cambia es **quién manda** en el orden de rutas.
+
 ## R25 (22-10-2026): el fork pasa a 0.5.0, y los dos logs nuevos nombran al culpable
 
 La versión oficial **0.5.0 (14)** salió el 18-10-2026. El fork estaba en 0.4.0-beta.1 sobre la base
