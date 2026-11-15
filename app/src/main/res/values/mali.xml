@@ -35,4 +35,5 @@
     <string name="mode_safe_mode">Safe mode</string>
     <string name="mode_safe_mode_hint">Level %1$d: the phone restarted with a game running.</string>
     <string name="mode_safe_mode_reset">Back to normal</string>
+    <string name="gpu_advanced">Advanced</string>
 </resources>
