@@ -23,17 +23,5 @@
 
     <!-- Los ajustes Mali de la sesión, en la hoja de ajustes de Steam. -->
     <string name="mode_mali_group">Mali</string>
-    <string name="mode_mali_present">Ruta del fotograma del juego</string>
-    <string name="mode_mali_present_hint">Cómo llega el fotograma del juego a gamescope.</string>
-    <string name="mode_mali_present_dri3">dma-buf (el más rápido)</string>
-    <string name="mode_mali_present_noafbc">dma-buf sin AFBC</string>
-    <string name="mode_mali_present_shm">Memoria compartida</string>
-    <string name="mode_mali_ui_gpu">Interfaz de Steam en la GPU</string>
-    <string name="mode_mali_ui_gpu_on">En la GPU (controlador fn64)</string>
-    <string name="mode_mali_ui_gpu_off">En la CPU</string>
-    <string name="mode_mali_ui_gpu_blocked">En la CPU: sólo el controlador fn64 puede llevarla</string>
-    <string name="mode_safe_mode">Modo seguro</string>
-    <string name="mode_safe_mode_hint">Nivel %1$d: el teléfono se reinició con un juego abierto.</string>
-    <string name="mode_safe_mode_reset">Volver a normal</string>
     <string name="gpu_advanced">Avanzado</string>
 </resources>

@@ -94,6 +94,7 @@ class ModeSettings(
     val steamUiOnGpu: Boolean = false,
     val steamUiGpuAllowed: Boolean = false,
     val safeLevel: Int = 0,
+    val safeRestarts: Int = 0,
     val steamController: String? = null,
     val unfoldedControls: Boolean? = null,
     val unfoldedControlsWithController: Boolean = false,
@@ -553,21 +554,15 @@ fun ModeSheetRows(s: ModeSettings, a: ModeSettingsActions, tab: String, extras: 
                 onPick = a.onMaliPresent,
             )
             ToggleRow(
-                host, "maliUiGpu", stringResource(R.string.mode_mali_ui_gpu),
-                stringResource(
-                    when {
-                        s.steamUiGpuAllowed && s.steamUiOnGpu -> R.string.mode_mali_ui_gpu_on
-                        s.steamUiGpuAllowed -> R.string.mode_mali_ui_gpu_off
-                        else -> R.string.mode_mali_ui_gpu_blocked
-                    }
-                ),
+                host, "maliUiGpu", stringResource(R.string.mode_steam_ui_gpu),
+                stringResource(R.string.mode_steam_ui_gpu_hint),
                 s.steamUiOnGpu,
                 enabled = s.steamUiGpuAllowed,
                 onChange = a.onSteamUiOnGpu,
             )
             if (s.safeLevel > 0) SettingsRow(
                 stringResource(R.string.mode_safe_mode),
-                stringResource(R.string.mode_safe_mode_hint, s.safeLevel),
+                stringResource(R.string.mode_safe_mode_hint, s.safeLevel, s.safeRestarts),
             ) {
                 SecondaryButton(stringResource(R.string.mode_safe_mode_reset), onClick = a.onSafeModeReset)
             }

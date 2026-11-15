@@ -142,6 +142,7 @@ class FrontEndActivity : ComponentActivity() {
     private var maliPresent by mutableStateOf(SessionPrefs.GAME_PRESENT_DRI3)
     private var steamUiOnGpu by mutableStateOf(false)
     private var safeLevel by mutableStateOf(0)
+    private var safeRestarts by mutableStateOf(0)
     private var steamController by mutableStateOf(SessionPrefs.CONTROLLER_DECK)
     private var showComponents by mutableStateOf(false)
     private var focusComponentsContent by mutableStateOf(true)
@@ -2442,6 +2443,7 @@ class FrontEndActivity : ComponentActivity() {
                     },
                 ),
                 safeLevel = safeLevel,
+                safeRestarts = safeRestarts,
                 steamController = if (mode == SessionService.MODE_STEAM) steamController else null,
                 startupSession = startupSession,
                 bootMovie = if (mode == SessionService.MODE_STEAM) bootMovie else null,
@@ -2539,6 +2541,7 @@ class FrontEndActivity : ComponentActivity() {
                 onSafeModeReset = {
                     com.droiddeck.launcher.session.RebootGuard.clear(this)
                     safeLevel = 0
+                    safeRestarts = 0
                 },
                 onReturnAfterGame = { on -> SessionPrefs.setReturnAfterGame(this, on); returnAfterGame = on },
                 onShaderPrecache = { on -> SessionPrefs.setShaderPrecache(this, on); shaderPrecache = on },
@@ -2736,6 +2739,7 @@ class FrontEndActivity : ComponentActivity() {
         maliPresent = SessionPrefs.maliGamePresent(this)
         steamUiOnGpu = SessionPrefs.steamUiOnGpu(this)
         safeLevel = com.droiddeck.launcher.session.RebootGuard.level(this)
+        safeRestarts = com.droiddeck.launcher.session.RebootGuard.trail(this).size
         returnAfterGame = SessionPrefs.returnAfterGame(this)
         loadShaderPrecache(mode)
         steamController = SessionPrefs.steamController(this)
