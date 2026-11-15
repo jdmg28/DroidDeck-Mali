@@ -46,7 +46,11 @@ object GpuSafety {
     fun software(context: Context): Boolean = when (profile(context)) {
         SOFTWARE -> true
         MALI -> false
-        else -> DeviceSupport.mali()
+        // Auto keeps the GPU out of the guest on Mali, except when the official Mali path is what
+        // the session draws with (Venus or the bridge): neither hands /dev/mali0 to the guest.
+        else -> DeviceSupport.mali() &&
+            !com.droiddeck.launcher.session.VenusComponent.wanted(context) &&
+            !DeviceSupport.vkBridge(context)
     }
 
     /** Whether an experimental Mali driver may be the one the session draws with at all. */

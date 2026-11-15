@@ -45,18 +45,9 @@ public class LinuxVulkanDriverManager {
     public boolean isInstalled(String id) {
         if (id == null || id.isEmpty() || id.contains("/") || id.contains("..")) return false;
         File dir = getDriverDir(id);
-        if (!new File(dir, LIB_NAME).isFile() || !new File(dir, ICD_NAME).isFile()) return false;
-        JSONObject meta = readMeta(id);
-        if (meta == null) return true;
-        if (DriverArchivePolicy.requiresBackend(meta.optString("sourceLibraryName", ""))
-                && !new File(dir, DriverArchivePolicy.BACKEND_NAME).isFile()) return false;
-        // A driver whose own dependency is missing is not offered: it would load and fail.
-        org.json.JSONArray libs = meta.optJSONArray("runtimeLibraries");
-        for (int i = 0; libs != null && i < libs.length(); i++) {
-            String name = libs.optString(i, "");
-            if (!DriverArchivePolicy.isRuntimeLibrary(name) || !new File(dir, name).isFile()) return false;
-        }
-        return true;
+        if (!new File(dir, ICD_NAME).isFile()) return false;
+        for (String name : STORED_NAMES) if (new File(dir, name).isFile()) return true;
+        return false;
     }
 
     /** Whether the imported driver draws on the CPU (lavapipe) rather than on a GPU. */
@@ -96,6 +87,7 @@ public class LinuxVulkanDriverManager {
         return name.isEmpty() ? id : name;
     }
 
+    /** Whether an imported driver is this fork's Mali runtime package (PanVK-kbase + adapter). */
     public boolean isMaliRuntimeDriver(String id) {
         JSONObject meta = readMeta(id);
         return isInstalled(id) && meta != null &&
@@ -124,9 +116,6 @@ public class LinuxVulkanDriverManager {
         try {
             String soName = null;
             JSONObject zipMeta = null;
-            long unpacked = 0;
-            boolean backendSeen = false;
-            java.util.Set<String> runtimeSeen = new java.util.LinkedHashSet<>();
             try (InputStream is = context.getContentResolver().openInputStream(zipUri);
                  ZipInputStream zis = new ZipInputStream(is)) {
                 if (is == null) throw new IOException("cannot open " + zipUri);
@@ -135,33 +124,19 @@ public class LinuxVulkanDriverManager {
                     if (entry.isDirectory()) continue;
                     String base = new File(entry.getName()).getName();
                     if (base.isEmpty()) continue;
-                    if (entry.getSize() > DriverArchivePolicy.MAX_ARCHIVE_BYTES)
-                        throw new IOException("driver archive entry exceeds size limit");
-                    if (DriverArchivePolicy.isMainLibrary(base)) {
-                        if (soName != null) throw new IllegalArgumentException("driver zip must contain exactly one main Vulkan library");
-                        unpacked += copyBounded(zis, new File(tmpDir, LIB_NAME), DriverArchivePolicy.MAX_LIBRARY_BYTES);
-                        soName = base;
-                    } else if (DriverArchivePolicy.isBackendLibrary(base)) {
-                        if (backendSeen) throw new IllegalArgumentException("duplicate PanVK backend in driver zip");
-                        backendSeen = true;
-                        unpacked += copyBounded(zis, new File(tmpDir, DriverArchivePolicy.BACKEND_NAME), DriverArchivePolicy.MAX_LIBRARY_BYTES);
-                    } else if (DriverArchivePolicy.isRuntimeLibrary(base)) {
-                        // Kept under its own name beside the driver: it is what the driver's
-                        // $ORIGIN runpath looks for, so it must not be renamed like the driver is.
-                        if (runtimeSeen.contains(base))
-                            throw new IllegalArgumentException("duplicate runtime library in driver zip: " + base);
-                        runtimeSeen.add(base);
-                        unpacked += copyBounded(zis, new File(tmpDir, base), DriverArchivePolicy.MAX_RUNTIME_LIBRARY_BYTES);
+                    if (isDriverLibrary(base)) {
+                        if (soName != null) Log.w(TAG, "zip has several driver libraries; using the first (" + soName + ")");
+                        else {
+                            Files.copy(zis, new File(tmpDir, storedName(base)).toPath(), StandardCopyOption.REPLACE_EXISTING);
+                            soName = base;
+                        }
                     } else if (base.equals(META_NAME)) {
                         try {
-                            zipMeta = new JSONObject(new String(readAllBounded(zis, DriverArchivePolicy.MAX_META_BYTES), StandardCharsets.UTF_8));
+                            zipMeta = new JSONObject(new String(readAll(zis), StandardCharsets.UTF_8));
                         } catch (Exception e) {
                             Log.w(TAG, "meta.json unreadable, ignoring: " + e.getMessage());
                         }
                     }
-                    if (unpacked > DriverArchivePolicy.MAX_ARCHIVE_BYTES)
-                        throw new IOException("driver zip exceeds unpacked size limit");
-                    // Package ICDs are dropped; adopt() writes a safe absolute library path.
                 }
             }
             String id = adopt(tmpDir, soName, zipMeta, displayName);
@@ -184,29 +159,13 @@ public class LinuxVulkanDriverManager {
             if (soName == null) {
                 throw new IllegalArgumentException(context.getString(R.string.lvd_no_library));
             }
-            File so = new File(tmpDir, LIB_NAME);
+            String stored = storedName(soName);
+            File so = new File(tmpDir, stored);
             if (!isAarch64Elf(so)) {
                 throw new IllegalArgumentException(context.getString(R.string.lvd_not_aarch64, soName));
             }
             if (!containsAscii(so, "libc.so.6")) {
                 throw new IllegalArgumentException(context.getString(R.string.lvd_not_glibc, soName));
-            }
-            File backend = new File(tmpDir, DriverArchivePolicy.BACKEND_NAME);
-            if (DriverArchivePolicy.requiresBackend(soName) && !backend.isFile())
-                throw new IllegalArgumentException("DroidDeck Mali adapter is missing libpanvk_backend.so");
-            if (backend.isFile() && (!isAarch64Elf(backend) || !containsAscii(backend, "libc.so.6")))
-                throw new IllegalArgumentException("PanVK backend must be AArch64 Linux/glibc, not Android/Bionic");
-            // The software driver's LLVM: same checks, since it is loaded by the same process.
-            java.util.List<String> runtimeLibs = new java.util.ArrayList<>();
-            File[] staged = tmpDir.listFiles();
-            if (staged != null) {
-                java.util.Arrays.sort(staged);
-                for (File f : staged) {
-                    if (!DriverArchivePolicy.isRuntimeLibrary(f.getName())) continue;
-                    if (!isAarch64Elf(f) || !containsAscii(f, "libc.so.6"))
-                        throw new IllegalArgumentException(f.getName() + " must be AArch64 Linux/glibc, not Android/Bionic");
-                    runtimeLibs.add(f.getName());
-                }
             }
             String kind = zipMeta != null ? zipMeta.optString("kind", "") : "";
             if (!kind.isEmpty() && !"linux-vulkan-icd".equals(kind)) {
@@ -226,9 +185,8 @@ public class LinuxVulkanDriverManager {
             JSONObject icd = new JSONObject();
             icd.put("file_format_version", "1.0.0");
             JSONObject icdBody = new JSONObject();
-            icdBody.put("library_path", new File(dir, LIB_NAME).getAbsolutePath());
-            String apiVersion = DriverArchivePolicy.apiVersion(zipMeta != null ? zipMeta.optString("vulkanApiVersion", "") : "");
-            icdBody.put("api_version", apiVersion);
+            icdBody.put("library_path", new File(dir, stored).getAbsolutePath());
+            icdBody.put("api_version", "1.1.274");
             icd.put("ICD", icdBody);
             if (!FileUtils.writeString(new File(tmpDir, ICD_NAME), icd.toString(2))) throw new IOException("cannot write icd.json");
 
@@ -240,13 +198,7 @@ public class LinuxVulkanDriverManager {
             meta.put("libc", "glibc");
             meta.put("minGlibc", minGlibc);
             meta.put("sourceLibraryName", soName);
-            meta.put("vulkanApiVersion", apiVersion);
-            // What the driver draws on: "software" is lavapipe on the CPU, everything else is a
-            // GPU driver. GpuSafety looks for "software" here and never picks a GPU driver on its
-            // own; a package that does not say is a GPU driver, which is the conservative reading.
-            meta.put("gpuVendor", zipMeta != null && zipMeta.optString("gpuVendor", "").equals("software")
-                    ? "software" : (DriverArchivePolicy.isSoftwareLibrary(soName) ? "software" : "gpu"));
-            meta.put("runtimeLibraries", new org.json.JSONArray(runtimeLibs));
+            meta.put("libraryName", stored);
             meta.put("importedAt", System.currentTimeMillis());
             if (!FileUtils.writeString(new File(tmpDir, META_NAME), meta.toString(2))) throw new IOException("cannot write meta.json");
 
@@ -263,6 +215,24 @@ public class LinuxVulkanDriverManager {
         int n = 2;
         while (getDriverDir(id).exists()) id = base + "-" + (n++);
         return id;
+    }
+
+    /** The names an installed driver's library is kept under; Turnip keeps {@link #LIB_NAME}. */
+    private static final String[] STORED_NAMES = {LIB_NAME, "libvulkan_panfrost.so", "libvulkan_radeon.so"};
+
+    /**
+     * The name a driver library is installed under: its own driver's (PanVK, RADV), so the session
+     * log and the graphics report say which driver it is; a Turnip build keeps {@link #LIB_NAME}.
+     */
+    public static String storedName(String soName) {
+        if (soName != null && soName.startsWith("libvulkan_panfrost")) return "libvulkan_panfrost.so";
+        if (soName != null && soName.startsWith("libvulkan_radeon")) return "libvulkan_radeon.so";
+        return LIB_NAME;
+    }
+
+    public static boolean isDriverLibrary(String base) {
+        return base.endsWith(".so") && (base.startsWith("libvulkan_freedreno")
+                || base.startsWith("libvulkan_panfrost") || base.startsWith("libvulkan_radeon"));
     }
 
     static String sanitizeId(String name) {
@@ -290,28 +260,11 @@ public class LinuxVulkanDriverManager {
         }
     }
 
-    private static long copyBounded(InputStream in, File out, long limit) throws IOException {
-        long total = 0;
-        try (java.io.OutputStream sink = Files.newOutputStream(out.toPath())) {
-            byte[] buf = new byte[32768];
-            int n;
-            while ((n = in.read(buf)) != -1) {
-                total += n;
-                if (total > limit) throw new IOException("driver library exceeds size limit");
-                sink.write(buf, 0, n);
-            }
-        }
-        return total;
-    }
-
-    private static byte[] readAllBounded(InputStream in, int limit) throws IOException {
+    private static byte[] readAll(InputStream in) throws IOException {
         java.io.ByteArrayOutputStream bos = new java.io.ByteArrayOutputStream();
         byte[] buf = new byte[8192];
         int r;
-        while ((r = in.read(buf)) > 0) {
-            if (bos.size() > limit - r) throw new IOException("driver metadata exceeds size limit");
-            bos.write(buf, 0, r);
-        }
+        while ((r = in.read(buf)) > 0) bos.write(buf, 0, r);
         return bos.toByteArray();
     }
 

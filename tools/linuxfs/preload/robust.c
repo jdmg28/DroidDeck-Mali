@@ -3,6 +3,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <link.h>
 #include <linux/futex.h>
 #include <linux/magic.h>
 #include <pthread.h>
@@ -22,15 +23,16 @@
 
 #define BL_RESOLVE_BENEATH 0x08
 #define BL_RESOLVE_IN_ROOT 0x10
-// The kernel's MAXSYMLINKS.
 #define BL_MAX_SYMLINKS 40
 #define BL_PROC_ROOT_INO 1
 
 #ifdef SYS_newfstatat
 #define BL_SYS_FSTATAT SYS_newfstatat
+#define BL_FSTATAT_NAME "fstatat"
 typedef struct stat bl_stat;
 #else
 #define BL_SYS_FSTATAT SYS_fstatat64
+#define BL_FSTATAT_NAME "fstatat64"
 typedef struct stat64 bl_stat;
 #endif
 
@@ -43,6 +45,60 @@ struct bl_open_how {
 static long (*real_syscall)(long, ...);
 static void *(*real_dlopen)(const char *, int);
 static int openat2_missing;
+static int (*next_fstatat)(int, const char *, bl_stat *, int);
+static int (*next_openat)(int, const char *, int, ...);
+static ssize_t (*next_readlinkat)(int, const char *, char *, size_t);
+static int (*next_statx)(int, const char *, int, unsigned int, struct statx *);
+
+static int find_fastpath(struct dl_phdr_info *info, size_t size, void *name) {
+  (void)size;
+  const char *slash = strrchr(info->dlpi_name, '/');
+  if (!slash || strcmp(slash + 1, "libblfastpath.so") != 0 || strlen(info->dlpi_name) >= PATH_MAX) {
+    return 0;
+  }
+  strcpy(name, info->dlpi_name);
+  return 1;
+}
+
+__attribute__((constructor)) static void find_fastpath_calls(void) {
+  char name[PATH_MAX] = "";
+  dl_iterate_phdr(find_fastpath, name);
+  void *fastpath = *name ? dlopen(name, RTLD_NOLOAD | RTLD_LAZY) : NULL;
+  if (fastpath) {
+    next_fstatat = (int (*)(int, const char *, bl_stat *, int))dlsym(fastpath, BL_FSTATAT_NAME);
+    next_openat = (int (*)(int, const char *, int, ...))dlsym(fastpath, "openat");
+    next_readlinkat = (ssize_t (*)(int, const char *, char *, size_t))dlsym(fastpath, "readlinkat");
+    next_statx = (int (*)(int, const char *, int, unsigned int, struct statx *))dlsym(fastpath, "statx");
+  }
+}
+
+static long path_stat(int dirfd, const char *path, bl_stat *st, int flags) {
+  if (!next_fstatat) {
+    return real_syscall(BL_SYS_FSTATAT, (long)dirfd, (long)path, (long)st, (long)flags);
+  }
+  return next_fstatat(dirfd, path, st, flags);
+}
+
+static long path_open(int dirfd, const char *path, int flags, long mode) {
+  if (!next_openat) {
+    return real_syscall(SYS_openat, (long)dirfd, (long)path, (long)flags, mode);
+  }
+  return next_openat(dirfd, path, flags, (mode_t)mode);
+}
+
+static long path_readlink(int dirfd, const char *path, char *buf, size_t size) {
+  if (!next_readlinkat) {
+    return real_syscall(SYS_readlinkat, (long)dirfd, (long)path, (long)buf, (long)size);
+  }
+  return next_readlinkat(dirfd, path, buf, size);
+}
+
+static long path_statx(int dirfd, const char *path, int flags, unsigned int mask, struct statx *out) {
+  if (!next_statx) {
+    return real_syscall(SYS_statx, (long)dirfd, (long)path, (long)flags, (long)mask, (long)out);
+  }
+  return next_statx(dirfd, path, flags, mask, out);
+}
 
 void *dlopen(const char *filename, int flags) {
   if (!real_dlopen) {
@@ -50,7 +106,6 @@ void *dlopen(const char *filename, int flags) {
   }
   const char *basename = filename ? strrchr(filename, '/') : NULL;
   basename = basename ? basename + 1 : filename;
-  // Steam's deep binding bypasses the robust-list shim under PRoot.
   if (basename && strcmp(basename, "vrclient.so") == 0) {
     flags &= ~RTLD_DEEPBIND;
   }
@@ -91,9 +146,8 @@ static struct robust_list_head *thread_robust_head(void) {
   return head;
 }
 
-// Magic links are procfs links below a process's directory; procfs's root holds only plain ones (self, thread-self, mounts).
 static int is_magic_link(int dirfd, char *link, size_t parent_len) {
-  int fd = (int)real_syscall(SYS_openat, (long)dirfd, (long)link, (long)(O_PATH | O_NOFOLLOW | O_CLOEXEC), 0L);
+  int fd = (int)path_open(dirfd, link, O_PATH | O_NOFOLLOW | O_CLOEXEC, 0L);
   if (fd < 0) {
     return 0;
   }
@@ -106,12 +160,11 @@ static int is_magic_link(int dirfd, char *link, size_t parent_len) {
   char saved = link[parent_len];
   link[parent_len] = 0;
   bl_stat parent;
-  long result = real_syscall(BL_SYS_FSTATAT, (long)dirfd, (long)(parent_len ? link : "."), (long)&parent, 0L);
+  long result = path_stat(dirfd, (parent_len ? link : "."), &parent, 0);
   link[parent_len] = saved;
   return result != 0 || parent.st_ino != BL_PROC_ROOT_INO;
 }
 
-// RESOLVE_IN_ROOT walked one component at a time: absolute symlinks restart at dirfd and ".." stops there.
 static long openat_in_root(int dirfd, const char *path, int flags, long mode) {
   char resolved[PATH_MAX];
   char pending[PATH_MAX];
@@ -120,7 +173,6 @@ static long openat_in_root(int dirfd, const char *path, int flags, long mode) {
   int have_root = 0;
   int root_on_procfs = 0;
   dev_t root_dev = 0;
-  // O_NOFOLLOW and O_CREAT | O_EXCL leave a final symlink alone, unless a trailing slash follows it.
   int nofollow = (flags & O_NOFOLLOW) || (flags & (O_CREAT | O_EXCL)) == (O_CREAT | O_EXCL);
   const char *rest = path;
   for (;;) {
@@ -167,7 +219,7 @@ static long openat_in_root(int dirfd, const char *path, int flags, long mode) {
     resolved[candidate_len] = 0;
     bl_stat st;
     int follow = !last || trailing_slash || !nofollow;
-    long stat_result = follow ? real_syscall(BL_SYS_FSTATAT, (long)dirfd, (long)resolved, (long)&st, (long)AT_SYMLINK_NOFOLLOW) : -1;
+    long stat_result = follow ? path_stat(dirfd, resolved, &st, AT_SYMLINK_NOFOLLOW) : -1;
     if (stat_result == 0 && S_ISLNK(st.st_mode)) {
       if (++symlinks > BL_MAX_SYMLINKS) {
         errno = ELOOP;
@@ -176,7 +228,7 @@ static long openat_in_root(int dirfd, const char *path, int flags, long mode) {
       if (!have_root) {
         bl_stat root;
         struct statfs root_fs;
-        if (real_syscall(BL_SYS_FSTATAT, (long)dirfd, (long)".", (long)&root, 0L) != 0) {
+        if (path_stat(dirfd, ".", &root, 0) != 0) {
           return -1;
         }
         root_dev = root.st_dev;
@@ -184,7 +236,6 @@ static long openat_in_root(int dirfd, const char *path, int flags, long mode) {
         have_root = 1;
       }
       if ((st.st_dev != root_dev || root_on_procfs) && is_magic_link(dirfd, resolved, resolved_len)) {
-        // RESOLVE_IN_ROOT refuses magic links.
         errno = EXDEV;
         return -1;
       }
@@ -195,7 +246,7 @@ static long openat_in_root(int dirfd, const char *path, int flags, long mode) {
       }
       char *tail = pending + PATH_MAX - rest_len - 1;
       memmove(tail, end, rest_len + 1);
-      long target_len = real_syscall(SYS_readlinkat, (long)dirfd, (long)resolved, (long)pending, (long)(PATH_MAX - rest_len));
+      long target_len = path_readlink(dirfd, resolved, pending, PATH_MAX - rest_len);
       if (target_len <= 0) {
         if (target_len == 0) {
           errno = ENOENT;
@@ -208,6 +259,19 @@ static long openat_in_root(int dirfd, const char *path, int flags, long mode) {
       }
       memmove(pending + target_len, tail, rest_len + 1);
       if (pending[0] == '/') {
+        char saved = pending[target_len];
+        pending[target_len] = 0;
+        const char *inside = pending;
+        while (*inside == '/') {
+          inside++;
+        }
+        bl_stat probe;
+        int host = *inside && path_stat(dirfd, inside, &probe, AT_SYMLINK_NOFOLLOW) != 0 &&
+                   errno == ENOENT && path_stat(AT_FDCWD, pending, &probe, 0) == 0;
+        pending[target_len] = saved;
+        if (host) {
+          return path_open(AT_FDCWD, pending, flags, mode);
+        }
         resolved_len = 0;
       }
       rest = pending;
@@ -233,7 +297,7 @@ static long openat_in_root(int dirfd, const char *path, int flags, long mode) {
     resolved[resolved_len++] = '.';
   }
   resolved[resolved_len] = 0;
-  return real_syscall(SYS_openat, (long)dirfd, (long)resolved, (long)flags, mode);
+  return path_open(dirfd, resolved, flags, mode);
 }
 
 static long openat2_via_openat(const long *args) {
@@ -257,7 +321,7 @@ static long openat2_via_openat(const long *args) {
     errno = EXDEV;
     return -1;
   }
-  return real_syscall(SYS_openat, args[0], (long)path, (long)(int)how->flags, (long)how->mode);
+  return path_open((int)args[0], path, (int)how->flags, (long)how->mode);
 }
 
 static int execveat_is_execve(const long *args) {
@@ -267,6 +331,29 @@ static int execveat_is_execve(const long *args) {
   }
   return path[0] == '/' || (int)args[0] == AT_FDCWD;
 }
+
+static long openat2_call(const long *args) {
+  if (!real_syscall) {
+    real_syscall = (long (*)(long, ...)) dlsym(RTLD_NEXT, "syscall");
+  }
+  if (!__atomic_load_n(&openat2_missing, __ATOMIC_RELAXED)) {
+    long fd = real_syscall(SYS_openat2, args[0], args[1], args[2], args[3]);
+    if (fd != -1 || errno != ENOSYS) {
+      return fd;
+    }
+    __atomic_store_n(&openat2_missing, 1, __ATOMIC_RELAXED);
+  }
+  return openat2_via_openat(args);
+}
+
+int bl_openat2(int dirfd, const char *path, void *how, size_t size) __asm__("openat2");
+int bl_openat2(int dirfd, const char *path, void *how, size_t size) {
+  long args[6] = {dirfd, (long)path, (long)how, (long)size, 0, 0};
+  return (int)openat2_call(args);
+}
+
+int bl_writewatch_syscall(long number, const long *args, long (*real)(long, ...), long *rc) __attribute__((visibility("hidden")));
+int bl_clock_syscall(long number, const long *args, long (*real)(long, ...), long *ret) __attribute__((visibility("hidden")));
 
 long syscall(long number, ...) {
   va_list ap;
@@ -293,15 +380,26 @@ long syscall(long number, ...) {
   if (!real_syscall) {
     real_syscall = (long (*)(long, ...)) dlsym(RTLD_NEXT, "syscall");
   }
+  if (bl_clock_syscall(number, args, real_syscall, &handled)) {
+    return handled;
+  }
+  if (bl_writewatch_syscall(number, args, real_syscall, &handled)) {
+    return handled;
+  }
   if (number == SYS_openat2) {
-    if (!__atomic_load_n(&openat2_missing, __ATOMIC_RELAXED)) {
-      long fd = real_syscall(number, args[0], args[1], args[2], args[3]);
-      if (fd != -1 || errno != ENOSYS) {
-        return fd;
-      }
-      __atomic_store_n(&openat2_missing, 1, __ATOMIC_RELAXED);
-    }
-    return openat2_via_openat(args);
+    return openat2_call(args);
+  }
+  if (number == SYS_openat) {
+    return path_open((int)args[0], (const char *)args[1], (int)args[2], args[3]);
+  }
+  if (number == BL_SYS_FSTATAT) {
+    return path_stat((int)args[0], (const char *)args[1], (bl_stat *)args[2], (int)args[3]);
+  }
+  if (number == SYS_readlinkat) {
+    return path_readlink((int)args[0], (const char *)args[1], (char *)args[2], (size_t)args[3]);
+  }
+  if (number == SYS_statx) {
+    return path_statx((int)args[0], (const char *)args[1], (int)args[2], (unsigned int)args[3], (struct statx *)args[4]);
   }
   if (number == SYS_execveat && execveat_is_execve(args)) {
     return real_syscall(SYS_execve, args[1], args[2], args[3]);

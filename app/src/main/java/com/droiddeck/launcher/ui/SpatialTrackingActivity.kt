@@ -1,5 +1,6 @@
 package com.droiddeck.launcher.ui
 
+import androidx.compose.foundation.shape.CircleShape
 import android.os.Bundle
 import android.os.CancellationSignal
 import android.os.ParcelFileDescriptor
@@ -29,13 +30,13 @@ import androidx.compose.ui.unit.dp
 import com.droiddeck.launcher.R
 import com.droiddeck.launcher.core.AppUiPrefs
 import com.droiddeck.launcher.glasses.CalibrationDistance
+import com.droiddeck.launcher.handtracking.TrackingPack
 import com.droiddeck.launcher.glasses.Glasses
 import com.droiddeck.launcher.glasses.SpatialCalibrationProgress
 import com.droiddeck.launcher.glasses.SpatialTracking
 import com.droiddeck.launcher.glasses.SpatialTrackingStatus
 import com.droiddeck.launcher.glasses.StereoCalibrator
 import kotlinx.coroutines.delay
-import org.opencv.android.OpenCVLoader
 import org.opencv.android.Utils
 import org.opencv.core.Mat
 import org.opencv.core.Size
@@ -95,7 +96,7 @@ class SpatialTrackingActivity : ComponentActivity() {
     }
     override fun onPause() { SpatialTracking.diagnostics(false);super.onPause() }
     private fun printBoard() {
-        if(!OpenCVLoader.initLocal()) return
+        if(!TrackingPack.loadNative(this)) return
         val c=StereoCalibrator(this);val mat=Mat()
         c.board.generateImage(Size(1500.0,2100.0),mat,0,1)
         val bitmap=Bitmap.createBitmap(1500,2100,Bitmap.Config.ARGB_8888)
@@ -242,8 +243,8 @@ internal fun SpatialSetupScreen(
     if (confirmRestart) AlertDialog(
         onDismissRequest = { confirmRestart = false }, title = { Text(stringResource(R.string.spatial_restart_title)) },
         text = { Text(stringResource(R.string.spatial_restart_confirm)) },
-        confirmButton = { TextButton(onClick = { confirmRestart = false; actions.restart() }) { Text(stringResource(R.string.spatial_restart)) } },
-        dismissButton = { TextButton(onClick = { confirmRestart = false }) { Text(stringResource(R.string.common_cancel)) } },
+        confirmButton = { TextButton(onClick = { confirmRestart = false; actions.restart() }, modifier = Modifier.focusGlide(CircleShape)) { Text(stringResource(R.string.spatial_restart)) } },
+        dismissButton = { TextButton(onClick = { confirmRestart = false }, modifier = Modifier.focusGlide(CircleShape)) { Text(stringResource(R.string.common_cancel)) } },
     )
 }
 

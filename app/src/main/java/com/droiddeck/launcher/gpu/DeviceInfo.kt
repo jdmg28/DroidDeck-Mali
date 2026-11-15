@@ -23,7 +23,7 @@ object DeviceInfo {
         // After Vulkan has been asked, detection can use its name too.
         val gpu = GpuInfo.detect()
         return listOf(
-            chip(), gpu(gpu), cpu(), memory(context), system(), vulkan(context, vk), drivers(context, gpu),
+            chip(), gpu(context, gpu), cpu(), memory(context), system(), vulkan(context, vk), drivers(context, gpu),
         ).filter { it.rows.isNotEmpty() }
     }
 
@@ -59,21 +59,22 @@ object DeviceInfo {
         add("Family", read("/sys/devices/soc0/family"))
     })
 
-    private fun gpu(gpu: GpuInfo) = Section("GPU", buildList<Pair<String, String>> {
+    private fun gpu(context: Context, gpu: GpuInfo) = Section("GPU", buildList<Pair<String, String>> {
         add("GPU", gpu.name)
-        add("Family", gpu.family.label)
+        add("Family", gpu.family.label(gpu.name))
         add("Model found from", when (gpu.modelSource) {
             "kernel" -> "the kernel's GPU name"
             "vulkan" -> "the Vulkan driver (the kernel's name has no model)"
-            "platform" -> "the platform (the kernel's name has no model)"
+            "platform" -> "the platform or SoC (the kernel and Vulkan names have no model)"
             else -> "unknown"
         })
         add("Kernel name", gpu.kgslName)
+        add("Kernel chip id", gpu.kgslChipId)
         val kgsl = "/sys/class/kgsl/kgsl-3d0"
         add("Clock range", gpuRange())
         add("Load", read("$kgsl/gpu_busy_percentage")?.let { if (it.endsWith("%")) it else "$it %" })
         add("Temperature", read("$kgsl/temp")?.toLongOrNull()?.let { if (it > 1000) "${it / 1000} °C" else "$it °C" })
-        add("Support", gpu.supportText)
+        add("Support", gpu.supportText(SessionPrefs.vkBridge(context)))
     })
 
     private fun cpu() = Section("CPU", buildList<Pair<String, String>> {
@@ -161,10 +162,9 @@ object DeviceInfo {
             (if (GpuSafety.software(context)) " (software: no GPU node in the guest)" else " (the GPU is handed to the session)"))
         val turnip = TurnipDriver(context)
         val choice = SessionPrefs.androidDriver(context).ifEmpty { turnip.autoId() }
-        add("Display driver", "${turnip.displayName(choice)} ${turnip.driverVersion(choice)}".trim())
+        val powerVr = gpu.family == GpuInfo.Family.POWERVR
+        add("Display driver", if (choice == "system") builtinDriverLabel(powerVr, runtime = false)
+            else "${turnip.displayName(choice)} ${turnip.driverVersion(choice)}".trim())
         val linux = LinuxVulkanDriverManager(context)
         val id = GpuSafety.linuxDriver(context)
-        add("Game driver", if (id.isEmpty()) "the runtime's own Turnip" else "${linux.getDriverName(id)} ${linux.getDriverVersion(id)}".trim())
-        if (gpu.oneUi8Gen2) add("Note", "One UI on an 8 Gen 2: needs the OneUI Turnip build")
-    })
-}
+        add("Game driver", if (id.isEmpty()) builtinDriverLabel(powerVr, runtime = true) else "${linux.getDriverName(id)} ${linux.getDriverVersion(id)}".trim())

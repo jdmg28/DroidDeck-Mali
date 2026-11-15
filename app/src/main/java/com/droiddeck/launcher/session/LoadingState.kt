@@ -77,6 +77,7 @@ class LoadingState(context: Context, private val steam: Boolean = true) {
         var stepText: String? = null
         var downloadAt = -1
         var downloadPercent = -1
+        var applyingAt = -1
         var clientDownloadAt = -1
         var clientDownload: String? = null
         var clientPercent = -1
@@ -87,11 +88,10 @@ class LoadingState(context: Context, private val steam: Boolean = true) {
             if (line.startsWith("== STEP ")) {
                 stepAt = at
                 stepText = line.substringAfter("== STEP ").substringAfter(' ')
-                val m = INSTALL_COUNT.find(line)
-                if (m != null) {
+                clientDownload(line)?.let { (what, percent) ->
                     clientDownloadAt = at
-                    clientDownload = m.groupValues[1]
-                    clientPercent = m.groupValues[2].toInt() * 100 / maxOf(1, m.groupValues[3].toInt())
+                    clientDownload = what
+                    clientPercent = percent
                 }
             } else {
                 val m = UPDATE_PROGRESS.find(line)
@@ -100,10 +100,16 @@ class LoadingState(context: Context, private val steam: Boolean = true) {
                     val done = m.groupValues[1].toLong()
                     val total = maxOf(1L, m.groupValues[2].toLong())
                     downloadPercent = (done * 100 / total).toInt()
+                } else if (steam && UPDATE_APPLYING.matches(line)) {
+                    applyingAt = at
                 }
             }
         }
         return when {
+            applyingAt > stepAt && applyingAt > downloadAt -> Line(
+                context.getString(com.droiddeck.launcher.R.string.loadstate_steam_update_applying), -1,
+                Topic.STEAM, readable = true,
+            )
             downloadAt > stepAt && downloadPercent >= 0 -> Line(
                 context.getString(com.droiddeck.launcher.R.string.loadstate_steam_update, downloadPercent), downloadPercent,
                 Topic.STEAM, readable = true,
@@ -132,6 +138,19 @@ class LoadingState(context: Context, private val steam: Boolean = true) {
             }
         }
 
+        internal fun clientDownload(line: String): Pair<String, Int>? {
+            val count = INSTALL_COUNT.find(line) ?: return null
+            val mb = INSTALL_MEGABYTES.find(line.substring(count.range.last + 1))
+            val done = mb?.groupValues?.get(1)?.toLongOrNull()
+            val total = mb?.groupValues?.get(2)?.toLongOrNull()
+            if (done != null && total != null && total > 0) {
+                return "$done / $total MB" to (done * 100 / total).toInt().coerceIn(0, 100)
+            }
+            val part = count.groupValues[2].toIntOrNull() ?: return null
+            val all = count.groupValues[3].toIntOrNull() ?: return null
+            return count.groupValues[1] to (part.toLong() * 100 / maxOf(1, all)).coerceIn(0L, 100L).toInt()
+        }
+
         internal fun readableScriptStep(scriptStep: String): Boolean {
             val t = scriptStep.lowercase()
             return t.startsWith("download") || t.startsWith("checking the linux") || t.startsWith("unpacking") || t.startsWith("installing")
@@ -139,6 +158,8 @@ class LoadingState(context: Context, private val steam: Boolean = true) {
 
         private const val TAIL_BYTES = 48L * 1024
         private val UPDATE_PROGRESS = Regex("""Downloading update \((\d+) of (\d+) KB\)""")
+        private val UPDATE_APPLYING = Regex("""^\s*(?:\[[^\]]+\]\s*)*(?:Extracting package|Installing update)\.\.\.\s*$""")
         private val INSTALL_COUNT = Regex("""downloading Steam: (\S+) \((\d+)/(\d+)\)""")
+        private val INSTALL_MEGABYTES = Regex("""^, (\d+) of (\d+) MB""")
     }
 }

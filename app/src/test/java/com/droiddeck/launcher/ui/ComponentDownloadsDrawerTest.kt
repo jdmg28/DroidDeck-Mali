@@ -4,12 +4,20 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.InputMode
+import androidx.compose.ui.input.InputModeManager
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.platform.LocalInputModeManager
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.test.assertIsFocused
+import androidx.compose.ui.test.ExperimentalTestApi
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
-import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performKeyInput
+import androidx.compose.ui.test.pressKey
+import androidx.compose.ui.test.requestFocus
 import com.droiddeck.launcher.R
 import com.droiddeck.launcher.session.ComponentsManager
 import org.junit.Assert.assertEquals
@@ -20,13 +28,12 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
 
+@OptIn(ExperimentalTestApi::class, androidx.compose.ui.ExperimentalComposeUiApi::class)
 @RunWith(RobolectricTestRunner::class)
-// A phone-sized window, not Robolectric's 320x470 default: the drawer lists four component groups
-// here (WoW64 is the fork's), and on the default one the dxvk chip fell below the fold where a
-// click lands outside the window and never opens the menu.
-@Config(sdk = [28], qualifiers = "w411dp-h891dp")
+@Config(sdk = [28])
 class ComponentDownloadsDrawerTest {
     @get:Rule val compose = createRobolectricComposeRule()
+    private lateinit var inputMode: InputModeManager
 
     private val dxvk = item("dxvk-2.4.1-linux.wcp", "dxvk")
     private val stored = item("dxvk-2.3-linux.wcp", "dxvk")
@@ -36,9 +43,7 @@ class ComponentDownloadsDrawerTest {
     @Test fun choosingDxvkDownloadsTheCatalogItemAndPreventsStoredOrInFlightDownloads() {
         val requested = mutableListOf<ComponentsManager.CatalogItem>()
         show(downloads = mapOf(inFlight.file to 45), onDownload = requested::add)
-        // The drawer lists four component groups here (WoW64 is one of the fork's), so the dxvk
-        // chip can sit below the fold of the test window; a click there would land outside it.
-        compose.onNodeWithTag("cmp-download-dxvk").performScrollTo().performClick()
+        compose.onNodeWithTag("cmp-download-dxvk").performClick()
         compose.onNodeWithText(stored.file.removeSuffix(".wcp")).assertIsNotEnabled()
         compose.onNodeWithText(inFlight.file.removeSuffix(".wcp")).assertIsNotEnabled()
         compose.onNodeWithText(fex.file.removeSuffix(".wcp")).assertDoesNotExist()
@@ -46,6 +51,40 @@ class ComponentDownloadsDrawerTest {
         assertEquals(listOf(dxvk), requested)
         compose.onNodeWithText(dxvk.file.removeSuffix(".wcp")).assertDoesNotExist()
         compose.onNodeWithText("45%").assertExists()
+    }
+
+    @Test fun pairedNightlyRidesOnTheStableRowBehindTheSwitch() {
+        val stable = ComponentsManager.CatalogItem("dxvk-3.1.1-linux.wcp", "dxvk", "Dxvk-Linux", "https://github.com/example/s", 100, "sha256:test")
+        val nightly = ComponentsManager.CatalogItem("DD-dxvk-3.1.1+153-nightly.wcp", "dxvk", ComponentsManager.DD_NIGHTLY, "https://github.com/example/n", 100, "sha256:test")
+        val requested = mutableListOf<ComponentsManager.CatalogItem>()
+        show(catalog = listOf(stable, nightly), onDownload = requested::add)
+        compose.onNodeWithTag("cmp-download-dxvk").performClick()
+        compose.onNodeWithText("dxvk-3.1.1-linux").assertExists()
+        compose.onNodeWithText("DD-dxvk-3.1.1+153-nightly").assertDoesNotExist()
+        compose.onNodeWithText(RuntimeEnvironment.getApplication().getString(R.string.comp_channel_nightly)).performClick()
+        compose.onNodeWithText("dxvk-3.1.1-linux").assertDoesNotExist()
+        compose.onNodeWithText("DD-dxvk-3.1.1+153-nightly").performClick()
+        assertEquals(listOf(nightly), requested)
+    }
+
+    @Test fun controllerPicksNightlyOnItsTabThenDownloadsItFromTheRow() {
+        val stable = ComponentsManager.CatalogItem("dxvk-3.1.1-linux.wcp", "dxvk", "Dxvk-Linux", "https://github.com/example/s", 100, "sha256:test")
+        val nightly = ComponentsManager.CatalogItem("DD-dxvk-3.1.1+153-nightly.wcp", "dxvk", ComponentsManager.DD_NIGHTLY, "https://github.com/example/n", 100, "sha256:test")
+        val requested = mutableListOf<ComponentsManager.CatalogItem>()
+        show(catalog = listOf(stable, nightly), onDownload = requested::add)
+        compose.onNodeWithTag("cmp-download-dxvk").performClick()
+        compose.runOnIdle { inputMode.requestInputMode(InputMode.Keyboard) }
+        compose.onNodeWithText("dxvk-3.1.1-linux").requestFocus().assertIsFocused()
+        compose.onNodeWithText("dxvk-3.1.1-linux").performKeyInput { pressKey(Key.DirectionRight) }
+        val nightlyTab = RuntimeEnvironment.getApplication().getString(R.string.comp_channel_nightly)
+        compose.onNodeWithText(RuntimeEnvironment.getApplication().getString(R.string.comp_channel_stable)).assertIsFocused()
+            .performKeyInput { pressKey(Key.DirectionRight) }
+        compose.onNodeWithText(nightlyTab).assertIsFocused().performKeyInput { pressKey(Key.ButtonA) }
+        compose.onNodeWithText("DD-dxvk-3.1.1+153-nightly").assertExists()
+        assertEquals(emptyList<ComponentsManager.CatalogItem>(), requested)
+        compose.onNodeWithText(nightlyTab).performKeyInput { pressKey(Key.DirectionLeft); pressKey(Key.DirectionLeft) }
+        compose.onNodeWithText("DD-dxvk-3.1.1+153-nightly").assertIsFocused().performKeyInput { pressKey(Key.ButtonA) }
+        assertEquals(listOf(nightly), requested)
     }
 
     @Test fun emptyCatalogOffersRefreshAndDisablesVersionChoicesWhileChecking() {
@@ -70,6 +109,7 @@ class ComponentDownloadsDrawerTest {
         onDownload: (ComponentsManager.CatalogItem) -> Unit = {},
     ) {
         compose.setContent {
+            inputMode = LocalInputModeManager.current
             DroidDeckTheme {
                 Column(Modifier.verticalScroll(rememberScrollState())) {
                     ComponentDownloadsDrawerGroup(

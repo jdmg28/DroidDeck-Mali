@@ -3,6 +3,9 @@ package com.droiddeck.launcher.ui
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.foundation.hoverable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
@@ -54,10 +57,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 
-/** Steam's library hero is 3840 x 1240, so the preview keeps that shape. */
 private const val HERO_RATIO = 3840f / 1240f
 
-/** The gap Steam leaves between the pinned logo and the edge of the hero, as a share of the hero's width. */
 private const val EDGE = 0.03f
 
 @Composable
@@ -83,10 +84,6 @@ private fun LogoPosition.Pin.alignment(): Alignment = when (this) {
 internal fun logoPositionSummary(value: LogoPosition.Value?): String =
     if (value == null) stringResource(R.string.logo_pos_default) else "${value.pin.label()} · ${value.widthPct}%"
 
-/**
- * Where a game's logo sits on its background in Steam's library: the logo box is [Value.widthPct] x [Value.heightPct] of the
- * background, pinned to one of five places, and the logo is drawn as large as fits in it.
- */
 @Composable
 private fun LogoPreview(hero: File?, logo: File?, value: LogoPosition.Value) {
     val shape = RoundedCornerShape(10.dp)
@@ -105,7 +102,7 @@ private fun LogoPreview(hero: File?, logo: File?, value: LogoPosition.Value) {
 }
 
 @Composable
-private fun PinChip(label: String, selected: Boolean, onClick: () -> Unit) {
+private fun PinChip(label: String, selected: Boolean, focus: FocusRequester?, onClick: () -> Unit) {
     val pal = LocalPalette.current
     val colors = MaterialTheme.colorScheme
     val src = remember { MutableInteractionSource() }
@@ -113,7 +110,7 @@ private fun PinChip(label: String, selected: Boolean, onClick: () -> Unit) {
     val shape = RoundedCornerShape(8.dp)
     Box(
         contentAlignment = Alignment.Center,
-        modifier = Modifier.clip(shape)
+        modifier = Modifier.then(if (focus != null) Modifier.focusRequester(focus) else Modifier).clip(shape)
             .background(if (selected) pal.signal.copy(alpha = 0.14f) else Color.White.copy(alpha = 0.03f))
             .border(if (selected) 2.dp else 1.dp, if (selected) pal.signal else pal.line, shape)
             .glideBorder(hot, shape, pal.signal)
@@ -127,7 +124,6 @@ private fun PinChip(label: String, selected: Boolean, onClick: () -> Unit) {
     }
 }
 
-/** The "Adjust logo" screen: the game's background with its logo on it, where to pin the logo and how large to draw it. */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 internal fun LogoPositionDialog(
@@ -140,6 +136,9 @@ internal fun LogoPositionDialog(
     val shown = rememberShown(onBack)
     val back = { shown.targetState = false }
     var value by remember { mutableStateOf(start ?: LogoPosition.DEFAULT) }
+    val startPin = remember { value.pin }
+    val first = remember { FocusRequester() }
+    LaunchedEffect(Unit) { focusSoon { first } }
     var failed by remember { mutableStateOf(false) }
     var busy by remember { mutableStateOf(false) }
     val save: (LogoPosition.Value?) -> Unit = { next ->
@@ -172,7 +171,7 @@ internal fun LogoPositionDialog(
             )
             Text(stringResource(R.string.logo_pos_position), fontSize = 12.sp, color = colors.onSurfaceVariant, modifier = Modifier.padding(start = 2.dp, top = 2.dp))
             FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                for (pin in LogoPosition.Pin.values()) PinChip(pin.label(), pin == value.pin) { value = value.copy(pin = pin) }
+                for (pin in LogoPosition.Pin.values()) PinChip(pin.label(), pin == value.pin, if (pin == startPin) first else null) { value = value.copy(pin = pin) }
             }
             ValueSlider(
                 value.widthPct, LogoPosition.MIN_PCT..LogoPosition.MAX_PCT, step = 1, enabled = true, label = stringResource(R.string.logo_pos_size),

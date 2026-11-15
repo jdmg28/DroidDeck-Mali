@@ -1,6 +1,6 @@
-"""Attest prepared runtime inputs and reject stale local or CI APK payloads."""
 import hashlib
 import gzip
+import importlib.util
 import json
 from pathlib import Path
 import subprocess
@@ -12,13 +12,23 @@ from zipfile import ZipFile
 
 ROOT = Path(__file__).resolve().parents[2]
 MANIFEST = Path('app/build/runtime-inputs.json')
+PACKS = Path('app/build/packs')
+PACKED = {'assets/linuxfs/usr/local/lib/droiddeck-xbox/': 'xbox', 'assets/linuxfs/usr/local/lib/droiddeck-comet/': 'comet',
+          'assets/directaudio/': 'directaudio', 'assets/hybris/': 'powervr'}
+PACKED_FILES = {'lib/arm64-v8a/libproot.so': ('proot', 'libproot.so'),
+                'lib/arm64-v8a/libproot-loader.so': ('proot', 'libproot-loader.so')}
+PACKED_LIBRARIES = ['lib/arm64-v8a/libopencv_java4.so', 'lib/arm64-v8a/libmediapipe_tasks_jni.so']
+PACK_NAMES = ['proot', 'directaudio', 'tracking', 'xbox', 'comet', 'butler', 'powervr']
 SOURCE_PATHS = ['app/build.gradle', 'app/src/main/cpp/fakeinput_steam.cpp', 'app/src/main/assets/pulseaudio.tzst',
-                'tools/linuxfs', 'tools/proot', 'tools/aaudio-sink', 'tools/directaudio',
+                'tools/linuxfs', 'tools/proot', 'tools/aaudio-sink', 'tools/directaudio', 'tools/packs',
                 'tools/gamescope/release.env', 'tools/droiddeck-esync/release.env',
-                'tools/mangoapp', 'tools/msitools', 'tools/comet', 'tools/build_local.sh',
+                'tools/mangoapp', 'tools/msitools', 'tools/pipewire', 'tools/comet', 'tools/xbox', 'tools/dirt-ws2', 'tools/components', 'tools/ci', 'tools/build_local.sh',
+                'tools/powervr', 'tools/hybris', 'tools/dxvk', 'tools/vulkan-wsi',
                 'tools/release/runtime_inputs.py', 'app/src/main/assets/desktop-removal',
                 'tools/quest', 'tools/vr/src', 'tools/vr/driver_droiddeck', 'tools/vr/layer', 'tools/vr/build.sh',
+                'tools/gpuload',
                 'app/src/main/cpp/waylandcomp/src/headpose_shm.h',
+                'app/src/main/cpp/venc/venc_proto.h',
                 'app/src/main/cpp/waylandcomp/src/spatialpose_shm.h',
                 'app/src/main/cpp/adrenotools/src/hook/kgsl.h',
                 'app/src/main/assets/graphics_driver/adrenotools-turnip25.1.0.tzst']
@@ -45,7 +55,7 @@ def sources(root):
 
 def outputs(root):
     result = {}
-    for tree in ['linuxfs', 'directaudio', 'droiddeck-esync', 'desktop-removal']:
+    for tree in ['linuxfs', 'directaudio', 'droiddeck-esync', 'desktop-removal', 'hybris']:
         base = root / 'app/src/main/assets' / tree
         for path in base.rglob('*'):
             if path.is_file() and not any(part.startswith('.') for part in path.relative_to(base).parts):
@@ -67,7 +77,9 @@ def required():
               for name in ['turnip26.3.0-a6xx', 'turnip26.3.0-quest2']]
     paths += ['assets/linuxfs/' + name for name in ['libfakeinput.so', 'libblsession.so',
              'libblfastpath.so', 'libssbs.so', 'usr/local/bin/droiddeck-clipboard',
-             'usr/local/bin/gamescope', 'usr/local/lib/droiddeck/uruntime']]
+             'usr/local/bin/droiddeck-gog-maintenance',
+             'usr/local/bin/gamescope', 'usr/local/lib/droiddeck/uruntime',
+             'usr/local/lib/droiddeck-pipewire.tzst']]
     for arch in ['x86_64', 'i386']:
         paths += ['assets/linuxfs/' + arch + '/' + lib for lib in ['libfakeinput.so', 'libblsession.so']]
     paths += ['assets/linuxfs/x86_64/' + lib for lib in
@@ -75,12 +87,17 @@ def required():
     paths += ['assets/linuxfs/i386/libfaultreport.so']
     paths += ['assets/linuxfs/usr/local/lib/droiddeck-msitools/' + name for name in
               ['msiinfo', 'cabextract', '7z', '7z.so', 'libmsi-1.0.so.0', 'libgsf-1.so.114', 'libgcab-1.0.so.0']]
+    paths += ['assets/linuxfs/usr/local/lib/droiddeck-xclipse/' + name for name in
+              ['libVkLayer_droiddeck_xclipse.so', 'VkLayer_droiddeck_xclipse.json']]
     paths += ['assets/linuxfs/usr/local/lib/droiddeck-vr/' + name for name in
               ['droiddeck/bin/linuxarm64/driver_droiddeck.so', 'droiddeck/bin/linuxarm64/xr-display-mode',
                'droiddeck/driver.vrdrivermanifest',
                'droiddeck/resources/settings/default.vrsettings', 'layer/libVkLayer_droiddeck_vr.so',
                'layer/VK_LAYER_DROIDDECK_vr.json', 'layer/VK_LAYER_DROIDDECK_vr_implicit.json',
                'layer/libdroiddeck_vr_scheduling.so']]
+    paths += ['assets/linuxfs/usr/local/lib/droiddeck-gpuload/' + name for name in
+              ['libVkLayer_droiddeck_gpuload.so', 'VK_LAYER_DROIDDECK_gpu_load.json',
+               'libVkLayer_droiddeck_vramcap.so', 'VK_LAYER_DROIDDECK_vram_cap.json']]
     for side in ['left', 'right']:
         paths += [f'assets/linuxfs/usr/local/lib/droiddeck-vr/droiddeck/resources/rendermodels/droiddeck_hand_{side}/{name}'
                   for name in [f'droiddeck_hand_{side}.json', 'hand.mtl', 'hand.png', 'hand_open.obj', 'hand_fist.obj',
@@ -89,6 +106,9 @@ def required():
               ['mangoapp', 'libfmt.so.10', 'libspdlog.so.1.13', 'libglfw.so.3', 'libtraceevent.so.1', 'libtracefs.so.1']]
     paths += ['assets/linuxfs/usr/local/lib/droiddeck-comet/' + name for name in
               ['comet', 'GalaxyCommunication.exe', 'update-permissions.exe', 'LICENSE', 'version']]
+    paths += ['assets/linuxfs/usr/local/lib/droiddeck-xbox/' + name for name in
+              ['xodus-cli', 'xodus-service', 'version', 'backend.lock.json', 'runtime.lock.json', 'LICENSE.xodus', 'LICENSE.nexus', 'LICENSE.LGPL-2.1', 'LICENSE.nghttp2',
+               'windows/xgameruntime.dll', 'windows/winhttp.dll', 'windows/windows.web.dll', 'windows/twinapi.appcore.dll', 'windows/libnghttp2.dll']]
     for driver in ['linux-wine11', 'linux-wine11-systhread']:
         paths += ['assets/directaudio/' + driver + '/' + name for name in
                   ['aarch64-unix/winedirectaudio.so', 'aarch64-windows/winedirectaudio.drv',
@@ -99,7 +119,15 @@ def required():
     paths += ['assets/desktop-removal/' + name for name in
               ['lxqt-r1.tsv.gzip', 'kde-remove.tsv.gzip', 'kde-keep.txt.gzip',
                'emulators-keep.txt.gzip', 'versions.txt', 'sources.json']]
+    paths += ['assets/hybris/runtime.tzst', 'assets/hybris/version.txt']
     return paths
+
+
+def verify_powervr(root):
+    spec = importlib.util.spec_from_file_location('powervr_fetch', ROOT / 'tools/powervr/fetch.py')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    module.verify(root)
 
 
 def record(root=ROOT):
@@ -113,6 +141,7 @@ def record(root=ROOT):
     missing = [name for name in required() if name not in paths or not (root / paths[name]).is_file()]
     if missing:
         raise ValueError('Missing runtime inputs:\n' + '\n'.join(missing))
+    verify_powervr(root)
     for name, path in paths.items():
         if name.startswith('assets/desktop-removal/') and name.endswith('.gzip'):
             try:
@@ -135,13 +164,21 @@ def record(root=ROOT):
     (root / MANIFEST).write_text(json.dumps(data, sort_keys=True, indent=2) + '\n')
 
 
-def verify(root=ROOT):
+def verify(root=ROOT, stale_sources_ok=False):
     try:
         data = json.loads((root / MANIFEST).read_text())
     except (OSError, ValueError):
         raise ValueError('Runtime inputs have not been prepared. Run tools/build_local.sh.')
-    if data.get('version') != 1 or data.get('sources') != sources(root):
+    if data.get('version') != 1:
         raise ValueError('Runtime sources changed since preparation. Run tools/build_local.sh.')
+    current = sources(root)
+    if data.get('sources') != current:
+        if not stale_sources_ok:
+            raise ValueError('Runtime sources changed since preparation. Run tools/build_local.sh.')
+        recorded = data.get('sources') or {}
+        changed = sorted(name for name in recorded.keys() | current.keys() if recorded.get(name) != current.get(name))
+        print('Warning: reusing runtime assets prepared from other sources (run tools/build_local.sh if these matter):\n  '
+              + '\n  '.join(changed[:20]) + ('\n  ...' if len(changed) > 20 else ''), file=sys.stderr)
     for name in required():
         if name not in data['outputs']:
             raise ValueError('Runtime manifest missing ' + name)
@@ -154,10 +191,49 @@ def verify(root=ROOT):
     return data
 
 
+def pack_digests(root, name):
+    path = root / PACKS / (name + '.tar.zst')
+    if not path.is_file():
+        raise ValueError('Missing add-on pack ' + name + '. Run tools/packs/build.sh app/build/packs.')
+    process = subprocess.Popen(['zstd', '-dc', str(path)], stdout=subprocess.PIPE)
+    digests = {}
+    try:
+        with tarfile.open(fileobj=process.stdout, mode='r|') as archive:
+            for member in archive:
+                if member.isfile():
+                    digests[member.name] = hashlib.sha256(archive.extractfile(member).read()).hexdigest()
+    finally:
+        process.stdout.close()
+    if process.wait():
+        raise ValueError('Invalid add-on pack ' + name)
+    return digests
+
+
 def check_apk(apk, root=ROOT):
     data = verify(root)
+    packs = {name: pack_digests(root, name) for name in PACK_NAMES}
     with ZipFile(apk) as package:
+        names = set(package.namelist())
+        for library in PACKED_LIBRARIES:
+            if library in names:
+                raise ValueError('APK still carries ' + library + ', which the tracking pack provides')
+            if library.rsplit('/', 1)[1] not in packs['tracking']:
+                raise ValueError('Tracking pack missing ' + library)
         for name, output in data['outputs'].items():
+            if name in PACKED_FILES:
+                pack, rel = PACKED_FILES[name]
+                if name in names:
+                    raise ValueError('APK still carries ' + name + ', which the ' + pack + ' pack provides')
+                if packs[pack].get(rel) != output['sha256']:
+                    raise ValueError('Add-on pack ' + pack + ' is missing or has a stale ' + name)
+                continue
+            prefix = next((p for p in PACKED if name.startswith(p)), None)
+            if prefix:
+                if name in names:
+                    raise ValueError('APK still carries ' + name + ', which the ' + PACKED[prefix] + ' pack provides')
+                if packs[PACKED[prefix]].get(name[len(prefix):]) != output['sha256']:
+                    raise ValueError('Add-on pack ' + PACKED[prefix] + ' is missing or has a stale ' + name)
+                continue
             try:
                 content = package.read(name)
             except KeyError:
@@ -171,7 +247,7 @@ if __name__ == '__main__':
         if sys.argv[1] == 'record':
             record()
         elif sys.argv[1] == 'verify':
-            verify()
+            verify(stale_sources_ok='--allow-stale-sources' in sys.argv[2:])
         elif sys.argv[1] == 'apk':
             check_apk(sys.argv[2])
         else:

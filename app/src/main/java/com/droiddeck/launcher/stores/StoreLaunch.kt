@@ -2,6 +2,7 @@ package com.droiddeck.launcher.stores
 
 import android.content.Context
 import android.util.Log
+import com.droiddeck.launcher.frontend.AddedGames
 import com.droiddeck.launcher.frontend.Library
 import java.io.File
 
@@ -21,7 +22,8 @@ object StoreLaunch {
 
     fun launcherText(sidecar: StoreGameSidecar): String {
         val exe = sidecar.exe.replace('/', '\\')
-        val dir = exe.substringBeforeLast('\\', "")
+        val dir = sidecar.workdir?.let { if (it.isEmpty()) "" else it.replace('/', '\\') }
+            ?: exe.substringBeforeLast('\\', "")
         val lines = ArrayList<String>()
         lines += "@echo off"
         lines += "setlocal"
@@ -62,6 +64,14 @@ object StoreLaunch {
 
     private const val CODE_VAR = "DD_X"
     private const val CLIENT_VAR = "DD_A"
+
+    fun installedGame(context: Context, store: Store, id: String): Library.SteamGame? {
+        val folder = StoreInstallRoot.gameFolders(context).firstOrNull { folder ->
+            StoreGameSidecar.read(folder)?.let { it.store == store && it.id == id && it.isInstalled } == true
+        } ?: return null
+        val game = AddedGames.single(context, folder.path) ?: return null
+        return Library.addedGame(context, game)
+    }
 
     fun refreshLauncher(folder: File, sidecar: StoreGameSidecar) {
         if (sidecar.launcher != LAUNCHER) return

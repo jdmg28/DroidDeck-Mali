@@ -13,6 +13,16 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [28], manifest = Config.NONE)
 class SessionScalingPrefsTest {
+    @Test fun legacyAutomaticResolutionsRemainRotatablePresets() {
+        val context = RuntimeEnvironment.getApplication()
+        val prefs = context.getSharedPreferences("session", Context.MODE_PRIVATE)
+        prefs.edit().putString("shape", SessionPrefs.SHAPE_AUTO).putInt("resolutionCap.steam", 900).commit()
+        assertEquals("900p", SessionPrefs.resolutionChoice(context, "steam", 1920 to 1080))
+        val desktop = SessionPrefs.resolutionChoice(context, "lxqt", 1920 to 1080)
+        assertEquals("720p", desktop)
+        assertEquals(720 to 1280, SessionDisplay.resolveChoice(1920 to 1080, desktop, portrait = true))
+    }
+
     @Before fun clearSettings() {
         RuntimeEnvironment.getApplication().getSharedPreferences("session", Context.MODE_PRIVATE).edit().clear().commit()
     }
@@ -38,6 +48,19 @@ class SessionScalingPrefsTest {
         val choice = SessionPrefs.resolutionChoice(context, "steam", 1440 to 1080)
         assertEquals(1440 to 1080, SessionDisplay.resolveChoice(1440 to 1080, choice))
         assertEquals("800x600", SessionPrefs.resolutionChoice(context, "lxqt", 1440 to 1080))
+    }
+
+    @Test fun userAppsTakeTheDesktopResolutionOnceItIsChosen() {
+        val context = RuntimeEnvironment.getApplication()
+        val script = com.droiddeck.launcher.runtime.UserApps.SCRIPT_LAUNCHER
+        assertEquals("steam", SessionPrefs.displayMode(context, "run", script))
+        SessionPrefs.setResolutionChoice(context, "lxqt", SessionDisplay.MATCH_SCREEN)
+        assertEquals("lxqt", SessionPrefs.displayMode(context, "run", script))
+        assertEquals("lxqt", SessionPrefs.displayMode(context, "run", com.droiddeck.launcher.runtime.AppImageManager.LAUNCHER))
+        val choice = SessionPrefs.resolutionChoice(context, SessionPrefs.displayMode(context, "run", script), 1240 to 1080)
+        assertEquals(1240 to 1080, SessionDisplay.resolveChoice(1240 to 1080, choice))
+        assertEquals("steam", SessionPrefs.displayMode(context, "run", "/usr/bin/retroarch"))
+        assertEquals("steam", SessionPrefs.displayMode(context, "steam", script))
     }
 
     @Test fun freshSettingsUseTheConcreteDefaultAndCustomSizesAreNormalized() {

@@ -40,10 +40,18 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalInputModeManager
+import androidx.compose.ui.input.InputMode
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
 import android.content.Context
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
@@ -54,6 +62,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import coil.compose.AsyncImage
 import com.droiddeck.launcher.R
 import com.droiddeck.launcher.frontend.AddedGameArt
@@ -62,6 +72,7 @@ import com.droiddeck.launcher.frontend.AddedGames
 import com.droiddeck.launcher.frontend.LogoPosition
 import com.droiddeck.launcher.frontend.SteamGameArt
 import com.droiddeck.launcher.frontend.SteamGridDb
+import com.droiddeck.launcher.frontend.SteamLaunchOptions
 import com.droiddeck.launcher.session.SessionPrefs
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -204,7 +215,6 @@ private fun ArtOnlyEditor(
     onClose: () -> Unit, onChanged: () -> Unit,
 ) {
     val app = LocalContext.current.applicationContext
-    val colors = MaterialTheme.colorScheme
     val shown = rememberShown(onClose)
     val close = { shown.targetState = false }
     var version by remember { mutableIntStateOf(0) }
@@ -222,7 +232,7 @@ private fun ArtOnlyEditor(
             verticalArrangement = Arrangement.spacedBy(6.dp),
             modifier = Modifier.fillMaxWidth().heightIn(max = maxHeight).verticalScroll(rememberScrollState()),
         ) {
-            Text(stringResource(R.string.edit_artwork), fontSize = 12.sp, color = colors.onSurfaceVariant, modifier = Modifier.padding(start = 4.dp, top = 2.dp))
+            Text(stringResource(R.string.edit_artwork), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(start = 4.dp, top = 2.dp))
             for (slot in AddedGameArt.Slot.values()) key(slot) {
                 val state = arts.firstOrNull { it.slot == slot }
                 FieldRow(slot.label(), focus = if (slot == AddedGameArt.Slot.COVER) first else null, onClick = { if (target != null) artSlot = slot }) {
@@ -243,7 +253,72 @@ private fun ArtOnlyEditor(
     if (logoOpen && loaded != null) LogoPositionHost(chosen, arts, loaded, onBack = { logoOpen = false }, onCloseAll = { logoOpen = false; close() }) { version++; onChanged() }
 }
 
-/** The position as last read; null until it has been read, so the screen never opens on a guess and saves it over the real one. */
+@Composable
+internal fun SteamLaunchOptionsPanel(appId: Int) {
+    val app = LocalContext.current.applicationContext
+    val colors = MaterialTheme.colorScheme
+    val scope = rememberCoroutineScope()
+    var options by remember(appId) { mutableStateOf<String?>(null) }
+    var version by remember(appId) { mutableIntStateOf(0) }
+    var editing by remember(appId) { mutableStateOf<String?>(null) }
+    var saving by remember(appId) { mutableStateOf(false) }
+    var loading by remember(appId) { mutableStateOf(false) }
+    var error by remember(appId) { mutableStateOf<Int?>(null) }
+    LaunchedEffect(appId, version) {
+        options = withContext(Dispatchers.IO) { SteamLaunchOptions.current(app, appId) } ?: options.orEmpty()
+        loading = false
+    }
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    DisposableEffect(lifecycle, appId) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME && !saving) {
+                loading = true
+                version++
+            }
+        }
+        lifecycle.addObserver(observer)
+        onDispose { lifecycle.removeObserver(observer) }
+    }
+    Column(Modifier.fillMaxWidth().tabPanel(), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        val value = options
+        MenuItem(
+            stringResource(R.string.edit_launch_options), checked = false, enabled = value != null && !saving && !loading,
+            detail = if (value == null || saving || loading) "…" else value.ifEmpty { "—" },
+        ) { if (!saving && !loading) options?.let { editing = it } }
+        val message = error
+        Text(
+            stringResource(message ?: R.string.edit_launch_options_steam_hint),
+            fontSize = 12.sp,
+            color = if (message == null) colors.onSurfaceVariant else colors.error,
+            modifier = Modifier.padding(start = 4.dp),
+        )
+    }
+    val before = editing
+    if (before != null) TextEntryDialog(stringResource(R.string.edit_launch_options), before, onDismiss = { editing = null }) { value ->
+        if (saving || value == before.trim()) return@TextEntryDialog
+        saving = true
+        scope.launch {
+            try {
+                val saved = withContext(Dispatchers.IO) { SteamLaunchOptions.set(app, appId, value, before) }
+                error = when (saved) {
+                    SteamLaunchOptions.Saved.YES -> null
+                    SteamLaunchOptions.Saved.DESKTOP -> R.string.edit_launch_options_desktop
+                    SteamLaunchOptions.Saved.NO -> R.string.edit_launch_options_not_saved
+                }
+                if (saved == SteamLaunchOptions.Saved.YES) {
+                    options = value
+                    version++
+                } else {
+                    options = null
+                    version++
+                }
+            } finally {
+                saving = false
+            }
+        }
+    }
+}
+
 private class LoadedPosition(val value: LogoPosition.Value?)
 
 @Composable
@@ -256,7 +331,6 @@ private fun rememberLogoPosition(target: ArtTarget?, version: Int): LoadedPositi
     return position
 }
 
-/** The "Adjust logo" screen for [target], over the game's background and logo as they are now. */
 @Composable
 private fun LogoPositionHost(
     target: ArtTarget, arts: List<AddedGameArt.SlotState>, start: LoadedPosition,
@@ -469,7 +543,7 @@ internal fun TextEntryDialog(title: String, initial: String, onDismiss: () -> Un
     AppDialog(shown, close, "textEntry", wide = false, maxWidth = 460.dp) {
         DialogTitleRow(title, onClose = close)
         androidx.compose.material3.OutlinedTextField(
-            value, { value = it }, singleLine = true, modifier = Modifier.fillMaxWidth().focusRequester(focus),
+            value, { value = it }, singleLine = true, modifier = Modifier.fillMaxWidth().focusRequester(focus).focusGlide(),
             keyboardActions = androidx.compose.foundation.text.KeyboardActions(onDone = { onSave(value.trim()); close() }),
             keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(imeAction = androidx.compose.ui.text.input.ImeAction.Done),
         )
@@ -502,7 +576,7 @@ private fun ArtChooserDialog(
         sgdb = found?.sgdb ?: SteamGridDb.Status.SERVER
     }
     val first = remember { FocusRequester() }
-    LaunchedEffect(Unit) { focusWithinFrames({ false }) { first } }
+    LaunchedEffect(options != null) { focusWithinFrames({ false }) { first } }
     val apply: (AddedGameArt.Option) -> Unit = { option ->
         scope.launch {
             val saved = withContext(Dispatchers.IO) { target.set(app, slot, option) }
@@ -624,14 +698,23 @@ private fun SgdbSearchDialog(
         }
     }
     LaunchedEffect(Unit) { search() }
-    AppDialog(shown, back, "sgdbSearch", wide = false, maxWidth = 460.dp) {
+    val firstItem = remember { FocusRequester() }
+    val focusManager = LocalFocusManager.current
+    val keyboardController = LocalSoftwareKeyboardController.current
+    val leaveField = { focusManager.clearFocus(); keyboardController?.hide() }
+    val keyboard = LocalInputModeManager.current.inputMode == InputMode.Keyboard
+    LaunchedEffect(picked?.id, matches?.size, images.size, busy) {
+        val ready = if (picked != null) images.isNotEmpty() else !matches.isNullOrEmpty()
+        if (keyboard && !busy && ready) focusSoon { firstItem }
+    }
+    AppDialog(shown, back, "sgdbSearch", wide = false, maxWidth = 460.dp, modifier = Modifier.pointerInput(Unit) { detectTapGestures { leaveField() } }) {
         DialogTitleRow(stringResource(R.string.art_sgdb_title, slotName), onClose = { onCloseAll() }, leading = {
             SmallIconButton(Icons.AutoMirrored.Filled.ArrowBack, stringResource(R.string.common_back), colors.onBackground, onClick = back)
         })
         androidx.compose.material3.OutlinedTextField(
-            query, { query = it }, singleLine = true, modifier = Modifier.fillMaxWidth(),
+            query, { query = it }, singleLine = true, modifier = Modifier.fillMaxWidth().focusGlide(),
             label = { Text(stringResource(R.string.art_sgdb_search_label)) },
-            keyboardActions = androidx.compose.foundation.text.KeyboardActions(onSearch = { search() }),
+            keyboardActions = androidx.compose.foundation.text.KeyboardActions(onSearch = { leaveField(); search() }),
             keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(imeAction = androidx.compose.ui.text.input.ImeAction.Search),
         )
         val maxHeight = (LocalConfiguration.current.screenHeightDp * 0.6f).dp
@@ -643,24 +726,24 @@ private fun SgdbSearchDialog(
             val chosenGame = picked
             val list = matches.orEmpty()
             if (chosenGame == null) {
-                for (match in list) key(match.id) { PickerRow(null, match.name, null) { showImages(match) } }
+                list.forEachIndexed { i, match -> key(match.id) { PickerRow(null, match.name, null, focus = if (i == 0) firstItem else null) { leaveField(); showImages(match) } } }
                 if (matches != null && list.isEmpty() && !busy && status == SteamGridDb.Status.OK) {
                     Text(stringResource(R.string.art_sgdb_none), fontSize = 12.sp, color = colors.onSurfaceVariant, modifier = Modifier.padding(start = 2.dp, top = 4.dp))
                 }
             } else {
                 Text(chosenGame.name, fontSize = 12.sp, color = colors.onSurfaceVariant, modifier = Modifier.padding(start = 2.dp, top = 4.dp))
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    for (option in images) key(option.full) {
+                    images.forEachIndexed { i, option -> key(option.full) {
                         ArtOption(
-                            slot, option, selected = current?.chosen == true && option.full == chosenRef, focus = null,
+                            slot, option, selected = current?.chosen == true && option.full == chosenRef, focus = if (i == 0) firstItem else null,
                             description = "${artSourceLabel(AddedGameArt.SGDB)} $slotName",
                         ) { onPick(option) }
-                    }
+                    } }
                 }
                 if (images.isEmpty() && !busy && status == SteamGridDb.Status.OK) {
                     Text(stringResource(R.string.art_sgdb_none), fontSize = 12.sp, color = colors.onSurfaceVariant, modifier = Modifier.padding(start = 2.dp, top = 4.dp))
                 }
-                if (list.size > 1) PickerRow(null, stringResource(R.string.art_sgdb_other_games), null) { picked = null }
+                if (list.size > 1) PickerRow(null, stringResource(R.string.art_sgdb_other_games), null) { leaveField(); picked = null }
             }
             if (busy) androidx.compose.material3.LinearProgressIndicator(Modifier.fillMaxWidth().padding(vertical = 8.dp))
         }

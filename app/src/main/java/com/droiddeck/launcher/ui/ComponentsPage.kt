@@ -30,6 +30,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -37,7 +38,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.AlertDialog
+import com.droiddeck.launcher.ui.GlideAlertDialog as AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -73,11 +74,15 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalInputModeManager
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.droiddeck.launcher.R
+import com.droiddeck.launcher.session.ComponentUpdater
+import com.droiddeck.launcher.session.ComponentUpdates
 import com.droiddeck.launcher.session.ComponentsManager
 import com.droiddeck.launcher.session.ComponentsManager.CatalogItem
 import com.droiddeck.launcher.session.ComponentsManager.Snapshot
@@ -151,6 +156,7 @@ fun ComponentsPage(
     onImport: () -> Unit,
     onBack: () -> Unit,
     games: List<Library.SteamGame> = emptyList(),
+    initialGameKey: String? = null,
     generalFexPreset: String = "",
     onGeneralFexPreset: (String) -> Unit = {},
     requestInitialFocus: Boolean = true,
@@ -159,6 +165,11 @@ fun ComponentsPage(
     protons: ProtonsState = ProtonsState(),
     protonActions: ProtonsActions = ProtonsActions(),
     protonOptions: @Composable () -> Unit = {},
+    compModes: Map<String, String> = emptyMap(),
+    compAuto: Map<String, List<ComponentUpdater.Status>> = emptyMap(),
+    compAutoHeld: Set<String> = emptySet(),
+    compAutoChecking: Boolean = false,
+    onCompMode: (String, String) -> Unit = { _, _ -> },
 ) {
     val colors = MaterialTheme.colorScheme
     val pal = LocalPalette.current
@@ -169,7 +180,7 @@ fun ComponentsPage(
     val layer = if (comp in LAYERS) comp else GPU_TAB
     BackHandler(onBack = onBack)
     var scopeMenu by remember { mutableStateOf(false) }
-    var selectedGameKey by remember { mutableStateOf<String?>(null) }
+    var selectedGameKey by remember(initialGameKey) { mutableStateOf(initialGameKey) }
     var fexMenu by remember { mutableStateOf(false) }
     var gameProtonMenu by remember { mutableStateOf(false) }
     var gameProtonId by remember { mutableStateOf<String?>(null) }
@@ -380,6 +391,7 @@ fun ComponentsPage(
     var stackAt by remember { mutableStateOf(Offset.Zero) }
     var pageAt by remember { mutableStateOf(Offset.Zero) }
     val landed = remember { mutableStateMapOf<String, Int>() }
+    val nightlyPicked = remember { mutableStateMapOf<String, Boolean>() }
     val rings = remember { mutableStateMapOf<String, Int>() }
     fun land(l: String) { landed[l] = (landed[l] ?: 0) + 1; rings[l] = (rings[l] ?: 0) + 1 }
     val arrivedSeen = remember { intArrayOf(Hops.arrived) }
@@ -478,17 +490,27 @@ fun ComponentsPage(
             )
             else -> {
                 val st = compState(l)
+                val managedDxvk = ComponentsManager.runtimeManaged(l, gpu.systemPowerVr)
                 val label = ComponentsManager.LABEL[l] ?: l
                 if (st == null) InUseBar(false, stringResource(R.string.comp_no_proton), "")
                 else {
                     val reappliedAt = view?.reappliedAt?.takeIf { it > 0 }?.let { DateFormat.getTimeInstance(DateFormat.SHORT).format(Date(it * 1000)) }
-                    InUseBar(
-                        queued = st.queued != null,
-                        sentence = (if (st.queued != null) stringResource(R.string.comp_next_queued, st.queued) else stringResource(R.string.comp_in_use, label, st.inUse))
-                            .let { if (reappliedAt != null) stringResource(R.string.comp_reapplied, it, reappliedAt) else it },
-                        note = if (view?.inUseByGame == true) stringResource(R.string.comp_waits) else stringResource(R.string.comp_applies_next_game),
-                        onCancel = if (st.queued != null) onCancelQueued else null,
-                    )
+                    Column {
+                        InUseBar(
+                            queued = st.queued != null,
+                            sentence = (if (managedDxvk) stringResource(R.string.comp_in_use, label, stringResource(R.string.gpu_system_powervr)) +
+                                (st.queued?.let { "\n" + stringResource(R.string.cmgr_powervr_dxvk_queued, it) } ?: "")
+                                else if (st.queued != null) stringResource(R.string.comp_next_queued, st.queued) else stringResource(R.string.comp_in_use, label, st.inUse))
+                                .let { if (reappliedAt != null && !managedDxvk) stringResource(R.string.comp_reapplied, it, reappliedAt) else it },
+                            note = if (managedDxvk) "" else if (view?.inUseByGame == true) stringResource(R.string.comp_waits) else stringResource(R.string.comp_applies_next_game),
+                            onCancel = if (st.queued != null) onCancelQueued else null,
+                            maxLines = if (managedDxvk && st.queued != null) 3 else 2,
+                        )
+                        if (managedDxvk) Text(
+                            stringResource(R.string.cmgr_powervr_dxvk_managed),
+                            fontSize = 13.sp, color = colors.onSurfaceVariant, modifier = Modifier.padding(top = 8.dp),
+                        )
+                    }
                 }
             }
         }
@@ -503,9 +525,12 @@ fun ComponentsPage(
     val availableTitle: @Composable (String) -> String = { l ->
         when (l) {
             PROTON_TAB -> stringResource(R.string.comp_available_count, protons.rows.count { it.installed == null || it.update != null })
-            else -> stringResource(R.string.comp_nightlies_count, availableFor(l, catalog, snapshot).size)
+            else -> stringResource(R.string.comp_nightlies_count, availableRows(l, catalog, snapshot).size)
         }
     }
+    val followed = view?.proton?.let(ComponentUpdates::follows) == true
+    val moded: (String) -> Boolean = { followed && it in compModes && it !in compAutoHeld && !ComponentsManager.runtimeManaged(it, gpu.systemPowerVr) }
+    val automatic: (String) -> Boolean = { moded(it) && compModes[it] == ComponentUpdates.AUTO }
     val installedRows: @Composable ColumnScope.(String, Boolean) -> Unit = { l, right ->
         when (l) {
             PROTON_TAB -> {
@@ -520,7 +545,7 @@ fun ComponentsPage(
                         (if (swaps > 0) stringResource(R.string.comp_swapped, v.proton.version, swaps) else stringResource(R.string.comp_all_original, v.proton.version))
                             .let { if (v.inUseByGame) stringResource(R.string.comp_game_running_suffix, it) else it },
                         v.proton.id == view?.proton?.id, removable = removable,
-                        modifier = (if (i == 0) Modifier.focusRequester(firstRow) else Modifier).trackRow(key, rowsAt),
+                        modifier = (if (i == 0 && !moded(l)) Modifier.focusRequester(firstRow) else Modifier).trackRow(key, rowsAt),
                         onSelect = { if (v.proton.id != view?.proton?.id) { onProton(v.proton.id); flyHome(key, PROTON_TAB) } },
                         onDelete = {
                             if (extra != null) ask(key, right, ctx.getString(R.string.proton_remove_title, v.proton.name), ctx.getString(R.string.proton_remove_body), ctx.getString(R.string.store_remove), true, v.proton.name) {
@@ -532,16 +557,17 @@ fun ComponentsPage(
             }
             else -> {
                 val label = ComponentsManager.LABEL[l] ?: l
-                val rows = installedFor(l, view, snapshot)
+                val managedDxvk = ComponentsManager.runtimeManaged(l, gpu.systemPowerVr)
+                val rows = installedFor(l, view, snapshot, managedDxvk)
                 if (rows.isEmpty()) EmptyLine(stringResource(R.string.comp_nothing_stored, label))
                 val p = view?.proton
                 rows.forEachIndexed { i, item ->
                     val key = "row:$l:${item.file ?: item.protonVersion}"
                     ChoiceLine(
-                        item.name, item.detail, item.selected, item.removable, tag = item.tag,
-                        modifier = (if (i == 0) Modifier.focusRequester(firstRow) else Modifier).trackRow(key, rowsAt),
+                        item.name, item.detail, item.selected, item.removable, tag = item.tag, enabled = !managedDxvk,
+                        modifier = (if (i == 0 && !managedDxvk && !moded(l)) Modifier.focusRequester(firstRow) else Modifier).trackRow(key, rowsAt),
                         onSelect = {
-                            if (item.selected || p == null) return@ChoiceLine
+                            if (managedDxvk || item.selected || p == null) return@ChoiceLine
                             val waits = if (view.inUseByGame) ctx.getString(R.string.comp_waits_long) else ctx.getString(R.string.comp_applies_long)
                             if (item.file != null) ask(key, right, ctx.getString(R.string.comp_swap_title, label), ctx.getString(R.string.comp_swap_body, item.name, p.name, waits), ctx.getString(R.string.comp_swap), false, item.name) {
                                 onSwap(item.file); flyHome(key, l)
@@ -580,12 +606,16 @@ fun ComponentsPage(
                 ) { protonActions.onInstall(row.id) }
             }
             else -> {
-                val available = availableFor(l, catalog, snapshot)
+                val available = availableRows(l, catalog, snapshot)
                 if (available.isEmpty()) EmptyLine(if (catalogAt == 0L) stringResource(R.string.comp_refresh_to_list) else stringResource(R.string.comp_nothing_new))
-                for (d in available) GetLine(
-                    d.file.removeSuffix(".wcp"), "${d.release} · " + stringResource(R.string.common_size_mb, d.size / 1048576.0),
-                    progress = downloads[d.file], enabled = busy == null,
-                ) { onDownload(d) }
+                for ((stable, nightly) in available) {
+                    val d = if (nightly != null && nightlyPicked[stable.file] == true) nightly else stable
+                    GetLine(
+                        d.file.removeSuffix(".wcp"), "${d.release} · " + stringResource(R.string.common_size_mb, d.size / 1048576.0),
+                        progress = downloads[d.file], enabled = busy == null,
+                        channel = if (nightly != null) ({ ChannelToggle(d === nightly, enabled = busy == null) { nightlyPicked[stable.file] = d !== nightly } }) else null,
+                    ) { onDownload(d) }
+                }
             }
         }
     }
@@ -608,14 +638,19 @@ fun ComponentsPage(
                     }
                 }
                 else -> {
-                    SmallButton(stringResource(R.string.comp_import_wcp), onClick = onImport)
+                    val managedDxvk = ComponentsManager.runtimeManaged(l, gpu.systemPowerVr)
+                    SmallButton(
+                        stringResource(R.string.comp_import_wcp), onClick = onImport,
+                        modifier = if (managedDxvk) Modifier.focusRequester(firstRow) else Modifier,
+                    )
                     val st = compState(l)
                     val p = view?.proton
                     val build = p?.let { ComponentsManager.safeName(it.version) }
                     if (st != null && p != null && st.activeFile != null && view.originals.any { it.comp == l && it.protonVersion == build }) {
                         val label = ComponentsManager.LABEL[l] ?: l
                         Box(Modifier.trackRow("restore:$l", rowsAt)) {
-                            FocusText(stringResource(R.string.comp_restore_original), pal.signal) {
+                            if (managedDxvk) SmallButton(stringResource(R.string.comp_restore_original), enabled = false) {}
+                            else FocusText(stringResource(R.string.comp_restore_original), pal.signal) {
                                 ask("restore:$l", false, ctx.getString(R.string.comp_restore_title, label), ctx.getString(R.string.comp_restore_original_body, p.name, label), ctx.getString(R.string.common_restore), false, ctx.getString(R.string.comp_restore_original)) {
                                     onRestore(build!!); flyHome("restore:$l", l)
                                 }
@@ -655,15 +690,31 @@ fun ComponentsPage(
                         label = "layerRows",
                     ) { k -> body(k) }
                 }
-                if (single) {
-                    slide { k -> RowGroup(installedTitle(k)) { installedRows(k, false) } }
-                    Spacer(Modifier.height(12.dp))
-                    slide { k -> RowGroup(availableTitle(k)) { availableRows(k) } }
-                } else Row(horizontalArrangement = Arrangement.spacedBy(14.dp), verticalAlignment = Alignment.Top) {
-                    Column(Modifier.weight(1f)) { slide { k -> RowGroup(installedTitle(k)) { installedRows(k, false) } } }
-                    Column(Modifier.weight(1f)) { slide { k -> RowGroup(availableTitle(k)) { availableRows(k) } } }
+                if (moded(l)) slide { k ->
+                    if (moded(k)) Column(verticalArrangement = Arrangement.spacedBy(14.dp), modifier = Modifier.padding(bottom = 14.dp)) {
+                        PanelHeading(stringResource(R.string.comp_mode_title))
+                        ModeChoices(
+                            listOf(
+                                Triple(ComponentUpdates.AUTO, R.string.common_auto, R.string.comp_mode_auto_detail),
+                                Triple(ComponentUpdates.MANUAL, R.string.drivers_manual, R.string.comp_mode_manual_detail),
+                            ),
+                            if (automatic(k)) ComponentUpdates.AUTO else ComponentUpdates.MANUAL, single, firstRow,
+                            onPick = { onCompMode(k, it) },
+                        )
+                        if (automatic(k)) AutoComponentBody(ComponentsManager.LABEL[k] ?: k, compAuto[k].orEmpty(), compAutoChecking)
+                    }
                 }
-                Box(Modifier.padding(top = 14.dp)) { slide { k -> actions(k) } }
+                if (!automatic(l)) {
+                    if (single) {
+                        slide { k -> RowGroup(installedTitle(k)) { installedRows(k, false) } }
+                        Spacer(Modifier.height(12.dp))
+                        slide { k -> RowGroup(availableTitle(k)) { availableRows(k) } }
+                    } else Row(horizontalArrangement = Arrangement.spacedBy(14.dp), verticalAlignment = Alignment.Top) {
+                        Column(Modifier.weight(1f)) { slide { k -> RowGroup(installedTitle(k)) { installedRows(k, false) } } }
+                        Column(Modifier.weight(1f)) { slide { k -> RowGroup(availableTitle(k)) { availableRows(k) } } }
+                    }
+                    Box(Modifier.padding(top = 14.dp)) { slide { k -> actions(k) } }
+                }
                 if (l == "fex") {
                     SettingsGroup(stringResource(R.string.fex_preset_title)) {
                         SettingsRow(stringResource(R.string.fex_preset_title), null) {
@@ -690,7 +741,7 @@ fun ComponentsPage(
 
     Box(Modifier.fillMaxSize().onGloballyPositioned { pageAt = it.positionInRoot() }.onFocusChanged { pageFocused = it.hasFocus }) {
         Column(
-            Modifier.fillMaxSize().padding(horizontal = if (narrow) 16.dp else 22.dp, vertical = if (narrow) 12.dp else 18.dp)
+            Modifier.fillMaxSize().padding(horizontal = if (narrow) 16.dp else 22.dp).padding(top = if (narrow) 12.dp else 18.dp)
                 .then(if (selectedGame == null) Modifier.bumpers(
                     onPrevious = { pick(layerStep(layer, -1)) },
                     onNext = { pick(layerStep(layer, 1)) },
@@ -761,6 +812,7 @@ fun ComponentsPage(
                     protonChoice = gameProtonChoice,
                     packages = snapshot?.packages.orEmpty(),
                     componentChoices = gameComponents,
+                    systemPowerVr = gpu.systemPowerVr,
                     componentMenu = gameComponentMenu,
                     protonMenu = gameProtonMenu,
                     fexMenu = fexMenu,
@@ -891,6 +943,7 @@ fun ComponentsPage(
             winOpen,
             compat = selectedGame.protonPrefix,
             steamAppId = selectedGame.appId.takeIf { selectedGame.library != Library.ADDED },
+            game = selectedGame,
         ) {
             winComponentsOpen = null
             winComponentsRevision++
@@ -899,11 +952,11 @@ fun ComponentsPage(
 }
 
 @Composable
-private fun installedFor(l: String, view: ComponentsManager.ProtonView?, snapshot: Snapshot?): List<InstalledItem> {
+private fun installedFor(l: String, view: ComponentsManager.ProtonView?, snapshot: Snapshot?, runtimeManaged: Boolean = false): List<InstalledItem> {
     view ?: return emptyList()
     val st = view.components[l] ?: return emptyList()
     val build = ComponentsManager.safeName(view.proton.version)
-    val activeIsOriginal = st.activeFile == null
+    val activeIsOriginal = !runtimeManaged && st.activeFile == null
     return view.originals.filter { it.comp == l }.map { o ->
         val isCurrent = o.protonVersion == build
         InstalledItem(
@@ -912,13 +965,20 @@ private fun installedFor(l: String, view: ComponentsManager.ProtonView?, snapsho
             "ORIGINAL", activeIsOriginal && isCurrent, !isCurrent, null, o.protonVersion,
         )
     } + (snapshot?.packages ?: emptyList()).filter { it.comp == l }.map { s ->
-        InstalledItem(s.version, stringResource(R.string.common_size_mb, s.size / 1048576.0), "STORED", s.file == st.activeFile, true, s.file, null)
+        InstalledItem(s.version, stringResource(R.string.common_size_mb, s.size / 1048576.0), "STORED", !runtimeManaged && s.file == st.activeFile, true, s.file, null)
     }
 }
 
 private fun availableFor(l: String, catalog: List<CatalogItem>, snapshot: Snapshot?): List<CatalogItem> {
     val stored = (snapshot?.packages ?: emptyList()).map { it.file }.toSet()
     return catalog.filter { it.comp == l && ComponentsManager.safeName(it.file) !in stored }
+}
+
+private fun availableRows(l: String, catalog: List<CatalogItem>, snapshot: Snapshot?): List<Pair<CatalogItem, CatalogItem?>> {
+    val available = availableFor(l, catalog, snapshot)
+    val pairs = ComponentsManager.nightlyPairs(available)
+    val paired = pairs.values.toSet()
+    return available.filter { it !in paired }.map { it to pairs[it] }
 }
 
 @Composable
@@ -944,18 +1004,19 @@ private fun Stack(
         LayerCard(
             title = LayerTitle(l),
             value = when (l) {
-                GPU_TAB -> gpuCardValue(gpu, auto)
+                GPU_TAB -> if (gpu.systemPowerVr) stringResource(R.string.gpu_system_powervr) else gpuCardValue(gpu, auto)
                 PROTON_TAB -> (view?.proton?.name ?: "") + " ▾"
-                else -> st?.let { if (it.activeFile == null) original else it.inUse } ?: ""
+                else -> if (ComponentsManager.runtimeManaged(l, gpu.systemPowerVr)) stringResource(R.string.gpu_system_powervr)
+                    else st?.let { if (it.activeFile == null) original else it.inUse } ?: ""
             },
-            swapped = l in ComponentsManager.COMPONENTS && st?.activeFile != null,
+            swapped = l in ComponentsManager.COMPONENTS && st?.activeFile != null && !ComponentsManager.runtimeManaged(l, gpu.systemPowerVr),
             selected = l == layer,
             landed = landed[l] ?: 0, ring = rings[l] ?: 0,
             modifier = Modifier.focusRequester(focus.getValue(l)).onGloballyPositioned { onPlaced(l, it.boundsInRoot()) },
             onFocus = { onFocus(l) }, onClick = { onOpen(l) },
         )
     }
-    Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+    Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(bottom = 16.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
         StackHeading(stringResource(R.string.comp_this_device))
         card(GPU_TAB)
         Spacer(Modifier.height(6.dp))
@@ -1015,7 +1076,7 @@ private fun LayerCard(
 }
 
 @Composable
-private fun InUseBar(queued: Boolean, sentence: String, note: String, onCancel: (() -> Unit)? = null) {
+private fun InUseBar(queued: Boolean, sentence: String, note: String, onCancel: (() -> Unit)? = null, maxLines: Int = 2) {
     val colors = MaterialTheme.colorScheme
     val pal = LocalPalette.current
     Row(
@@ -1024,7 +1085,7 @@ private fun InUseBar(queued: Boolean, sentence: String, note: String, onCancel: 
             .border(1.dp, pal.line, RoundedCornerShape(12.dp)).padding(horizontal = 14.dp, vertical = 8.dp),
     ) {
         Box(Modifier.size(8.dp).background(if (queued) QUEUED else pal.good, CircleShape))
-        Text(sentence, fontSize = 14.sp, color = colors.onBackground, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+        Text(sentence, fontSize = 14.sp, color = colors.onBackground, maxLines = maxLines, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
         if (onCancel != null) FocusText(stringResource(R.string.common_cancel), pal.signal, onClick = onCancel)
         else if (note.isNotEmpty() && !LocalNarrowPane.current) Text(note, fontSize = 13.sp, color = colors.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
@@ -1044,6 +1105,25 @@ private fun RowGroup(title: String, content: @Composable ColumnScope.() -> Unit)
 }
 
 @Composable
+private fun AutoComponentBody(label: String, lines: List<ComponentUpdater.Status>, checking: Boolean) {
+    val colors = MaterialTheme.colorScheme
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        PanelTitle(stringResource(R.string.comp_auto_title, label), stringResource(R.string.comp_auto_hint))
+        if (lines.isEmpty()) EmptyLine(stringResource(R.string.comp_auto_none))
+        for (line in lines) {
+            val previous = line.previous.removeSuffix(".wcp").ifEmpty { stringResource(R.string.comp_tag_original) }
+            val fallback = if (line.current.isEmpty() || line.current == line.previous) null else stringResource(R.string.comp_auto_fallback, previous)
+            PanelRow(
+                line.current.removeSuffix(".wcp").ifEmpty { stringResource(if (checking) R.string.comp_auto_checking else R.string.comp_tag_original) },
+                listOfNotNull(line.protons.joinToString(", ").ifEmpty { null }, fallback).joinToString(" · "),
+                selected = true, onClick = null,
+            )
+        }
+        lines.map { it.note }.filter { it.isNotEmpty() }.distinct().forEach { Text(it, fontSize = 13.sp, color = colors.onSurfaceVariant) }
+    }
+}
+
+@Composable
 private fun EmptyLine(text: String) {
     Text(text, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp))
 }
@@ -1059,6 +1139,7 @@ private fun GameComponentOverrides(
     protonChoice: ProtonDefault.GameChoice?,
     packages: List<ComponentsManager.Package>,
     componentChoices: Map<String, String>,
+    systemPowerVr: Boolean,
     componentMenu: String?,
     protonMenu: Boolean,
     fexMenu: Boolean,
@@ -1102,6 +1183,7 @@ private fun GameComponentOverrides(
                     open = fexMenu,
                     enabled = config != null && !busy,
                     allowInheritance = true,
+                    generalPreset = generalFexPreset,
                     onToggle = { onFexMenu(!fexMenu) },
                     onDismiss = { onFexMenu(false) },
                     onPick = onFexPreset,
@@ -1150,6 +1232,7 @@ private fun GameComponentOverrides(
             }
             GamePackageRow(
                 comp = "dxvk",
+                runtimeManaged = ComponentsManager.runtimeManaged("dxvk", systemPowerVr),
                 packages = packages,
                 selectedFile = componentChoices["dxvk"],
                 open = componentMenu == "dxvk",
@@ -1214,13 +1297,16 @@ private fun GamePackageRow(
     onMenu: (String?) -> Unit,
     onPick: (String, String?) -> Unit,
     onRuntimeOptions: (() -> Unit)? = null,
+    runtimeManaged: Boolean = false,
 ) {
     val choices = packages.filter { it.comp == comp }
     val selected = choices.firstOrNull { it.file == selectedFile }
     val title = ComponentsManager.LABEL[comp] ?: comp
+    val enabled = !busy && (!runtimeManaged || selectedFile != null)
     SettingsRow(
         title,
-        if (selected == null) {
+        if (runtimeManaged) stringResource(R.string.cmgr_powervr_dxvk_managed)
+        else if (selected == null) {
             if (proton == null) stringResource(R.string.comp_game_component_general)
             else stringResource(R.string.comp_game_component_runtime, proton.name)
         } else stringResource(R.string.comp_game_component_override, selected.version),
@@ -1228,18 +1314,18 @@ private fun GamePackageRow(
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
             Box {
                 ValueChip(
-                    selected?.version ?: stringResource(R.string.comp_game_use_general),
-                    open,
-                    enabled = !busy,
+                    if (runtimeManaged) stringResource(R.string.gpu_system_powervr) else selected?.version ?: stringResource(R.string.comp_game_use_general),
+                    open && enabled,
+                    enabled = enabled,
                     modifier = Modifier.widthIn(max = 240.dp),
                 ) { onMenu(if (open) null else comp) }
-                AnchoredMenu(open, onDismiss = { onMenu(null) }, title = title) { first ->
+                AnchoredMenu(open && enabled, onDismiss = { onMenu(null) }, title = title) { first ->
                     MenuItem(
                         stringResource(R.string.comp_game_use_general),
                         checked = selected == null,
                         focusRequester = first,
                     ) { onPick(comp, null); onMenu(null) }
-                    choices.forEach { option ->
+                    if (!runtimeManaged) choices.forEach { option ->
                         MenuItem(option.version, checked = option.file == selectedFile, detail = option.description) {
                             onPick(comp, option.file)
                             onMenu(null)
@@ -1264,15 +1350,16 @@ internal fun FexPresetChip(
     onDismiss: () -> Unit,
     onPick: (String?) -> Unit,
     allowInheritance: Boolean = false,
+    generalPreset: String = preset,
     modifier: Modifier = Modifier,
 ) {
-    val chosen = FexPreset.all.firstOrNull { it.id == preset }
+    val chosen = FexPreset.all.firstOrNull { it.id == if (inherited) generalPreset else preset }
     val label = when {
         preset == GameEnvironment.CUSTOM_FEX_PRESET -> stringResource(R.string.comp_game_fex_custom)
         chosen == null -> stringResource(FexPreset.byId("").label)
-        inherited -> stringResource(R.string.comp_game_use_general)
         else -> stringResource(chosen.label)
     }
+    val general = FexPreset.all.firstOrNull { it.id == generalPreset }
     Box {
         ValueChip(label, open, enabled = enabled, modifier = modifier.widthIn(max = 260.dp), onClick = onToggle)
         AnchoredMenu(open && enabled, onDismiss = onDismiss, title = stringResource(R.string.fex_preset_title)) { first ->
@@ -1280,6 +1367,7 @@ internal fun FexPresetChip(
                 MenuItem(
                     stringResource(R.string.comp_game_use_general),
                     checked = inherited,
+                    detail = general?.let { stringResource(it.label) },
                     focusRequester = first,
                 ) { onPick(null); onDismiss() }
             }
@@ -1306,7 +1394,7 @@ internal fun ToolIcon(icon: ImageVector, description: String, busy: Boolean = fa
         modifier = Modifier.size(44.dp).clip(RoundedCornerShape(12.dp))
             .background(if (hot) pal.signal.copy(alpha = 0.16f) else Color.Transparent)
             .glideBorder(hot, RoundedCornerShape(12.dp), pal.signal, pal.line2)
-            .hoverable(src).clickable(interactionSource = src, indication = null, enabled = enabled, onClick = onClick)
+            .hoverable(src).clickable(role = androidx.compose.ui.semantics.Role.Button, interactionSource = src, indication = null, enabled = enabled, onClick = onClick)
             .controllerConfirm(enabled = enabled, onClick = onClick),
     ) {
         if (busy) CircularProgressIndicator(strokeWidth = 2.dp, modifier = Modifier.size(18.dp))
@@ -1325,7 +1413,7 @@ private fun SmallButton(text: String, enabled: Boolean = true, accent: Boolean =
         modifier = modifier.heightIn(min = 44.dp).clip(RoundedCornerShape(10.dp))
             .background(if (hot) pal.signal else colors.surfaceVariant)
             .glideBorder(hot, RoundedCornerShape(10.dp), colors.onBackground, pal.line2, restWidth = 2.dp)
-            .hoverable(src).clickable(interactionSource = src, indication = null, enabled = enabled, onClick = onClick)
+            .hoverable(src).clickable(role = androidx.compose.ui.semantics.Role.Button, interactionSource = src, indication = null, enabled = enabled, onClick = onClick)
             .controllerConfirm(enabled = enabled, onClick = onClick)
             .padding(horizontal = 14.dp, vertical = 8.dp),
     ) {
@@ -1361,13 +1449,13 @@ private fun Tag(text: String) {
 @Composable
 private fun ChoiceLine(
     name: String, detail: String, selected: Boolean, removable: Boolean,
-    modifier: Modifier = Modifier, tag: String? = null, badge: String? = null, progress: Int? = null,
+    modifier: Modifier = Modifier, tag: String? = null, badge: String? = null, progress: Int? = null, enabled: Boolean = true,
     onSelect: () -> Unit, onDelete: () -> Unit = {},
 ) {
     val colors = MaterialTheme.colorScheme
     val pal = LocalPalette.current
     val src = remember { MutableInteractionSource() }
-    val hot = rememberHot(src)
+    val hot = rememberHot(src) && enabled
     Row(
         verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier.fillMaxWidth()
@@ -1377,8 +1465,8 @@ private fun ChoiceLine(
             verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp),
             modifier = Modifier.weight(1f).heightIn(min = 56.dp).then(modifier)
                 .glideBorder(hot, ROW_SHAPE, pal.signal)
-                .hoverable(src).clickable(interactionSource = src, indication = null, role = Role.RadioButton, onClick = onSelect)
-                .controllerConfirm(onClick = onSelect)
+                .hoverable(src).clickable(interactionSource = src, indication = null, enabled = enabled, role = Role.RadioButton, onClick = onSelect)
+                .controllerConfirm(enabled = enabled, onClick = onSelect)
                 .padding(start = 14.dp, end = 8.dp, top = 8.dp, bottom = 8.dp),
         ) {
             Box(contentAlignment = Alignment.Center, modifier = Modifier.size(20.dp).border(2.dp, if (selected) pal.signal else colors.onSurfaceVariant, CircleShape)) {
@@ -1388,7 +1476,7 @@ private fun ChoiceLine(
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(
                         name, fontSize = 15.sp, fontWeight = FontWeight.SemiBold, maxLines = 2, overflow = TextOverflow.Ellipsis,
-                        color = if (selected) pal.signal else colors.onBackground, modifier = Modifier.weight(1f, fill = false),
+                        color = if (!enabled) colors.onSurfaceVariant else if (selected) pal.signal else colors.onBackground, modifier = Modifier.weight(1f, fill = false),
                     )
                     if (tag != null) Tag(tag)
                 }
@@ -1405,7 +1493,7 @@ private fun ChoiceLine(
                 modifier = Modifier.padding(end = 6.dp).size(44.dp).clip(ROW_SHAPE)
                     .background(if (delHot) colors.error.copy(alpha = 0.14f) else Color.Transparent)
                     .glideBorder(delHot, ROW_SHAPE, colors.error)
-                    .hoverable(delSrc).clickable(interactionSource = delSrc, indication = null, onClick = onDelete)
+                    .hoverable(delSrc).clickable(role = androidx.compose.ui.semantics.Role.Button, interactionSource = delSrc, indication = null, onClick = onDelete)
                     .controllerConfirm(onClick = onDelete),
             ) { Icon(Icons.Outlined.Delete, contentDescription = stringResource(R.string.common_delete_named, name), tint = if (delHot) colors.error else colors.onSurfaceVariant, modifier = Modifier.size(19.dp)) }
         }
@@ -1416,7 +1504,8 @@ private fun ChoiceLine(
 @Composable
 private fun GetLine(
     name: String, detail: String, progress: Int?, enabled: Boolean,
-    badge: String? = null, stage: String? = null, onCancel: (() -> Unit)? = null, action: String? = null, onGet: () -> Unit,
+    badge: String? = null, stage: String? = null, onCancel: (() -> Unit)? = null, action: String? = null,
+    channel: (@Composable () -> Unit)? = null, onGet: () -> Unit,
 ) {
     val colors = MaterialTheme.colorScheme
     val pal = LocalPalette.current
@@ -1431,10 +1520,40 @@ private fun GetLine(
         if (progress != null) ProgressBit(progress)
         else {
             if (onCancel != null) FocusText(stringResource(R.string.proton_cancel_queued), pal.signal, onClick = onCancel)
+            channel?.invoke()
             SmallButton(action ?: stringResource(R.string.comp_get), enabled = enabled, accent = true, onClick = onGet)
         }
     }
     Box(Modifier.fillMaxWidth().height(1.dp).background(pal.line))
+}
+
+@Composable
+private fun ChannelToggle(nightly: Boolean, enabled: Boolean, onFlip: () -> Unit) {
+    val colors = MaterialTheme.colorScheme
+    val pal = LocalPalette.current
+    val src = remember { MutableInteractionSource() }
+    val hot = rememberHot(src) && enabled
+    val state = stringResource(if (nightly) R.string.comp_channel_nightly else R.string.comp_channel_stable)
+    Row(
+        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(2.dp),
+        modifier = Modifier.heightIn(min = 44.dp).clip(RoundedCornerShape(10.dp))
+            .background(colors.surfaceVariant)
+            .glideBorder(hot, RoundedCornerShape(10.dp), colors.onBackground, pal.line2, restWidth = 2.dp)
+            .hoverable(src).toggleable(value = nightly, interactionSource = src, indication = null, enabled = enabled, role = Role.Switch, onValueChange = { onFlip() })
+            .controllerConfirm(enabled = enabled, onClick = onFlip)
+            .semantics { stateDescription = state }
+            .padding(4.dp),
+    ) {
+        for ((label, on) in listOf(R.string.comp_channel_stable to !nightly, R.string.comp_channel_nightly to nightly)) {
+            Text(
+                stringResource(label), fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1,
+                color = if (!enabled) colors.onSurfaceVariant else if (on) (if (hot) pal.onSignal else pal.signal) else colors.onSurfaceVariant,
+                modifier = Modifier.clip(RoundedCornerShape(7.dp))
+                    .background(if (on && enabled) (if (hot) pal.signal else pal.signal.copy(alpha = 0.16f)) else Color.Transparent)
+                    .padding(horizontal = 10.dp, vertical = 6.dp),
+            )
+        }
+    }
 }
 
 @Composable

@@ -11,7 +11,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.withStyle
-import androidx.compose.ui.window.Dialog
+import com.droiddeck.launcher.ui.GlideDialog as Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.background
@@ -205,22 +205,6 @@ internal fun AchievementRow(a: Achievement, compact: Boolean, modifier: Modifier
 }
 
 @Composable
-internal fun StoreAchievementsCard(game: StoreAchievements.Game, title: String, modifier: Modifier = Modifier) {
-    val label = StoreAchievements.forSource(game.source)?.label ?: return
-    val state = rememberAchievements(game) ?: return
-    var open by remember { mutableStateOf(false) }
-    StoreAchievementsCardContent(label, state, modifier) { open = true }
-    if (open) {
-        VeilRing()
-        Dialog(onDismissRequest = { open = false }, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
-            CompositionLocalProvider(LocalFrontFocus provides null) {
-                SessionAchievementsPanel(label, state, title, veil = Color.Transparent, floating = true, onClose = { open = false })
-            }
-        }
-    }
-}
-
-@Composable
 internal fun StoreAchievementsCardContent(label: String, state: AchievementsState, modifier: Modifier = Modifier, onOpen: () -> Unit) {
     val colors = MaterialTheme.colorScheme
     val pal = LocalPalette.current
@@ -270,6 +254,23 @@ internal fun StoreAchievementsCardContent(label: String, state: AchievementsStat
     }
 }
 
+@Composable
+internal fun AchievementsTab(label: String, state: AchievementsState, modifier: Modifier = Modifier) {
+    val colors = MaterialTheme.colorScheme
+    val list = state.list
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = modifier.fillMaxWidth().tabPanel()) {
+        if (list.isNullOrEmpty()) {
+            Text(achievementsNote(state, label).orEmpty(), fontSize = 13.sp, color = colors.onSurfaceVariant, modifier = Modifier.readable().padding(4.dp))
+            return@Column
+        }
+        Box(Modifier.fillMaxWidth().readable().padding(4.dp)) { AchievementsProgress(state) }
+        for ((group, items) in groups(list)) {
+            AchievementGroupLabel(stringResource(group, items.size))
+            for (a in items) androidx.compose.runtime.key(a.id) { AchievementRow(a, compact = true) }
+        }
+    }
+}
+
 private fun LazyListScope.achievementItems(list: List<Achievement>, compact: Boolean, first: FocusRequester, labels: Boolean = true) {
     var index = 0
     for ((label, group) in groups(list)) {
@@ -303,7 +304,7 @@ internal fun SessionAchievementsPanel(label: String, state: AchievementsState, t
     val slide = remember { MutableTransitionState(false).apply { targetState = true } }
     BoxWithConstraints(
         Modifier.fillMaxSize().background(veil)
-            .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null, onClick = onClose),
+            .tapOutside(onClose),
         contentAlignment = Alignment.CenterEnd,
     ) {
         val short = maxHeight < 440.dp
@@ -312,7 +313,7 @@ internal fun SessionAchievementsPanel(label: String, state: AchievementsState, t
             (if (floating) Modifier.padding(12.dp).fillMaxHeight().width(minOf(420.dp, maxWidth * 0.92f)).clip(RoundedCornerShape(20.dp))
                 .background(pal.background).border(1.dp, pal.line2, RoundedCornerShape(20.dp))
             else Modifier.fillMaxHeight().width(minOf(420.dp, maxWidth * 0.92f)).background(pal.background.copy(alpha = 0.97f)))
-                .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) {}
+                .blockTouches()
                 .controllerBack(onClose)
                 .then(if (kinds.isEmpty()) Modifier else Modifier.bumpers({ pick = (pick + kinds.size - 1) % kinds.size }, { pick = (pick + 1) % kinds.size }))
                 .padding(if (short) 12.dp else 16.dp),
@@ -370,7 +371,7 @@ internal fun DrawerAchievementsRow(progress: Pair<Int, Int>?, modifier: Modifier
         modifier = modifier.fillMaxWidth().height(44.dp).clip(shape)
             .background(if (hot) pal.signal.copy(alpha = 0.14f) else colors.surface)
             .glideBorder(hot, shape, pal.signal, pal.line)
-            .clickable(interactionSource = interaction, indication = LocalIndication.current, onClick = onClick)
+            .clickable(role = androidx.compose.ui.semantics.Role.Button, interactionSource = interaction, indication = LocalIndication.current, onClick = onClick)
             .controllerConfirm(onClick = onClick)
             .padding(horizontal = 12.dp),
     ) {

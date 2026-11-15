@@ -44,6 +44,8 @@ class ProtonExtrasTest {
     private fun installTool(parent: File, name: String) = File(parent, name).apply {
         mkdirs()
         File(this, "toolmanifest.vdf").writeText("\"manifest\" { \"commandline\" \"/proton %verb%\" }")
+        File(this, "compatibilitytool.vdf").writeText("\"from_oslist\" \"windows\"")
+        File(this, "proton").apply { writeText(""); setExecutable(true) }
     }
 
     @Test
@@ -121,6 +123,17 @@ class ProtonExtrasTest {
     }
 
     @Test
+    fun interruptedBuildsAreNotReportedAsInstalled() {
+        val tools = temp.newFolder("compatibilitytools.d")
+        installTool(tools, "GE-Proton11-10")
+        File(tools, "GE-Proton11-11").apply {
+            mkdirs()
+            File(this, "toolmanifest.vdf").writeText("\"manifest\" { \"commandline\" \"/proton %verb%\" }")
+        }
+        assertEquals(listOf("GE-Proton11-10"), ProtonExtras.installedIn(tools, tool("ge")))
+    }
+
+    @Test
     fun anUpdateIsANewerReleaseThanTheNewestInstalledBuild() {
         assertEquals("DroidDeck-Proton-11-7.6", ProtonExtras.updateFor(listOf("DroidDeck-Proton 11-7.5"), "DroidDeck-Proton-11-7.6"))
         assertEquals("DroidDeck-Proton-11-7.10", ProtonExtras.updateFor(listOf("DroidDeck-Proton-11-7.9"), "DroidDeck-Proton-11-7.10"))
@@ -170,5 +183,63 @@ class ProtonExtrasTest {
         ProtonExtras.removeOlder(context, tool("droiddeck"))
         assertEquals(listOf("DroidDeck-Proton 11-7.10"), ProtonExtras.installedAll(context, tool("droiddeck")))
         assertEquals("DroidDeck-Proton 11-7.10", ProtonExtras.installed(context, tool("droiddeck")))
+    }
+
+    @Test
+    fun removingABuildDropsItsStoredOriginalsAndSelections() {
+        val context = RuntimeEnvironment.getApplication()
+        val tools = File(LinuxRuntime.rootDir(context), "root/.local/share/Steam/compatibilitytools.d")
+        File(LinuxRuntime.rootDir(context), "root/.local/share/droiddeck-components").mkdirs()
+        installTool(tools, "GE-Proton11-7")
+        val kept = installTool(tools, "GE-Proton11-8").apply {
+            File(this, "files/lib/wine").mkdirs()
+            File(this, "proton").writeText("")
+        }
+        val originals = File(context.filesDir, "components/originals")
+        for (id in listOf("GE-Proton11-7", "GE-Proton11-8")) File(originals, "$id/$id/dxvk.wcp").apply { parentFile?.mkdirs(); writeText("x") }
+        val pick = JSONObject().put("dxvk", JSONObject().put("file", "dxvk.wcp").put("protonVersion", "GE-Proton11-7"))
+        File(context.filesDir, "components/state.json").writeText(JSONObject()
+            .put("active", JSONObject().put("GE-Proton11-7", pick).put("GE-Proton11-8", pick))
+            .put("queued", JSONObject().put("GE-Proton11-7", pick)).toString())
+        ProtonExtras.remove(context, tool("ge"), "GE-Proton11-7")
+        assertFalse(File(originals, "GE-Proton11-7").exists())
+        assertTrue(File(originals, "GE-Proton11-8/GE-Proton11-8/dxvk.wcp").isFile)
+        val state = JSONObject(File(context.filesDir, "components/state.json").readText())
+        assertFalse(state.getJSONObject("active").has("GE-Proton11-7"))
+        assertFalse(state.getJSONObject("queued").has("GE-Proton11-7"))
+        assertTrue(state.getJSONObject("active").has("GE-Proton11-8"))
+        ComponentsManager.forgetProton(context, kept.name)
+        assertTrue(File(originals, "GE-Proton11-8/GE-Proton11-8/dxvk.wcp").isFile)
+    }
+
+    @Test
+    fun anUpdateKeepsTheUsersProtonSettingsFile() {
+        val context = RuntimeEnvironment.getApplication()
+        val tools = File(LinuxRuntime.rootDir(context), "root/.local/share/Steam/compatibilitytools.d")
+        tools.deleteRecursively()
+        File(installTool(tools, "DroidDeck-Proton 11-11.1"), "user_settings.py").writeText("old")
+        File(installTool(tools, "DroidDeck-Proton 11-11.4"), "user_settings.py").writeText("mine")
+        installTool(tools, "DroidDeck-Proton 11-11.5")
+        ProtonExtras.tidy(context)
+        assertEquals(listOf("DroidDeck-Proton 11-11.5"), ProtonExtras.installedAll(context, tool("droiddeck")))
+        assertEquals("mine", File(tools, "DroidDeck-Proton 11-11.5/user_settings.py").readText())
+    }
+
+    @Test
+    fun droidDeckProtonIsFetchedWhenMissingUnlessTheUserRemovedIt() {
+        val context = RuntimeEnvironment.getApplication()
+        val tools = File(LinuxRuntime.rootDir(context), "root/.local/share/Steam/compatibilitytools.d")
+        tools.deleteRecursively()
+        File(context.filesDir, "proton-latest.json").writeText(
+            """{"droiddeck":{"tag":"DroidDeck-Proton-11-11.4","at":1},"ge":{"tag":"GE-Proton11-7","at":1}}""")
+        ProtonExtras.setDeclined(context, false)
+        assertEquals("DroidDeck-Proton-11-11.4", ProtonExtras.missing(context, tool("droiddeck")))
+        assertNull(ProtonExtras.missing(context, tool("ge")))
+        ProtonExtras.setDeclined(context, true)
+        assertNull(ProtonExtras.missing(context, tool("droiddeck")))
+        ProtonExtras.setDeclined(context, false)
+        installTool(tools, "DroidDeck-Proton 11-11.2")
+        assertNull(ProtonExtras.missing(context, tool("droiddeck")))
+        assertEquals("DroidDeck-Proton-11-11.4", ProtonExtras.update(context, tool("droiddeck")))
     }
 }

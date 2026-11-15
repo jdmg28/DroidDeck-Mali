@@ -14,9 +14,11 @@ object GameStorage {
 
     fun options(context: Context): List<Option> {
         val sm = context.getSystemService(StorageManager::class.java)
+        val primary = context.getExternalFilesDir(null)?.absolutePath
+        val primaryStorage = Environment.getExternalStorageDirectory()?.absolutePath
         return context.getExternalFilesDirs(null).orEmpty().filterNotNull().mapNotNull { dir ->
-            val removable = try { Environment.isExternalStorageRemovable(dir) } catch (e: Exception) { false }
-            if (!removable) return@mapNotNull null
+            if (primary != null && dir.absolutePath == primary) return@mapNotNull null
+            if (!primaryStorage.isNullOrBlank() && dir.absolutePath.startsWith("$primaryStorage/")) return@mapNotNull null
             val volume = try { sm?.getStorageVolume(dir) } catch (e: Exception) { null }
             val name = volume?.getDescription(context)?.takeIf { it.isNotBlank() && !it.equals("android", true) } ?: context.getString(R.string.gstore_sd_card)
             Option(context.getString(R.string.gstore_volume_free, name, free(dir)), File(dir, "steam").absolutePath, name)
@@ -46,7 +48,36 @@ object GameStorage {
         return when {
             pref == SessionPrefs.GAME_STORAGE_OFF -> null
             pref.isEmpty() -> options(context).firstOrNull()?.let { Option(it.name, it.path) }
-            else -> Option(SessionPrefs.gameStorageLabel(context), pref)
+            else -> Option(SessionPrefs.gameStorageLabel(context), pref).takeIf { attached(File(pref)) }
+        }
+    }
+
+    fun disconnected(context: Context): Boolean {
+        val pref = SessionPrefs.gameStorage(context)
+        return pref.isNotEmpty() && pref != SessionPrefs.GAME_STORAGE_OFF && !attached(File(pref))
+    }
+
+    internal fun attached(
+        path: File,
+        stateOf: (File) -> String? = { runCatching { Environment.getExternalStorageState(it) }.getOrNull() },
+    ): Boolean = attached(path, stateOf(File(UsbLink.storagePath(path.path))))
+
+    internal fun attached(
+        path: File,
+        state: String?,
+        externalStoragePath: Boolean = isExternalStoragePath(path),
+    ): Boolean = when {
+        state == Environment.MEDIA_MOUNTED || state == Environment.MEDIA_MOUNTED_READ_ONLY -> true
+        path.isDirectory -> true
+        externalStoragePath -> false
+        state == Environment.MEDIA_UNKNOWN || state == null -> path.parentFile?.isDirectory == true
+        else -> false
+    }
+
+    private fun isExternalStoragePath(path: File): Boolean {
+        val absolute = path.absoluteFile.toPath().normalize()
+        return listOf(File("/storage"), File("/mnt/media_rw")).any {
+            absolute.startsWith(it.absoluteFile.toPath().normalize())
         }
     }
 
@@ -60,12 +91,14 @@ object GameStorage {
     fun gamesFolderLibraries(context: Context): List<Library> {
         if (SessionPrefs.gameStorage(context).isNotEmpty()) return emptyList()
         val card = effective(context)?.let { canonical(File(it.path)) }
+        val added = SteamLibraries.list(context).map { canonical(it.host) }
         val sm = context.getSystemService(StorageManager::class.java)
         return AddedGames.roots(context).mapNotNull { root ->
             val host = canonical(root.host)
             if (!hasInstalledGames(root.host)) return@mapNotNull null
             if ('"' in root.guest || '\\' in root.guest || !root.host.isDirectory || !root.host.canWrite()) return@mapNotNull null
             if (card != null && (host == card || host.startsWith("$card/") || card.startsWith("$host/"))) return@mapNotNull null
+            if (added.any { SteamLibraries.overlaps(it, host) }) return@mapNotNull null
             val volume = try { sm?.getStorageVolume(root.host)?.getDescription(context) } catch (e: Exception) { null }
             val name = root.host.name.ifEmpty { context.getString(R.string.gstore_folder) }
             val label = if (volume.isNullOrBlank()) name else context.getString(R.string.gstore_folder_on_volume, name, volume)

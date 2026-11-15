@@ -14,10 +14,25 @@
     <string name="gpu_safety_label">Renderizado</string>
     <string name="gpu_safety_hint">El software dibuja en la CPU y nunca toca la GPU. \u26a0\ufe0f Muy lento: para comprobar, no para jugar.</string>
     <string name="gpu_safety_auto">Auto (software aquí)</string>
-    <string name="gpu_safety_auto_detail">Software en esta GPU Mali; en otros dispositivos no cambia nada</string>
+    <string name="gpu_safety_auto_detail">Software en esta GPU Mali salvo que elijas Venus o el puente; en otros dispositivos no cambia nada</string>
     <string name="gpu_safety_software">Software (lavapipe)</string>
     <string name="gpu_safety_software_detail">Solo CPU; el nodo de GPU nunca se entrega a la sesión</string>
     <string name="gpu_safety_mali">Controlador Mali (experimental)</string>
     <string name="gpu_safety_mali_detail">Entrega /dev/mali0 a la sesión como nodo de renderizado. \u26a0\ufe0f Puede reiniciar el teléfono.</string>
     <string name="gpu_safety_mali_picked">Controlador Mali seleccionado. \u26a0\ufe0f Puede reiniciar el teléfono; Auto y Software nunca tocan la GPU.</string>
+
+    <!-- Los ajustes Mali de la sesión, en la hoja de ajustes de Steam. -->
+    <string name="mode_mali_group">Mali</string>
+    <string name="mode_mali_present">Ruta del fotograma del juego</string>
+    <string name="mode_mali_present_hint">Cómo llega el fotograma del juego a gamescope.</string>
+    <string name="mode_mali_present_dri3">dma-buf (el más rápido)</string>
+    <string name="mode_mali_present_noafbc">dma-buf sin AFBC</string>
+    <string name="mode_mali_present_shm">Memoria compartida</string>
+    <string name="mode_mali_ui_gpu">Interfaz de Steam en la GPU</string>
+    <string name="mode_mali_ui_gpu_on">En la GPU (controlador fn64)</string>
+    <string name="mode_mali_ui_gpu_off">En la CPU</string>
+    <string name="mode_mali_ui_gpu_blocked">En la CPU: sólo el controlador fn64 puede llevarla</string>
+    <string name="mode_safe_mode">Modo seguro</string>
+    <string name="mode_safe_mode_hint">Nivel %1$d: el teléfono se reinició con un juego abierto.</string>
+    <string name="mode_safe_mode_reset">Volver a normal</string>
 </resources>

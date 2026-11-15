@@ -6,6 +6,7 @@ import os
 import runpy
 import shutil
 import struct
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -45,6 +46,10 @@ class FexTestCase(unittest.TestCase):
             "WANTED": str(self.home / ".config/droiddeck/fex-wanted"),
             "PRELOADS": str(self.tmp / "preloads"),
             "HOST_PRELOAD": str(self.tmp / "ld.so.preload"),
+            "DEVICE_FONTS": str(self.tmp / "android-fonts"),
+            "FONT_RULES": str(self.tmp / "66-droiddeck-device-fonts.conf"),
+            "OWN_FEX": str(self.tmp / "own"),
+            "OWN_FEX_TAG": str(self.tmp / "own/share/fex-emu/.droiddeck-tag"),
         }
         patcher = mock.patch.dict(G, patches)
         patcher.start()
@@ -69,9 +74,10 @@ class FexTestCase(unittest.TestCase):
         self.write(Path(library or self.steam) / "steamapps/appmanifest_3127680.acf", '"AppState" { "installdir" "FEX-Emu" }')
         return tool
 
-    def runtime(self, version="3.0.20260805.254768", lines=None):
-        runtime = self.steam / "steamapps/common/SteamLinuxRuntime_sniper"
-        platform = runtime / ("sniper_platform_" + version)
+    def runtime(self, version="3.0.20260805.254768", lines=None, app="1628350", folder="SteamLinuxRuntime_sniper",
+                prefix="sniper_platform_"):
+        runtime = self.steam / "steamapps/common" / folder
+        platform = runtime / (prefix + version)
         files = platform / "files"
         self.write(files / "lib/x86_64-linux-gnu/libc.so.6", elf(62))
         self.write(files / "ab/cdef-1.bin", b"blob")
@@ -89,9 +95,16 @@ class FexTestCase(unittest.TestCase):
         ]
         with gzip.open(platform / "usr-mtree.txt.gz", "wt") as out:
             out.write("\n".join(mtree) + "\n")
-        self.write(self.steam / "steamapps/appmanifest_1628350.acf", '"AppState" { "installdir" "SteamLinuxRuntime_sniper" }')
+        self.write(self.steam / ("steamapps/appmanifest_%s.acf" % app), '"AppState" { "installdir" "%s" }' % folder)
         return platform
 
+    def steamrt4(self):
+        return self.runtime("4.0.20260928.262390", app="4183110", folder="SteamLinuxRuntime_4", prefix="steamrt4_platform_")
+
+    def proton(self, require):
+        proton = self.steam / "steamapps/common/Proton - Experimental"
+        self.write(proton / "toolmanifest.vdf", '"manifest"\n{\n  "commandline" "/proton %%verb%%"\n  "require_tool_appid" "%s"\n}\n' % require)
+        return self.write(proton / "proton", "#!/usr/bin/env python3\n", 0o755)
     def graphics(self, sniper, libc=b"GLIBC_2.2.5 GLIBC_2.31 GLIBC_2.34 GLIBC_2.41", libstdcxx=b"GLIBCXX_3.4.28 GLIBCXX_3.4.33"):
         files = Path(sniper) / "files"
         x86 = files / "lib/x86_64-linux-gnu"
@@ -119,6 +132,9 @@ class FexTestCase(unittest.TestCase):
         self.write(provided / "gconv/NEW.so", b"new gconv")
         self.write(platform / "files/lib/i386-linux-gnu/libc.so.6", b"GLIBC_2.41")
         self.write(platform / "files/lib/i386-linux-gnu/ld-linux.so.2", b"new ld32")
+        for arch in ("x86_64", "i386"):
+            for name in ("libssl.so.3", "libcrypto.so.3"):
+                self.write(platform / "files/lib" / (arch + "-linux-gnu") / name, arch.encode() + name.encode())
         with gzip.open(platform / "usr-mtree.txt.gz", "wt") as out:
             out.write("#mtree\n. type=dir\n")
         self.write(self.steam / "steamapps/appmanifest_4183110.acf", '"AppState" { "installdir" "SteamLinuxRuntime_4" }')
@@ -188,6 +204,75 @@ class LocateTest(FexTestCase):
         self.assertEqual((fex["bin"], fex["server"], fex["portable"]), (str(tool / "usr/bin/FEX"), str(tool / "usr/bin/FEXServer"), True))
         self.assertTrue(fex["host_thunks"].endswith("HostThunks") and fex["guest_thunks"].endswith("GuestThunks") and fex["thunks_db"])
 
+    def own_fex(self, tag, loads=True):
+        own = self.tmp / "own"
+        self.write(own / "bin/FEX", mode=0o755)
+        self.write(own / "bin/FEXServer", mode=0o755)
+        self.write(own / "share/fex-emu/.droiddeck-tag", tag + "\n")
+        listing = b"libc.so.6 => /usr/lib/libc.so.6\n" if loads else b"libxxhash.so.0 => not found\n"
+        patcher = mock.patch.object(G["subprocess"], "run", lambda args, **kw: subprocess.CompletedProcess(args, 0, listing))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return own
+
+    def test_an_own_build_that_no_longer_loads_is_installed_again_and_skipped(self):
+        tool = self.fex_tool(self.steam)
+        self.own_fex("fex-2610-r7", loads=False)
+        calls = []
+        with mock.patch.dict(os.environ, {"BL_FEX_TAG": "fex-2610-r7"}), \
+                mock.patch.object(G["subprocess"], "call", lambda args, **kw: calls.append(args) or 1):
+            FEX["update_own_fex"]()
+        self.assertEqual([[str(BIN / "droiddeck-fex-update")]], calls)
+        self.assertEqual(FEX["fex_install"]()["bin"], str(tool / "usr/bin/FEX"))
+
+    def test_droiddeck_s_own_build_comes_before_the_steam_tool(self):
+        self.fex_tool(self.steam)
+        own = self.own_fex("fex-2610-r7")
+        fex = FEX["fex_install"]()
+        self.assertEqual((fex["bin"], fex["server"], fex["portable"]), (str(own / "bin/FEX"), str(own / "bin/FEXServer"), False))
+
+    def test_the_build_the_session_names_is_installed_once(self):
+        self.own_fex("fex-2610-r6")
+        calls = []
+        with mock.patch.dict(os.environ, {"BL_FEX_TAG": "fex-2610-r7"}), \
+                mock.patch.object(G["subprocess"], "call", lambda args, **kw: calls.append(args) or 0):
+            FEX["update_own_fex"]()
+            self.write(self.tmp / "own/share/fex-emu/.droiddeck-tag", "fex-2610-r7\n")
+            FEX["update_own_fex"]()
+        self.assertEqual([[str(BIN / "droiddeck-fex-update")]], calls)
+
+    def test_a_failed_build_waits_an_hour_unless_the_session_names_another(self):
+        self.own_fex("fex-2610-r6")
+        Path(G["STATE"]).mkdir(parents=True, exist_ok=True)
+        calls = []
+        tag = {"BL_FEX_TAG": "fex-2610-r7"}
+        with mock.patch.dict(os.environ, tag), \
+                mock.patch.object(G["subprocess"], "call", lambda args, **kw: calls.append(os.environ["BL_FEX_TAG"]) or 1):
+            FEX["update_own_fex"]()
+            FEX["update_own_fex"]()
+            failed = Path(G["STATE"]) / "update-failed"
+            os.utime(failed, (failed.stat().st_atime, failed.stat().st_mtime - 3601))
+            FEX["update_own_fex"]()
+            os.environ["BL_FEX_TAG"] = "fex-2610-r8"
+            FEX["update_own_fex"]()
+        self.assertEqual(["fex-2610-r7", "fex-2610-r7", "fex-2610-r8"], calls)
+
+    def test_a_missing_updater_falls_back_to_the_fex_already_here(self):
+        self.fex_tool(self.steam)
+        Path(G["STATE"]).mkdir(parents=True, exist_ok=True)
+        with mock.patch.dict(os.environ, {"BL_FEX_TAG": "fex-2610-r7"}), \
+                mock.patch.object(G["subprocess"], "call", mock.Mock(side_effect=FileNotFoundError)):
+            FEX["update_own_fex"]()
+        self.assertEqual(FEX["fex_install"]()["bin"], str(self.steam / "steamapps/common/FEX-Emu/usr/bin/FEX"))
+
+    def test_no_build_is_installed_without_one_from_the_session(self):
+        calls = []
+        with mock.patch.dict(os.environ, {}, clear=False), \
+                mock.patch.object(G["subprocess"], "call", lambda args, **kw: calls.append(args) or 0):
+            os.environ.pop("BL_FEX_TAG", None)
+            FEX["update_own_fex"]()
+        self.assertEqual([], calls)
+
     def test_library_folders_are_read(self):
         other = self.tmp / "other"
         (other / "steamapps/common").mkdir(parents=True)
@@ -238,6 +323,8 @@ class PrepareTest(FexTestCase):
         self.assertEqual((root / "etc/ld.so.preload").read_text(),
                          "/usr/$LIB/droiddeck/libblsession.so\n/usr/$LIB/droiddeck/libfakeinput.so\n")
         self.assertEqual((root / "lib/i386-linux-gnu/droiddeck/libfakeinput.so").read_bytes(), b"i386libfakeinput.so")
+        self.assertEqual((root / "etc/asound.conf").read_text(),
+                         "pcm.!default {\n    type pulse\n}\nctl.!default {\n    type pulse\n}\n")
         self.write(self.tmp / "ld.so.preload", "/usr/local/lib/libblsession.so\n")
         FEX["install_preloads"](str(root))
         self.assertEqual((root / "etc/ld.so.preload").read_text(), "/usr/$LIB/droiddeck/libblsession.so\n")
@@ -252,6 +339,21 @@ class PrepareTest(FexTestCase):
         self.assertEqual((root / "lib/x86_64-linux-gnu/droiddeck/libfaultreport.so").read_bytes(), b"report64")
         self.assertEqual((root / "lib/i386-linux-gnu/droiddeck/libfaultreport.so").read_bytes(), b"report32")
         self.assertEqual((root / "etc/ld.so.preload").read_text(), "/usr/$LIB/droiddeck/libfaultreport.so\n")
+
+    def test_device_fonts_reach_the_x86_runtime(self):
+        root = self.tmp / "root"
+        conf = root / str(self.tmp / "66-droiddeck-device-fonts.conf").lstrip("/")
+        rules = '<?xml version="1.0"?><fontconfig>\n<match target="pattern"></match>\n</fontconfig>\n'
+        self.write(self.tmp / "66-droiddeck-device-fonts.conf", rules)
+        FEX["install_fonts"](str(root))
+        self.assertFalse(conf.exists())
+        (self.tmp / "android-fonts").mkdir()
+        FEX["install_fonts"](str(root))
+        self.assertEqual(conf.read_text(), '<?xml version="1.0"?><fontconfig>\n<dir>%s</dir>\n<match target="pattern"></match>\n</fontconfig>\n'
+                         % (self.tmp / "android-fonts"))
+        (self.tmp / "66-droiddeck-device-fonts.conf").unlink()
+        FEX["install_fonts"](str(root))
+        self.assertFalse(conf.exists())
 
     def test_config_turns_thunks_on_only_when_complete(self):
         FEX["write_config"]({"host_thunks": "/h", "guest_thunks": "/g", "thunks_db": "/db"}, "/root")
@@ -271,6 +373,29 @@ class PrepareTest(FexTestCase):
         self.assertTrue((self.home / ".config/droiddeck/fex-wanted").is_file())
         status = json.loads((self.home / ".local/share/droiddeck-fex/status.json").read_text())
         self.assertFalse(status["ready"])
+
+    def test_a_missing_steam_runtime_4_is_named(self):
+        self.fex_tool()
+        self.runtime()
+        with mock.patch.dict(G, {"steam_running": lambda: False}):
+            fex, said = self.quiet(FEX["prepare"], "4183110")
+        self.assertIsNone(fex)
+        self.assertIn("Steam Linux Runtime 4.0 (steamrt4, Steam app 4183110)", said)
+        self.assertNotIn("FEX (Steam app", said)
+
+    def test_the_x86_runtime_gets_its_own_steam_client_link(self):
+        self.fex_tool()
+        platform = self.runtime()
+        self.write(self.steam / "linuxarm64/steamclient.so", elf(183))
+        self.write(self.steam / "linux64/steamclient.so", elf(62))
+        self.write(self.steam / "linux32/steamclient.so", elf(3))
+        (self.home / ".steam").mkdir()
+        os.symlink(self.steam / "linuxarm64", self.home / ".steam/sdk64")
+        self.quiet(FEX["prepare"])
+        guest = platform / "files" / str(self.home).lstrip("/") / ".steam"
+        self.assertEqual(os.readlink(guest / "sdk64"), str(self.steam / "linux64"))
+        self.assertEqual(os.readlink(guest / "sdk32"), str(self.steam / "linux32"))
+        self.assertEqual(os.readlink(self.home / ".steam/sdk64"), str(self.steam / "linux64"))
 
     def test_a_ready_install_is_prepared(self):
         tool = self.fex_tool()
@@ -302,6 +427,10 @@ class PrepareTest(FexTestCase):
         self.assertEqual((x86 / "ld-linux-x86-64.so.2").read_bytes(), b"new ld")
         self.assertEqual((x86 / "gconv/NEW.so").read_bytes(), b"new gconv")
         self.assertEqual((root / "lib/i386-linux-gnu/libc.so.6").read_bytes(), b"GLIBC_2.41")
+        self.assertEqual((x86 / "libssl.so.3").read_bytes(), b"x86_64libssl.so.3")
+        self.assertEqual((x86 / "libcrypto.so.3").read_bytes(), b"x86_64libcrypto.so.3")
+        self.assertEqual((root / "lib/i386-linux-gnu/libssl.so.3").read_bytes(), b"i386libssl.so.3")
+        self.assertEqual((root / "lib/i386-linux-gnu/libcrypto.so.3").read_bytes(), b"i386libcrypto.so.3")
         self.assertEqual((x86 / "libSDL2-2.0.so.0").read_bytes(), b"sdl")
         self.assertEqual(os.readlink(x86 / "libfoo.so.1"), "libfoo.so.1.2")
         self.assertEqual((x86 / "libfoo.so.1").read_bytes(), b"foo")
@@ -491,11 +620,12 @@ class LaunchTest(FexTestCase):
     def test_the_guest_environment(self):
         arm = self.write(self.tmp / "arm.so", elf(183))
         x86 = self.write(self.tmp / "x86.so", elf(62))
-        env = {"LD_PRELOAD": "%s:%s %s" % (arm, x86, self.tmp / "gone.so"),
+        env = {"LD_PRELOAD": "%s:%s %s libMelonLoader.Bootstrap.so" % (arm, x86, self.tmp / "gone.so"),
                "LD_LIBRARY_PATH": "/steam/steamrtarm64:/usr/lib/aarch64-linux-gnu:/game/lib:/steam/linuxarm64",
                "FEX_ROOTFS": "/usr/share/guestos/fex-mesa", "FEX_TSOENABLED": "1"}
         guest = FEX["guest_environment"]({"portable": True}, env)
-        self.assertEqual((guest["LD_PRELOAD"], guest["LD_LIBRARY_PATH"], guest["FEX_PORTABLE"]), (str(x86), "/game/lib", "1"))
+        self.assertEqual((guest["LD_PRELOAD"], guest["LD_LIBRARY_PATH"], guest["FEX_PORTABLE"]),
+                         ("%s:libMelonLoader.Bootstrap.so" % x86, "/game/lib", "1"))
         self.assertNotIn("FEX_ROOTFS", guest)
         self.assertEqual(guest["FEX_TSOENABLED"], "1")
         self.assertTrue(guest["FEX_APP_CONFIG_LOCATION"].endswith("/config/"))
@@ -537,6 +667,20 @@ class LaunchTest(FexTestCase):
         FEX["write_config"](fex, "/rt/files")
         thunks = json.loads((self.home / ".local/share/droiddeck-fex/config/ThunksConfig.json").read_text())
         self.assertEqual(thunks, {"ThunksDB": {"GL": 1, "Vulkan": 1}})
+
+    def test_host_libc_tunables_stay_on_the_host(self):
+        guest = FEX["guest_environment"]({"portable": True}, {"GLIBC_TUNABLES": "glibc.pthread.rseq=0"})
+        self.assertNotIn("GLIBC_TUNABLES", guest)
+
+    def test_proton_runs_in_the_runtime_its_manifest_requires(self):
+        self.fex_tool()
+        self.runtime()
+        platform = self.steamrt4()
+        proton = self.proton("4183110")
+        with mock.patch("os.execve") as emulated:
+            self.quiet(FEX["launch"], [str(proton), "waitforexitandrun", "game.exe"], {}, "on")
+        self.assertEqual(emulated.call_args[0][2]["FEX_ROOTFS"], str(platform / "files"))
+        self.assertEqual(FEX["required_runtime"](str(self.proton("1391110"))), "1628350")
 
     def test_native_programs_run_directly(self):
         program = self.write(self.tmp / "native", elf(183), 0o755)
@@ -628,6 +772,32 @@ class LaunchTest(FexTestCase):
             command, env, mode = G["launch"].call_args[0]
             self.assertEqual((command, mode), (["/game/run.sh", "-a"], "auto"))
 
+    def test_steam_games_get_their_settings_and_linux_unity_keeps_tso(self):
+        config = self.home / ".config/droiddeck/game-environment.json"
+        unity = self.write(self.tmp / "Megabonk/Megabonk.x86_64", elf(62), 0o755)
+        self.write(self.tmp / "Megabonk/UnityPlayer.so", elf(62))
+        self.write(self.tmp / "Megabonk/GameAssembly.so", elf(62))
+        other = self.write(self.tmp / "Other/game.x86_64", elf(62), 0o755)
+        self.write(config, json.dumps({"version": 1, "shared": {"FEX_TSOENABLED": "0", "FEX_MULTIBLOCK": "1"},
+                                       "games": {"20": {"FEX_TSOENABLED": "0"}}}))
+
+        def started(program, app):
+            with mock.patch.dict(G, {"launch": mock.Mock(return_value=0), "GAME_ENVIRONMENT": str(config)}), \
+                    mock.patch.dict(os.environ, {"SteamAppId": app}, clear=True):
+                _, said = self.quiet(FEX["main"], ["steam", "waitforexitandrun", str(program), "-arg"])
+                command, env, _ = G["launch"].call_args[0]
+            self.assertEqual(command, [str(program), "-arg"])
+            return env.get("FEX_TSOENABLED"), env.get("FEX_MULTIBLOCK"), said
+
+        tso, multiblock, said = started(unity, "10")
+        self.assertEqual((tso, multiblock), ("1", "1"))
+        self.assertIn("Unity: FEX with TSO", said)
+        self.assertEqual(started(other, "10")[:2], ("0", "1"))
+        self.assertEqual(started(unity, "20")[:2], ("0", "1"))
+        config.unlink()
+        self.assertEqual(started(unity, "10")[:2], ("1", None))
+        self.assertEqual(started(other, "10")[:2], (None, None))
+
 
 class AppInfoTest(unittest.TestCase):
     COMPAT = runpy.run_path(str(BIN / "steam-compatibility"))
@@ -653,7 +823,8 @@ class AppInfoTest(unittest.TestCase):
             return out + b"\x08"
 
         body = b""
-        for app, entry in apps.items():
+        records = apps.items() if isinstance(apps, dict) else apps
+        for app, entry in records:
             if isinstance(entry, dict):
                 data = section({"appinfo": dict(entry, appid=str(app))})
             else:
@@ -804,6 +975,22 @@ class AppInfoTest(unittest.TestCase):
             vdf = (tool / "compatibilitytool.vdf").read_text()
             self.assertIn('"from_oslist" "linux"', vdf)
             self.assertIn('"to_oslist" "linux"', vdf)
+
+    def test_the_tool_runs_games_on_the_chosen_cores(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tool, bin_dir = Path(tmp) / "droiddeck-fex", Path(tmp) / "bin"
+            self.COMPAT["build_fex_tool"](str(tool))
+            bin_dir.mkdir()
+            (bin_dir / "taskset").write_text('#!/bin/sh\necho "taskset $*"\n')
+            (bin_dir / "taskset").chmod(0o755)
+            env = dict(os.environ, PATH="%s:%s" % (bin_dir, os.environ.get("PATH", "")), BL_GAME_CPUS="2-7")
+            run = subprocess.run([str(tool / "droiddeck-fex-tool"), "waitforexitandrun", "/games/a/game"],
+                                 env=env, capture_output=True, text=True, timeout=10)
+            self.assertEqual(run.stdout,
+                             "taskset -c 2-7 /usr/local/bin/droiddeck-fex steam waitforexitandrun /games/a/game\n")
+            self.assertIn("game cores 2-7", run.stderr)
+            self.assertIn('exec /usr/local/bin/droiddeck-steamvr-game ${BL_TASKSET:-} '
+                          '/usr/local/bin/droiddeck-fex steam "$verb" "$@"', self.COMPAT["FEX_LAUNCHER_SH"])
 
 
 if __name__ == "__main__":

@@ -21,12 +21,16 @@
 
 #include <dirent.h>
 #include <dlfcn.h>
+#ifdef __GLIBC__
+#include <gnu/lib-names.h>
+#endif
 #include <fcntl.h>
 #include <linux/input.h>
 #include <linux/joystick.h>
 #include <linux/uinput.h>
 #include <poll.h>
 #include <pthread.h>
+#include <sched.h>
 #include <signal.h>
 #include <stdarg.h>
 #include <stdbool.h>
@@ -75,7 +79,6 @@ static constexpr uint8_t GAMEPAD_AXIS_COUNT = 8;
 static constexpr uint8_t GAMEPAD_BUTTON_COUNT = 11;
 static constexpr uint32_t FAKE_INPUT_RING_MAGIC = 0x46494252;
 static constexpr uint32_t FAKE_INPUT_RING_VERSION = 2;
-// Rings hold the 64-bit input_event layout that the arm64 writers use; 32-bit guests convert on read.
 struct RingEvent {
   int64_t sec;
   int64_t usec;
@@ -90,6 +93,7 @@ static constexpr unsigned int FAKE_INPUT_MAJOR = 13;
 static constexpr unsigned int FAKE_INPUT_EVENT_MINOR_BASE = 64;
 static constexpr unsigned int FAKE_INPUT_JS_MINOR_BASE = 0;
 static constexpr int UINPUT_EVENT_BASE = 16;
+static constexpr int MOUSE_EVENT_SLOT = 4;
 static constexpr int UINPUT_EVENT_LIMIT = 64;
 static constexpr uint32_t UINPUT_DESCRIPTION_MAGIC = 0x46495544;
 
@@ -118,6 +122,12 @@ static constexpr size_t FAKE_INPUT_RING_HEADER_SIZE =
 static constexpr size_t FAKE_INPUT_RING_SIZE =
     FAKE_INPUT_RING_HEADER_SIZE +
     (FAKE_INPUT_RING_CAPACITY * FAKE_INPUT_EVENT_SIZE);
+static constexpr size_t DECK_IMU_BLOCK_SIZE = 64;
+static constexpr size_t FAKE_INPUT_RING_PAD_TYPE_OFFSET = 44;
+static constexpr uint32_t PAD_TYPE_DECK = 0, PAD_TYPE_STEAM = 1, PAD_TYPE_XBOX = 2, PAD_TYPE_DS4 = 3,
+                          PAD_TYPE_DUALSENSE = 4, PAD_TYPE_LAST = PAD_TYPE_DUALSENSE,
+                          PAD_TYPE_MOUSE = 5;
+static constexpr uint32_t PAD_TYPE_SET = 0x80000000u;
 
 struct UinputDescription {
   uint32_t magic;
@@ -146,6 +156,7 @@ struct FakeController {
   size_t mapping_size = 0;
   bool closed = false;
   bool needs_keyframe = true;
+  bool mouse = false;
 
   ~FakeController() {
     if (ring) munmap(ring, mapping_size);
@@ -198,23 +209,33 @@ struct FakeConfig {
   bool uinput_enabled;
 };
 
+// The first allocation here can start the host program's own allocator, which may call a hooked
+// function (mimalloc probes NUMA nodes with access()) and land back in config(). A guarded static
+// would throw a recursive-init error there, so the fields are filled without allocating, and a
+// reentry on the initializing thread gets them while other threads wait for the fork handlers.
 static FakeConfig &config() {
-  static FakeConfig *cfg = [] {
-    auto *c = new FakeConfig();
-    const char *dir = getenv("FAKE_EVDEV_DIR");
-    c->hook_dir = dir ? dir : "/data/data/com.termux/files/home/fake-input";
-    c->udev_data_dir = getenv("FAKE_UDEV_DATA_DIR");
-    c->vibration_enabled =
-        getenv("FAKE_EVDEV_VIBRATION") && atoi(getenv("FAKE_EVDEV_VIBRATION"));
-    const char *identity = getenv("FAKE_EVDEV_IDENTITY");
-    c->xbox360_identity = identity && !strcmp(identity, "xbox360");
-    c->uinput_enabled = getenv("FAKE_EVDEV_UINPUT") && atoi(getenv("FAKE_EVDEV_UINPUT"));
-    pthread_atfork(controller_fork_prepare, controller_fork_parent,
-                   controller_fork_child);
-    Logger::init();
-    return c;
-  }();
-  return *cfg;
+  static FakeConfig cfg;
+  static std::atomic<int> state{0};
+  static __thread bool initializing __attribute__((tls_model("initial-exec")));
+  if (state.load(std::memory_order_acquire) == 2 || initializing) return cfg;
+  int expected = 0;
+  if (!state.compare_exchange_strong(expected, 1, std::memory_order_acq_rel)) {
+    while (state.load(std::memory_order_acquire) != 2) sched_yield();
+    return cfg;
+  }
+  initializing = true;
+  const char *dir = getenv("FAKE_EVDEV_DIR");
+  cfg.hook_dir = dir ? dir : "/data/data/com.termux/files/home/fake-input";
+  cfg.udev_data_dir = getenv("FAKE_UDEV_DATA_DIR");
+  cfg.vibration_enabled = getenv("FAKE_EVDEV_VIBRATION") && atoi(getenv("FAKE_EVDEV_VIBRATION"));
+  const char *identity = getenv("FAKE_EVDEV_IDENTITY");
+  cfg.xbox360_identity = identity && !strcmp(identity, "xbox360");
+  cfg.uinput_enabled = getenv("FAKE_EVDEV_UINPUT") && atoi(getenv("FAKE_EVDEV_UINPUT"));
+  pthread_atfork(controller_fork_prepare, controller_fork_parent, controller_fork_child);
+  Logger::init();
+  state.store(2, std::memory_order_release);
+  initializing = false;
+  return cfg;
 }
 
 static std::recursive_mutex &controller_mutex() {
@@ -380,7 +401,6 @@ send_vibration(int strong, int weak, uint16_t duration_ms, uint16_t slot) {
   syscall(SYS_close, sock);
 }
 
-// Must match RumbleComponent.HOLD_MS: play until the slot's next effect or stop.
 static constexpr uint16_t RUMBLE_HOLD_MS = 0xffff;
 
 __attribute__((visibility("hidden"))) static void send_ff_effect(const struct ff_effect &effect, uint16_t slot) {
@@ -604,7 +624,7 @@ open_fake_input_ring(const char *event, int flags) {
   int slot = get_event_number(event);
   bool virtual_pad = slot >= UINPUT_EVENT_BASE;
   std::string ring_path = virtual_pad ? uinput_ring_path(slot) : get_ring_path_for_slot(slot);
-  size_t mapping_size = virtual_pad ? UINPUT_FILE_SIZE : FAKE_INPUT_RING_SIZE;
+  size_t mapping_size = virtual_pad ? UINPUT_FILE_SIZE : FAKE_INPUT_RING_SIZE + DECK_IMU_BLOCK_SIZE;
   if (ring_path.empty()) {
     Logger::log("No input ring is configured for %s (slot %d)\n", event, slot);
     errno = ENODEV;
@@ -648,9 +668,22 @@ open_fake_input_ring(const char *event, int flags) {
   controller->uinput = description;
   controller->mapping_size = mapping_size;
   controller->generation = ring_generation(ring);
+  if (!virtual_pad) {
+    uint32_t pad_type = __atomic_load_n(
+        reinterpret_cast<volatile uint32_t *>(static_cast<uint8_t *>(mapping) + FAKE_INPUT_RING_SIZE +
+                                              FAKE_INPUT_RING_PAD_TYPE_OFFSET),
+        __ATOMIC_ACQUIRE);
+    controller->mouse = (pad_type & PAD_TYPE_SET) && (pad_type & ~PAD_TYPE_SET) == PAD_TYPE_MOUSE;
+  }
   SnapshotState snap;
-  if (read_snapshot(ring, snap) && snap.generation == controller->generation)
-    capture_keyframe(*controller, snap);
+  if (read_snapshot(ring, snap) && snap.generation == controller->generation) {
+    if (controller->mouse) {
+      controller->read_seq = snap.write_seq;
+      controller->needs_keyframe = false;
+    } else {
+      capture_keyframe(*controller, snap);
+    }
+  }
   {
     std::lock_guard<std::recursive_mutex> guard(controller_mutex());
     controller_map()[fd] = controller;
@@ -1153,7 +1186,8 @@ struct DeckImu {
   uint32_t pad_type;
   uint32_t latency;
 };
-static_assert(offsetof(DeckImu, pad_type) == 44, "DeckImu::pad_type matches FakeInputWriter");
+static_assert(offsetof(DeckImu, pad_type) == FAKE_INPUT_RING_PAD_TYPE_OFFSET,
+                "DeckImu::pad_type matches FakeInputWriter and the ring reader");
 static_assert(offsetof(DeckImu, latency) == 48, "DeckImu::latency matches FakeInputWriter");
 static constexpr uint32_t LATENCY_CONTROLLER = 1, LATENCY_TOUCH = 2;
 static constexpr int LOW_LATENCY_REPORT_INTERVAL_US = 1000;
@@ -1170,7 +1204,6 @@ struct DeckExtras {
   uint32_t controls = 0;
 };
 static constexpr uint32_t DECK_IMU_MAGIC = 0x31554D49;
-static constexpr size_t DECK_IMU_BLOCK_SIZE = 64;
 static_assert(sizeof(DeckImu) <= DECK_IMU_BLOCK_SIZE, "the IMU block is 64 bytes in the ring file");
 
 struct TritonSharedData {
@@ -1181,8 +1214,9 @@ struct TritonSharedData {
   uint32_t input_length;
   uint8_t input[64];
   uint64_t output_seq;
-  uint32_t output_feature;
-  uint32_t output_length;
+  uint16_t output_feature;
+  uint16_t output_length;
+  uint32_t output_ack;
   uint8_t output[64];
   uint64_t get_request;
   uint64_t get_reply;
@@ -1199,6 +1233,8 @@ static_assert(offsetof(TritonSharedData, report_id) == 16, "Triton report ID off
 static_assert(offsetof(TritonSharedData, input) == 24, "Triton input offset");
 static_assert(offsetof(TritonSharedData, output_seq) == 88, "Triton output sequence offset");
 static_assert(offsetof(TritonSharedData, output_feature) == 96, "Triton output feature offset");
+static_assert(offsetof(TritonSharedData, output_length) == 98, "Triton output length offset");
+static_assert(offsetof(TritonSharedData, output_ack) == 100, "Triton output ack offset");
 static_assert(offsetof(TritonSharedData, output) == 104, "Triton output offset");
 static_assert(offsetof(TritonSharedData, get_request) == 168, "Triton feature request offset");
 static_assert(offsetof(TritonSharedData, get_reply) == 176, "Triton feature reply offset");
@@ -1216,6 +1252,7 @@ static constexpr int TRITON_REPORT_ID_BYTES = 1;
 static constexpr int TRITON_STATE_BYTES = 45;
 static constexpr int TRITON_REPORT_INTERVAL_US = 4000;
 static constexpr int TRITON_FEATURE_TIMEOUT_MS = 500;
+static constexpr int TRITON_OUTPUT_TIMEOUT_MS = 50;
 static constexpr const char *TRITON_NAME = "Steam Controller";
 static constexpr const char *TRITON_SERIAL = "DROIDDECKSC01";
 static const uint8_t kTritonReportDescriptor[] = {
@@ -1261,10 +1298,6 @@ static bool fake_deck_enabled() {
   if (enabled < 0) enabled = getenv("FAKE_EVDEV_DECK") && atoi(getenv("FAKE_EVDEV_DECK")) ? 1 : 0;
   return enabled == 1;
 }
-
-static constexpr uint32_t PAD_TYPE_DECK = 0, PAD_TYPE_STEAM = 1, PAD_TYPE_XBOX = 2, PAD_TYPE_DS4 = 3,
-                          PAD_TYPE_DUALSENSE = 4, PAD_TYPE_LAST = PAD_TYPE_DUALSENSE;
-static constexpr uint32_t PAD_TYPE_SET = 0x80000000u;
 
 __attribute__((visibility("hidden"))) static uint32_t session_pad_type() {
   static int type = -1;
@@ -1400,6 +1433,12 @@ __attribute__((visibility("hidden"))) static bool is_withdrawn_pad_path(const ch
   if (strncmp(event, "event", 5) && strncmp(event, "js", 2)) return false;
   int number = get_event_number(event);
   if (number < 0 || number >= UINPUT_EVENT_BASE) return false;
+  if (number == MOUSE_EVENT_SLOT && !strncmp(event, "event", 5)) {
+    char *fake = from_real_to_fake_path(pathname);
+    bool exposed = fake && path_exists(fake);
+    free(fake);
+    return !exposed;
+  }
   return number == 0 || !process_is_steam_client();
 }
 
@@ -2571,11 +2610,21 @@ __attribute__((visibility("hidden"))) static void triton_queue_output(DeckHidraw
   if (!data || !size || size > 64 || triton.mapping_size < TRITON_SHARED_OFFSET + TRITON_SHARED_BLOCK_SIZE) return;
   auto *shared = reinterpret_cast<TritonSharedData *>(reinterpret_cast<uint8_t *>(triton.ring) + TRITON_SHARED_OFFSET);
   if (__atomic_load_n(&shared->magic, __ATOMIC_ACQUIRE) != TRITON_SHARED_MAGIC) return;
+  static std::mutex one_at_a_time;
+  std::lock_guard<std::mutex> guard(one_at_a_time);
+  for (int waited = 0;
+       static_cast<uint32_t>(__atomic_load_n(&shared->output_seq, __ATOMIC_ACQUIRE)) !=
+           __atomic_load_n(&shared->output_ack, __ATOMIC_ACQUIRE) &&
+       __atomic_load_n(&shared->connected, __ATOMIC_ACQUIRE) != 0 && waited < TRITON_OUTPUT_TIMEOUT_MS * 4;
+       waited++) {
+    struct timespec interval = {0, 250 * 1000L};
+    nanosleep(&interval, nullptr);
+  }
   uint64_t seq = __atomic_load_n(&shared->output_seq, __ATOMIC_RELAXED);
   if (seq & 1) seq++;
   __atomic_store_n(&shared->output_seq, seq + 1, __ATOMIC_RELEASE);
   shared->output_feature = feature ? 1 : 0;
-  shared->output_length = static_cast<uint32_t>(size);
+  shared->output_length = static_cast<uint16_t>(size);
   memcpy(shared->output, data, size);
   if (size < sizeof(shared->output)) memset(shared->output + size, 0, sizeof(shared->output) - size);
   __atomic_thread_fence(__ATOMIC_RELEASE);
@@ -2632,6 +2681,35 @@ __attribute__((visibility("hidden"))) static int triton_get_feature(DeckHidraw &
 static constexpr uint32_t TRITON_HWID = 72;
 static constexpr uint32_t TRITON_FW_TIMESTAMP = 0x6AC686B3;
 
+static uint32_t triton_fw_timestamp() {
+  static const uint32_t timestamp = [] {
+    std::vector<std::string> roots;
+    char exe[PATH_MAX];
+    ssize_t n = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
+    if (n > 0) {
+      std::string path(exe, static_cast<size_t>(n));
+      size_t bin = path.rfind('/');
+      size_t root = bin == std::string::npos || bin == 0 ? std::string::npos : path.rfind('/', bin - 1);
+      if (bin != std::string::npos && bin > 0) roots.push_back(path.substr(0, bin));
+      if (root != std::string::npos) roots.push_back(path.substr(0, root));
+    }
+    if (const char *home = getenv("HOME")) roots.push_back(std::string(home) + "/.local/share/Steam");
+    uint32_t newest = TRITON_FW_TIMESTAMP;
+    for (const std::string &root : roots) {
+      std::ifstream cfg(root + "/bin/hardwareupdater/hardwareupdater.cfg");
+      std::string line;
+      while (std::getline(cfg, line)) {
+        if (line.rfind("TRITON_FW_TS:", 0) != 0) continue;
+        uint32_t shipped = static_cast<uint32_t>(strtoul(line.c_str() + 13, nullptr, 16));
+        if (shipped > newest) newest = shipped;
+      }
+    }
+    if (newest != TRITON_FW_TIMESTAMP) Logger::log("triton: reporting firmware %08x, the build Steam ships\n", newest);
+    return newest;
+  }();
+  return timestamp;
+}
+
 __attribute__((visibility("hidden"))) static int triton_pad_feature(DeckHidraw &triton, uint8_t *buf, size_t size, bool set) {
   if (!buf || size < 2) {
     errno = EINVAL;
@@ -2652,7 +2730,7 @@ __attribute__((visibility("hidden"))) static int triton_pad_feature(DeckHidraw &
   switch (triton.pending_feature) {
   case DECK_GET_ATTRIBUTES_VALUES: {
     static const uint8_t kIds[] = {0x01, 0x02, 0x04, 0x09, 0x0a, 0x0b};
-    const uint32_t values[] = {static_cast<uint32_t>(TRITON_WIRED_PRODUCT), 0, TRITON_FW_TIMESTAMP, TRITON_HWID, 0, 4000};
+    const uint32_t values[] = {static_cast<uint32_t>(TRITON_WIRED_PRODUCT), 0, triton_fw_timestamp(), TRITON_HWID, 0, 4000};
     reply[2] = sizeof(kIds) * 5;
     for (size_t i = 0; i < sizeof(kIds); i++) {
       reply[3 + i * 5] = kIds[i];
@@ -2886,15 +2964,19 @@ EXPORT DIR *opendir(const char *name) {
   return dir;
 }
 
+static bool open_has_mode(int flags) {
+  return (flags & O_CREAT) != 0 || (flags & O_TMPFILE) == O_TMPFILE;
+}
+
 EXPORT int open(const char *pathname, int flags, ...) {
   va_list va;
-  mode_t mode;
+  mode_t mode = 0;
   int fd;
   bool hasMode;
 
   va_start(va, flags);
 
-  hasMode = flags & O_CREAT;
+  hasMode = open_has_mode(flags);
 
   if (hasMode) {
     mode = va_arg(va, mode_t);
@@ -2966,13 +3048,13 @@ EXPORT int open(const char *pathname, int flags, ...) {
 
 EXPORT int openat(int dirfd, const char *pathname, int flags, ...) {
   va_list va;
-  mode_t mode;
+  mode_t mode = 0;
   int fd;
   bool hasMode;
 
   va_start(va, flags);
 
-  hasMode = flags & O_CREAT;
+  hasMode = open_has_mode(flags);
 
   if (hasMode) {
     mode = va_arg(va, mode_t);
@@ -3301,6 +3383,85 @@ static int copy_ioctl_bits(int op, void *destination, const unsigned char (&bits
   return static_cast<int>(size);
 }
 
+static constexpr uint16_t MOUSE_VENDOR_ID = 0x1dd1;
+static constexpr uint16_t MOUSE_PRODUCT_ID = 0x0004;
+
+static int ioctl_mouse(int op, void *argp) {
+  int type = (op >> 8 & 0xFF);
+  int number = (op >> 0 & 0xFF);
+  if (type != 0x45) {
+    errno = EINVAL;
+    return -1;
+  }
+  switch (number) {
+    case 0x01: {
+      int version = 65536;
+      memcpy(argp, &version, sizeof(int));
+      return 0;
+    }
+    case 0x02: {
+      struct input_id id;
+      memset(&id, 0, sizeof(id));
+      id.bustype = 0x03;
+      id.vendor = MOUSE_VENDOR_ID;
+      id.product = MOUSE_PRODUCT_ID;
+      id.version = 1;
+      memcpy(argp, &id, sizeof(id));
+      return 0;
+    }
+    case 0x06:
+      if (argp && _IOC_SIZE(op)) snprintf(static_cast<char *>(argp), _IOC_SIZE(op), "DroidDeck Mouse");
+      return 0;
+    case 0x07:
+      if (argp && _IOC_SIZE(op)) snprintf(static_cast<char *>(argp), _IOC_SIZE(op), "usb-droiddeck/mouse");
+      return 0;
+    case 0x08:
+      if (argp && _IOC_SIZE(op)) static_cast<char *>(argp)[0] = '\0';
+      return 0;
+    case 0x09: {
+      unsigned char bitmask[(INPUT_PROP_MAX + 8) / 8] = {};
+      bitmask[INPUT_PROP_POINTER / 8] |= 1 << (INPUT_PROP_POINTER % 8);
+      return copy_ioctl_bits(op, argp, bitmask);
+    }
+    case 0x18: {
+      unsigned char bitmask[(KEY_MAX + 8) / 8] = {};
+      return copy_ioctl_bits(op, argp, bitmask);
+    }
+    case 0x20: {
+      unsigned char bitmask[(EV_MAX + 8) / 8] = {};
+      bitmask[EV_SYN / 8] |= 1 << (EV_SYN % 8);
+      bitmask[EV_KEY / 8] |= 1 << (EV_KEY % 8);
+      bitmask[EV_REL / 8] |= 1 << (EV_REL % 8);
+      bitmask[EV_MSC / 8] |= 1 << (EV_MSC % 8);
+      return copy_ioctl_bits(op, argp, bitmask);
+    }
+    case 0x21: {
+      unsigned char bitmask[(KEY_MAX + 8) / 8] = {};
+      for (int button = BTN_LEFT; button <= BTN_TASK; button++)
+        if (button <= BTN_MIDDLE || button == BTN_SIDE || button == BTN_EXTRA)
+          bitmask[button / 8] |= 1 << (button % 8);
+      return copy_ioctl_bits(op, argp, bitmask);
+    }
+    case 0x22: {
+      unsigned char bitmask[(REL_MAX + 8) / 8] = {};
+      for (uint16_t code : {REL_X, REL_Y, REL_WHEEL, REL_HWHEEL, REL_WHEEL_HI_RES, REL_HWHEEL_HI_RES})
+        bitmask[code / 8] |= 1 << (code % 8);
+      return copy_ioctl_bits(op, argp, bitmask);
+    }
+    case 0x23: {
+      unsigned char bitmask[(ABS_MAX + 8) / 8] = {};
+      return copy_ioctl_bits(op, argp, bitmask);
+    }
+    case 0x35: {
+      unsigned char bitmask[(FF_MAX + 8) / 8] = {};
+      return copy_ioctl_bits(op, argp, bitmask);
+    }
+    default:
+      errno = EINVAL;
+      return -1;
+  }
+}
+
 static bool wait_snapshot(std::shared_ptr<FakeController> fake,
                           std::unique_lock<std::recursive_mutex> &guard,
                           SnapshotState &snap) {
@@ -3366,6 +3527,13 @@ EXPORT int ioctl(int fd, ioctl_request_t op, ...) {
   const char *event = controller->second->event ? controller->second->event : "event0";
   int event_number = controller->second->slot;
   const UinputDescription *made = controller->second->uinput;
+
+  if (controller->second->mouse) {
+    int result = ioctl_mouse(op, argp);
+    if (result >= 0) return result;
+    guard.unlock();
+    return forward_ioctl(fd, op, argp);
+  }
 
   if (type == 0x45 && number == 0x1) {
     Logger::log("Hooking ioctl EVIOCGVERSION for event %s\n", event);
@@ -3520,7 +3688,6 @@ EXPORT int ioctl(int fd, ioctl_request_t op, ...) {
     Logger::log("Hooking ioctl EVIOCGRAB for event %s\n", event);
     return 0;
   } else if (type == 0x6A && !strncmp(event, "event", 5)) {
-    // Older SDL2 builds treat any JSIOCGNAME answer as a joydev node and skip EVIOCGID, then drop the pad as 0000:0000.
     Logger::log("Rejecting joydev ioctl %d for event %s\n", number, event);
     guard.unlock();
     errno = EINVAL;
@@ -3577,7 +3744,21 @@ EXPORT int close(int fd) {
 static constexpr int kMaxRingWaitMs = 2;
 static constexpr int kLowLatencyRingWaitUs = 250;
 
-EXPORT ssize_t read(int fd, void *buf, size_t count) {
+static ssize_t copy_input_events(void *buf, const struct input_event *events, size_t count) {
+  size_t bytes = count * sizeof(struct input_event);
+  struct iovec local = {const_cast<struct input_event *>(events), bytes};
+  struct iovec remote = {buf, bytes};
+  ssize_t copied = syscall(SYS_process_vm_writev, getpid(), &local, 1, &remote, 1, 0);
+  if (copied < 0) return -1;
+  if (copied != static_cast<ssize_t>(bytes)) {
+    errno = EFAULT;
+    copied -= copied % sizeof(struct input_event);
+    if (!copied) return -1;
+  }
+  return copied;
+}
+
+static ssize_t read_input(int fd, void *buf, size_t count) {
   if (!watched(fd)) return syscall(SYS_read, fd, buf, count);
   std::unique_lock<std::recursive_mutex> guard(controller_mutex());
   auto controller = controller_map().find(fd);
@@ -3616,48 +3797,56 @@ EXPORT ssize_t read(int fd, void *buf, size_t count) {
         if (fake.needs_keyframe || snap.resync_seq != fake.resync_seq ||
             snap.write_seq < fake.read_seq ||
             snap.write_seq - fake.read_seq > FAKE_INPUT_RING_CAPACITY) {
+          if (fake.mouse) {
+            fake.read_seq = snap.write_seq;
+            fake.resync_seq = snap.resync_seq;
+            fake.needs_keyframe = false;
+            continue;
+          }
           capture_keyframe(fake, snap);
         } else {
           size_t events = std::min<uint64_t>(requested, snap.write_seq - fake.read_seq);
           if (events == 0) break;
           const uint8_t *ring_events = reinterpret_cast<const uint8_t *>(fake.ring) +
                                        FAKE_INPUT_RING_HEADER_SIZE;
+          std::vector<struct input_event> input_events(events);
           for (size_t i = 0; i < events; ++i) {
             size_t index = (fake.read_seq + i) % FAKE_INPUT_RING_CAPACITY;
             RingEvent stored;
             memcpy(&stored, ring_events + index * FAKE_INPUT_EVENT_SIZE, FAKE_INPUT_EVENT_SIZE);
-            struct input_event ev = {};
+            struct input_event &ev = input_events[i];
             ev.time.tv_sec = stored.sec;
             ev.time.tv_usec = stored.usec;
             ev.type = stored.type;
             ev.code = stored.code;
             ev.value = stored.value;
             if (ev.type == EV_ABS) ev.code = presented_abs_code(fake, ev.code);
-            memcpy(static_cast<uint8_t *>(buf) + i * sizeof(ev), &ev, sizeof(ev));
           }
           __atomic_thread_fence(__ATOMIC_ACQUIRE);
           if (snap.sequence != __atomic_load_n(&fake.ring->snapshot_seq, __ATOMIC_RELAXED))
             continue;
-          fake.read_seq += events;
-          return static_cast<ssize_t>(events * sizeof(struct input_event));
+          ssize_t copied = copy_input_events(buf, input_events.data(), events);
+          if (copied > 0) fake.read_seq += copied / sizeof(struct input_event);
+          return copied;
         }
       }
 
       size_t events = std::min(requested, fake.keyframe_remaining);
+      struct input_event input_events[kNeutralEventCount] = {};
       struct timeval now = {};
       gettimeofday(&now, nullptr);
       for (size_t i = 0; i < events; ++i) {
-        size_t index = kNeutralEventCount - fake.keyframe_remaining;
-        struct input_event ev = {};
+        size_t index = kNeutralEventCount - fake.keyframe_remaining + i;
+        struct input_event &ev = input_events[i];
         ev.time = now;
         ev.type = kNeutralEvents[index].type;
         ev.code = kNeutralEvents[index].code;
         ev.value = keyframe_value(fake, ev.type, ev.code);
         if (ev.type == EV_ABS) ev.code = presented_abs_code(fake, ev.code);
-        memcpy(static_cast<uint8_t *>(buf) + i * sizeof(ev), &ev, sizeof(ev));
-        --fake.keyframe_remaining;
       }
-      return static_cast<ssize_t>(events * sizeof(struct input_event));
+      ssize_t copied = copy_input_events(buf, input_events, events);
+      if (copied > 0) fake.keyframe_remaining -= copied / sizeof(struct input_event);
+      return copied;
     }
     if (nonblock) {
       errno = EAGAIN;
@@ -3671,6 +3860,52 @@ EXPORT ssize_t read(int fd, void *buf, size_t count) {
     if (low_latency(LATENCY_CONTROLLER)) backoff_ns = kLowLatencyRingWaitUs * 1000;
     else if (backoff_ns < kMaxRingWaitMs * 1000 * 1000) backoff_ns *= 2;
   }
+}
+
+EXPORT ssize_t read(int fd, void *buf, size_t count) {
+  return read_input(fd, buf, count);
+}
+
+EXPORT ssize_t readv(int fd, const struct iovec *iov, int iovcnt) {
+  if (!is_fake_input_fd(fd)) return syscall(SYS_readv, fd, iov, iovcnt);
+  if (iovcnt < 0 || iovcnt > IOV_MAX) {
+    errno = EINVAL;
+    return -1;
+  }
+  if (iovcnt && !iov) {
+    errno = EFAULT;
+    return -1;
+  }
+  std::vector<struct iovec> copied_iov(static_cast<size_t>(iovcnt));
+  if (iovcnt) {
+    size_t bytes = copied_iov.size() * sizeof(struct iovec);
+    struct iovec local = {copied_iov.data(), bytes};
+    struct iovec remote = {const_cast<struct iovec *>(iov), bytes};
+    ssize_t copied = syscall(SYS_process_vm_readv, getpid(), &local, 1, &remote, 1, 0);
+    if (copied != static_cast<ssize_t>(bytes)) {
+      errno = EFAULT;
+      return -1;
+    }
+  }
+  iov = copied_iov.data();
+  size_t size = 0;
+  for (int i = 0; i < iovcnt; ++i) {
+    if (iov[i].iov_len > static_cast<size_t>(SSIZE_MAX) - size) {
+      errno = EINVAL;
+      return -1;
+    }
+    size += iov[i].iov_len;
+  }
+
+  ssize_t total = 0;
+  for (int i = 0; i < iovcnt; ++i) {
+    if (!iov[i].iov_len) continue;
+    ssize_t got = read_input(fd, iov[i].iov_base, iov[i].iov_len);
+    if (got < 0) return total ? total : -1;
+    total += got;
+    if (static_cast<size_t>(got) != iov[i].iov_len) break;
+  }
+  return total;
 }
 
 EXPORT ssize_t write(int fd, const void *buf, size_t count) {
@@ -4031,7 +4266,7 @@ EXPORT int select(int nfds, fd_set *readfds, fd_set *writefds,
 
 #ifdef __GLIBC__
 static mode_t open_mode(int flags, va_list va) {
-  return (flags & (O_CREAT | O_TMPFILE)) ? va_arg(va, mode_t) : 0;
+  return open_has_mode(flags) ? va_arg(va, mode_t) : 0;
 }
 
 EXPORT int open64(const char *pathname, int flags, ...) {
@@ -4103,4 +4338,92 @@ EXPORT int __fxstat64(int version, int fd, struct stat64 *buf) {
   if (!real) return fstat64(fd, buf);
   return fake_stat_fd(fd, buf, [version](int f, struct stat64 *b) { return real(version, f, b); });
 }
+
+#if defined(__x86_64__) || defined(__i386__)
+using dlsym_fn = void *(*)(void *, const char *);
+
+static const char *const interposed_names[] = {
+    "open", "open64", "openat", "openat64", "close", "read", "readv", "write", "writev", "ioctl",
+    "poll", "ppoll", "select", "stat", "stat64", "fstat", "fstat64", "__xstat", "__xstat64",
+    "__fxstat", "__fxstat64", "statx", "statfs", "statfs64", "fstatfs", "fstatfs64", "access",
+    "faccessat", "opendir", "scandir", "inotify_add_watch",
+};
+
+static dlsym_fn next_dlsym() {
+  static const dlsym_fn fn = [] {
+#ifdef __x86_64__
+    const char *base = "GLIBC_2.2.5";
+#else
+    const char *base = "GLIBC_2.0";
+#endif
+    for (const char *version : {base, "GLIBC_2.34"}) {
+      if (auto found = reinterpret_cast<dlsym_fn>(dlvsym(RTLD_NEXT, "dlsym", version))) return found;
+    }
+    return dlsym_fn{};
+  }();
+  return fn;
+}
+
+static void *global_dlsym(void *, const char *name) { return next_dlsym()(RTLD_DEFAULT, name); }
+
+static void *missing_dlsym(void *, const char *) { return nullptr; }
+
+static bool interposed(const char *name) {
+  for (const char *interposed_name : interposed_names) {
+    if (strcmp(interposed_name, name) == 0) return true;
+  }
+  return false;
+}
+
+extern "C" __attribute__((visibility("hidden"), used)) void *fakeinput_dlsym_target(void *handle, const char *name) {
+  dlsym_fn next = next_dlsym();
+  if (!next) return reinterpret_cast<void *>(missing_dlsym);
+  if (handle == RTLD_DEFAULT || handle == RTLD_NEXT || name == nullptr) return reinterpret_cast<void *>(next);
+  static void *const libc = dlopen(LIBC_SO, RTLD_LAZY | RTLD_NOLOAD);
+  if (handle != libc || !interposed(name)) return reinterpret_cast<void *>(next);
+  return reinterpret_cast<void *>(global_dlsym);
+}
+
+#ifdef __x86_64__
+__asm__(".text\n"
+        ".globl dlsym\n"
+        ".type dlsym, @function\n"
+        "dlsym:\n"
+        ".cfi_startproc\n"
+        "pushq %rdi\n"
+        ".cfi_adjust_cfa_offset 8\n"
+        "pushq %rsi\n"
+        ".cfi_adjust_cfa_offset 8\n"
+        "subq $8, %rsp\n"
+        ".cfi_adjust_cfa_offset 8\n"
+        "call fakeinput_dlsym_target\n"
+        "addq $8, %rsp\n"
+        ".cfi_adjust_cfa_offset -8\n"
+        "popq %rsi\n"
+        ".cfi_adjust_cfa_offset -8\n"
+        "popq %rdi\n"
+        ".cfi_adjust_cfa_offset -8\n"
+        "jmp *%rax\n"
+        ".cfi_endproc\n"
+        ".size dlsym, .-dlsym\n");
+#else
+__asm__(".text\n"
+        ".globl dlsym\n"
+        ".type dlsym, @function\n"
+        "dlsym:\n"
+        ".cfi_startproc\n"
+        "subl $12, %esp\n"
+        ".cfi_adjust_cfa_offset 12\n"
+        "movl 20(%esp), %eax\n"
+        "movl %eax, 4(%esp)\n"
+        "movl 16(%esp), %eax\n"
+        "movl %eax, (%esp)\n"
+        "call fakeinput_dlsym_target\n"
+        "addl $12, %esp\n"
+        ".cfi_adjust_cfa_offset -12\n"
+        "jmp *%eax\n"
+        ".cfi_endproc\n"
+        ".size dlsym, .-dlsym\n");
+#endif
+#endif
 #endif

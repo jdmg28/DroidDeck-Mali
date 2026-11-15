@@ -1,13 +1,15 @@
 package com.droiddeck.launcher.runtime;
 
+import com.droiddeck.launcher.core.AddonPack;
 import android.content.Context;
 import android.os.Process;
 import android.system.ErrnoException;
 import android.system.Os;
 import android.system.StructStat;
 import android.system.StructUtsname;
-import com.droiddeck.launcher.session.SessionPrefs;
 import com.droiddeck.launcher.gpu.GpuSafety;
+import com.droiddeck.launcher.gpu.SystemVulkanDriver;
+import com.droiddeck.launcher.session.SessionPrefs;
 
 
 import java.io.File;
@@ -25,15 +27,8 @@ public final class LinuxRuntime {
     public static final String MODE_RUN = "run";
     public static final String EXTRA_LINUX_MODE = "linux_mode";
     private static final String KGSL_DEVICE = "/dev/kgsl-3d0";
-    private static final String MALI_DEVICE = "/dev/mali0";
-    /**
-     * Where the guest sees a command's XDG_RUNTIME_DIR. A Unix socket's path must fit in 108 bytes,
-     * and libwayland checks the guest's path before proot ever sees it: with the app on an SD card
-     * adopted as internal storage the files directory is /mnt/expand/<uuid>/user/0/<package>/files,
-     * and gamescope-0 under it is one byte over, so gamescope could not open its socket and the
-     * session ended at once. A long host path behind it is proot's to shorten.
-     */
     public static final String GUEST_RUNTIME_DIR = "/run/droiddeck";
+    public static final String GUEST_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games";
     private static final String SYSTEM_FONTS = "/system/fonts";
     private static final String GUEST_SYSTEM_FONTS = "/usr/local/share/fonts/android";
     public static final String DEBUG_LOG_DIR = "DroidDeck";
@@ -58,7 +53,6 @@ public final class LinuxRuntime {
     }
 
     public static File liveDir(Context context) {
-        // Android may evict cache files even while guest processes are using them.
         File dir = new File(context.getNoBackupFilesDir(), "guest-runtime");
         dir.mkdirs();
         return dir;
@@ -71,17 +65,44 @@ public final class LinuxRuntime {
     }
 
     private static final String HOST_DIR = "opt/android-host";
+    public static final String PROOT_PACK = "add-on pack";
+    public static final String PROOT_ROOTFS = "rootfs fallback";
+    public static final String PROOT_MISSING = "missing";
 
-    public static File prootBinary(Context context) {
-        File packaged = new File(context.getApplicationInfo().nativeLibraryDir, "libproot.so");
-        if (packaged.isFile()) return packaged;
+    private static File rootfsProot(Context context) {
         return new File(rootDir(context), HOST_DIR + "/proot");
     }
 
-    public static File prootLoader(Context context) {
-        File packaged = new File(context.getApplicationInfo().nativeLibraryDir, "libproot-loader.so");
-        if (packaged.isFile()) return packaged;
+    private static File rootfsLoader(Context context) {
         return new File(rootDir(context), HOST_DIR + "/loader");
+    }
+
+    private static boolean rootfsProotReady(Context context) {
+        return rootfsProot(context).isFile() && rootfsLoader(context).isFile();
+    }
+
+    public static boolean patchedProot(Context context) {
+        return AddonPack.PROOT.installed(context);
+    }
+
+    public static File prootBinary(Context context) {
+        if (AddonPack.PROOT.installed(context)) return AddonPack.PROOT.file(context, "libproot.so");
+        if (SessionPrefs.allowStockProot(context)) return rootfsProot(context);
+        return AddonPack.PROOT.file(context, "libproot.so");
+    }
+
+    public static File prootLoader(Context context) {
+        if (AddonPack.PROOT.installed(context)) return AddonPack.PROOT.file(context, "libproot-loader.so");
+        if (SessionPrefs.allowStockProot(context)) return rootfsLoader(context);
+        return AddonPack.PROOT.file(context, "libproot-loader.so");
+    }
+
+    public static String prootSource(Context context) {
+        File bin = prootBinary(context);
+        if (!bin.isFile()) return PROOT_MISSING;
+        if (AddonPack.PROOT.installed(context)
+                && bin.getPath().equals(AddonPack.PROOT.file(context, "libproot.so").getPath())) return PROOT_PACK;
+        return PROOT_ROOTFS;
     }
 
     public static String prootLibraryPath(Context context) {
@@ -90,13 +111,15 @@ public final class LinuxRuntime {
     }
 
     public static boolean isInstalled(Context context) {
+        return hasRootfs(context) && (patchedProot(context) || rootfsProotReady(context));
+    }
+
+    public static boolean hasRootfs(Context context) {
         if (LinuxRuntimeInstaller.isRemoving() || LinuxRuntimeInstaller.hasRemovalPending(context)) return false;
         File root = rootDir(context);
-        return new File(root, "usr/bin/gamescope").isFile()
+        return (new File(root, "usr/bin/gamescope").isFile() || new File(root, "usr/games/gamescope").isFile())
                 && (new File(root, SESSION_SCRIPT.substring(1)).isFile()
-                        || new File(root, LegacyNames.SESSION_SCRIPT.substring(1)).isFile())
-                && prootBinary(context).isFile()
-                && prootLoader(context).isFile();
+                        || new File(root, LegacyNames.SESSION_SCRIPT.substring(1)).isFile());
     }
 
     public static File vulkanIcd(Context context) {
@@ -120,6 +143,11 @@ public final class LinuxRuntime {
         File root = rootDir(context);
         List<String> binds = binds(context, sessionRoot, runtimeDir, externalStorage, extraBinds);
         if (sessionRoot != null) lastBinds = binds;
+        return commandWithBinds(context, root, binds, guestCommand);
+    }
+
+    public static List<String> commandWithBinds(Context context, File root, List<String> binds,
+                                                List<String> guestCommand) {
         List<String> cmd = prootPrefix(context, root, "/root");
         for (String spec : binds) bind(cmd, spec);
         cmd.addAll(guestCommand);
@@ -165,12 +193,24 @@ public final class LinuxRuntime {
         bind(cmd, "/dev");
         bind(cmd, "/proc");
         bind(cmd, "/sys");
+        if (com.droiddeck.launcher.gpu.SystemVulkanDriver.isPowerVr()) {
+            // The glibc bridge loads the device's existing Android HAL and its dependencies.
+            // These read-only Android partitions remain subject to the app's normal permissions.
+            for (String path : new String[]{"/system", "/vendor", "/apex", "/system_ext", "/product", "/odm"})
+                if (new File(path).isDirectory()) bind(cmd, path);
+            if (new File("/linkerconfig/ld.config.txt").isFile()) bind(cmd, "/linkerconfig/ld.config.txt");
+        }
+        bind(cmd, DeviceControlsComponent.prepareBacklight(context, root).getPath() + ":/sys/class/backlight");
         bind(cmd, "/dev/urandom:/dev/random");
         bind(cmd, "/proc/self/fd:/dev/fd");
         bind(cmd, "/proc/self/fd/0:/dev/stdin");
         bind(cmd, "/proc/self/fd/1:/dev/stdout");
         bind(cmd, "/proc/self/fd/2:/dev/stderr");
         bind(cmd, new File(root, "etc/droiddeck/empty").getPath() + ":/sys/fs/selinux");
+        // A kernel that refuses to list /sys/class/thermal (Pixel 10, Android 17) made mangoapp abort
+        // at start ("filesystem_error ... Permission denied: '/sys/class/thermal/'") until its
+        // wrapper gave up: it lists the directory for CPU temperatures. Empty there instead.
+        if (new File("/sys/class/thermal").list() == null) bind(cmd, new File(root, "etc/droiddeck/empty").getPath() + ":/sys/class/thermal");
         bind(cmd, context.getFilesDir().getPath());
         bind(cmd, context.getCacheDir().getPath());
         bind(cmd, liveDir(context).getPath());
@@ -186,10 +226,6 @@ public final class LinuxRuntime {
         shm.mkdirs();
         bind(cmd, shm.getPath() + ":/dev/shm");
         bindSystemFonts(cmd, root);
-        // Software mode (GpuSafety): the device's own GPU is kept out of the guest entirely - see
-        // hideGpuNodes and the guard on bindGpuNode below.
-        boolean software = GpuSafety.INSTANCE.software(context);
-        if (software) hideGpuNodes(context, cmd);
 
         File fakeProc = new File(root, "etc/droiddeck/proc");
         File pciDevices = new File(fakeProc, "pci_devices");
@@ -200,10 +236,15 @@ public final class LinuxRuntime {
             } catch (java.io.IOException e) {
             }
         }
-        File fileMax = new File(fakeProc, "file-max");
-        if (!fileMax.isFile()) {
+        String[][] seeded = {
+                {"file-max", "9223372036854775807\n"},
+                {"overcommit_memory", "0\n"},
+        };
+        for (String[] entry : seeded) {
+            File fake = new File(fakeProc, entry[0]);
+            if (fake.isFile()) continue;
             try {
-                Files.write(fileMax.toPath(), "9223372036854775807\n".getBytes(StandardCharsets.US_ASCII));
+                Files.write(fake.toPath(), entry[1].getBytes(StandardCharsets.US_ASCII));
             } catch (IOException e) {
             }
         }
@@ -218,6 +259,7 @@ public final class LinuxRuntime {
                 {"overflowuid", "/proc/sys/kernel/overflowuid"},
                 {"overflowgid", "/proc/sys/kernel/overflowgid"},
                 {"file-max", "/proc/sys/fs/file-max"},
+                {"overcommit_memory", "/proc/sys/vm/overcommit_memory"},
         };
         for (String[] entry : procFiles) {
             File fake = new File(fakeProc, entry[0]);
@@ -227,9 +269,17 @@ public final class LinuxRuntime {
                 bind(cmd, fake.getPath() + ":" + entry[1]);
             }
         }
-        // bindGpuNode is what hands the guest a GPU: on a Mali device it puts /dev/mali0 in the
-        // guest as a render node. In software mode there is no GPU node and no /dev/dri at all.
-        if (!software) bindGpuNode(context, cmd);
+        if (unreadablePciDevice()) {
+            bind(cmd, new File(root, "etc/droiddeck/empty").getPath() + ":/sys/bus/pci/devices");
+        }
+        // Software mode (GpuSafety): the device's own GPU stays out of the guest entirely.
+        if (GpuSafety.INSTANCE.software(context)) {
+            hideGpuNodes(context, cmd);
+        } else if (com.droiddeck.launcher.gpu.SystemVulkanDriver.isPowerVr()) {
+            bindPowerVrGpuNode(context, cmd);
+        } else {
+            bindGpuNode(context, cmd);
+        }
         bindAdrenoStats(cmd, extraBinds);
         bindCpuTemps(cmd, root);
         if (extraBinds != null) {
@@ -240,14 +290,63 @@ public final class LinuxRuntime {
         return specs;
     }
 
-    /**
-     * The GPU device nodes a software session must not see. Listing {@code /dev} is the honest
-     * answer to "which are there", but a device can refuse an app the listing while a stat of one
-     * node still works - which is how the rest of the app finds the GPU - so the names a Mali or
-     * Panfrost node is known by are tried too when the listing comes back empty. A session log
-     * that reports zero hid nodes and a {@code /dev/mali0} that is still a character device is
-     * the evidence this fallback was needed for.
-     */
+    private static void bindPowerVrGpuNode(Context context, List<String> cmd) {
+        if (new File("/dev/dri").list() != null) return;
+        String node = SystemVulkanDriver.renderNodePath();
+        if (node == null) return;
+        String name = new File(node).getName();
+        File dri = new File(context.getCacheDir(), "powervr-drm/" + name + "/dri");
+        try {
+            if (!dri.isDirectory() && !dri.mkdirs()) return;
+            new File(dri, name).createNewFile();
+        } catch (IOException e) {
+            android.util.Log.w("LinuxRuntime", "Cannot expose the PowerVR render node", e);
+            return;
+        }
+        bind(cmd, dri.getPath() + ":/dev/dri");
+        bind(cmd, node + ":" + node);
+        android.util.Log.i("LinuxRuntime", "PowerVR: exposing real " + name + " through a listable directory");
+    }
+
+    private static boolean unreadablePciDevice() {
+        File[] devices = new File("/sys/bus/pci/devices").listFiles();
+        if (devices == null) return false;
+        for (File device : devices) {
+            if (!new File(device, "vendor").canRead()) return true;
+        }
+        return false;
+    }
+
+    public static final String MALI_DEVICE = "/dev/mali0";
+
+    static final String[] DRM_RENDER_NODES = {
+        "/dev/dri/renderD128", "/dev/dri/renderD129", "/dev/dri/renderD130", "/dev/dri/renderD131",
+    };
+
+    public static String gpuStandIn(Context context) {
+        if (new File(KGSL_DEVICE).exists()) return KGSL_DEVICE;
+        if (com.droiddeck.launcher.core.DeviceSupport.INSTANCE.openDriverActive(context) && new File(MALI_DEVICE).exists()) return MALI_DEVICE;
+        if (!com.droiddeck.launcher.core.DeviceSupport.INSTANCE.vkBridge(context)) return null;
+        return bridgeStandIn(path -> new File(path).exists());
+    }
+
+    static String bridgeStandIn(java.util.function.Predicate<String> exists) {
+        if (exists.test(MALI_DEVICE)) return MALI_DEVICE;
+        for (String node : DRM_RENDER_NODES) if (exists.test(node)) return node;
+        return null;
+    }
+
+    public static String deviceNumbers(String path) {
+        try {
+            long dev = Os.stat(path).st_rdev;
+            long major = ((dev >> 8) & 0xfff) | ((dev >> 32) & ~0xfffL);
+            long minor = (dev & 0xff) | ((dev >> 12) & ~0xffL);
+            return major + ":" + minor;
+        } catch (ErrnoException e) {
+            return null;
+        }
+    }
+
     private static File[] gpuNodes() {
         File[] listed = new File("/dev").listFiles((dir, name) -> name.startsWith("mali") || name.startsWith("panfrost"));
         if (listed != null && listed.length > 0) {
@@ -273,22 +372,10 @@ public final class LinuxRuntime {
     }
 
     /**
-     * Cover every GPU device node the guest would otherwise reach through the {@code /dev} bind
-     * with an empty regular file, so the session has no way to open the GPU: a driver that tries
-     * gets a zero-length file, every ioctl on it fails with ENOTTY, and {@code test -c /dev/mali0}
-     * is false inside the session.
-     *
-     * <p>proot answers a path with the deepest binding that names it, and with the last one when
-     * two name the same path ({@code insort_binding}, src/path/binding.c of the proot this app
-     * builds), so this stands in front of the {@code /dev} bind above exactly as the
-     * {@code /dev/urandom:/dev/random} bind already does. An empty file rather than {@code /dev/null}
-     * so a driver that reads it gets EOF instead of a character device that answers ioctls.
+     * Cover every GPU device node the guest would reach through the {@code /dev} bind with an empty
+     * regular file: a driver that opens it gets EOF instead of a device that answers ioctls.
      */
     private static void hideGpuNodes(Context context, List<String> cmd) {
-        // The app's cache directory, not a path inside the rootfs: proot drops a binding whose
-        // host side it cannot resolve (new_binding, src/path/binding.c), and a stand-in that is
-        // never created hides nothing - which is what a session on a Mali phone reported:
-        // "gpu safety: SOFTWARE, but /dev/mali0 IS still a character device in the guest".
         File empty = new File(context.getCacheDir(), "empty-gpu-node");
         try {
             if (empty.getParentFile() != null) empty.getParentFile().mkdirs();
@@ -311,28 +398,16 @@ public final class LinuxRuntime {
         }
     }
 
-    /**
-     * An app process may not open {@code /dev/dri} - the nodes exist but are labelled
-     * {@code graphics_device}, which stock policy grants surfaceflinger and not us - yet libdrm and
-     * everything built on it identify a GPU by its render node, and gamescope refuses to offer
-     * linux-dmabuf without one. The KGSL device Turnip actually drives ({@code gpu_device}, which we
-     * may open) stands in: it appears as a render node with the sysfs entries libdrm reads, and our
-     * Turnip build reports the same device numbers for it.
-     */
     private static void bindGpuNode(Context context, List<String> cmd) {
+        String standIn = gpuStandIn(context);
+        if (standIn == null) return;
+        boolean kgsl = standIn.equals(KGSL_DEVICE);
         StructStat st;
-        String gpuDevice = KGSL_DEVICE;
         try {
-            st = Os.stat(gpuDevice);
+            st = Os.stat(standIn);
         } catch (ErrnoException e) {
-            try {
-                gpuDevice = MALI_DEVICE;
-                st = Os.stat(gpuDevice);
-            } catch (ErrnoException missingGpu) {
-                return;
-            }
+            return;
         }
-        boolean mali = MALI_DEVICE.equals(gpuDevice);
         long dev = st.st_rdev;
         long major = ((dev >> 8) & 0xfff) | ((dev >> 32) & ~0xfffL);
         long minor = (dev & 0xff) | ((dev >> 12) & ~0xffL);
@@ -349,21 +424,22 @@ public final class LinuxRuntime {
             Files.write(new File(drm, "dev").toPath(),
                     (major + ":" + minor + "\n").getBytes(StandardCharsets.UTF_8));
             Files.write(new File(device, "uevent").toPath(),
-                    (mali ? "DRIVER=panfrost\nMODALIAS=platform:mali\n" : "DRIVER=kgsl-3d0\nMODALIAS=platform:kgsl-3d0\n").getBytes(StandardCharsets.UTF_8));
+                    (kgsl ? "DRIVER=kgsl-3d0\nMODALIAS=platform:kgsl-3d0\n" : "DRIVER=mali\nMODALIAS=platform:mali\n")
+                            .getBytes(StandardCharsets.UTF_8));
             File subsystem = new File(device, "subsystem");
             if (!Files.isSymbolicLink(subsystem.toPath())) {
                 Os.symlink("/sys/bus/platform", subsystem.getPath());
             }
             File driver = new File(device, "driver");
-            if (!Files.isSymbolicLink(driver.toPath())) {
-                Os.symlink("/sys/bus/platform/drivers/" + (mali ? "panfrost" : "msm_drm"), driver.getPath());
+            if (kgsl && !Files.isSymbolicLink(driver.toPath())) {
+                Os.symlink("/sys/bus/platform/drivers/msm_drm", driver.getPath());
             }
         } catch (IOException | ErrnoException e) {
             return;
         }
         bind(cmd, new File(base, "sys").getPath() + ":/sys/dev/char");
         bind(cmd, dri.getPath() + ":/dev/dri");
-        bind(cmd, gpuDevice + ":/dev/dri/" + node);
+        bind(cmd, standIn + ":/dev/dri/" + node);
         bindDrmClass(base, cmd, node, major + ":" + minor);
     }
 
@@ -387,9 +463,9 @@ public final class LinuxRuntime {
     }
 
     public static String cpuTempSource() {
-        for (java.util.Map.Entry<String, File> e : new java.util.TreeMap<>(thermalZones()).entrySet()) {
-            File temp = new File(e.getValue(), "temp");
-            if (e.getKey().contains("cpu") && !e.getKey().contains("gpu") && temp.canRead()) return temp.getPath();
+        for (File zone : cpuTempZones()) {
+            File temp = new File(zone, "temp");
+            if (temp.canRead()) return temp.getPath();
         }
         return null;
     }
@@ -399,7 +475,7 @@ public final class LinuxRuntime {
         return firstReadable(kgsl + "temp", kgsl + "devfreq/temp", thermalZone("gpu"));
     }
 
-    private static String gpuLoadSource() {
+    public static String gpuLoadSource() {
         String kgsl = "/sys/class/kgsl/kgsl-3d0/";
         return firstReadable(kgsl + "gpu_busy_percentage", kgsl + "devfreq/gpu_load");
     }
@@ -413,7 +489,7 @@ public final class LinuxRuntime {
                         "/sys/devices/platform/soc@0/3d00000.gpu/devfreq/3d00000.gpu/cur_freq"},
                 {gpuTemp, "/sys/class/thermal/thermal_zone28/temp"},
                 {gpuTemp, "/sys/class/thermal/thermal_zone26/temp"},
-                {thermalZone("ddr"), "/sys/class/thermal/thermal_zone22/temp"},
+                {ddrTempSource(), "/sys/class/thermal/thermal_zone22/temp"},
         };
         for (String[] stat : stats) {
             boolean fed = false;
@@ -430,6 +506,32 @@ public final class LinuxRuntime {
         return path != null ? path : "none";
     }
 
+    private static String ddrTempSource() {
+        return thermalZone("ddr");
+    }
+
+    private static java.util.Map<String, String> replacedZoneTypes() {
+        java.util.Map<String, String> replaced = new java.util.HashMap<>();
+        if (gpuTempSource() != null) {
+            replaced.put("thermal_zone28", "gpu-thermal");
+            replaced.put("thermal_zone26", "gpu-thermal");
+        }
+        if (ddrTempSource() != null) replaced.put("thermal_zone22", "ddr-thermal");
+        return replaced;
+    }
+
+    public static List<File> cpuTempZones() {
+        java.util.Map<String, String> replaced = replacedZoneTypes();
+        List<File> zones = new ArrayList<>();
+        for (java.util.Map.Entry<String, File> zone : new java.util.TreeMap<>(thermalZones()).entrySet()) {
+            String type = zone.getKey();
+            if (type.contains("cpu") && !type.contains("gpu") && !replaced.containsKey(zone.getValue().getName())) {
+                zones.add(zone.getValue());
+            }
+        }
+        return zones;
+    }
+
     private static void bindCpuTemps(List<String> cmd, File root) {
         File name = new File(root, "etc/droiddeck/cpu-thermal-type");
         try {
@@ -437,9 +539,18 @@ public final class LinuxRuntime {
         } catch (IOException e) {
             return;
         }
+        java.util.Map<String, String> replaced = replacedZoneTypes();
         for (java.util.Map.Entry<String, File> zone : thermalZones().entrySet()) {
             String type = zone.getKey();
-            if (type.contains("cpu") && !type.contains("gpu") && !type.matches("cpu\\d-(top-)?thermal")) {
+            String other = replaced.get(zone.getValue().getName());
+            if (other != null) {
+                File typeFile = new File(root, "etc/droiddeck/" + other + "-type");
+                try {
+                    if (!typeFile.isFile()) Files.write(typeFile.toPath(), (other + "\n").getBytes(StandardCharsets.US_ASCII));
+                    bind(cmd, typeFile.getPath() + ":" + new File(zone.getValue(), "type").getPath());
+                } catch (IOException ignored) {
+                }
+            } else if (type.contains("cpu") && !type.contains("gpu") && !type.matches("cpu\\d-(top-)?thermal")) {
                 bind(cmd, name.getPath() + ":" + new File(zone.getValue(), "type").getPath());
             }
         }
@@ -494,12 +605,72 @@ public final class LinuxRuntime {
                 + "\\" + host.version + "\\" + host.machine + "\\localdomain\\-1\\";
     }
 
-    public static void writeAccounts(Context context) throws IOException {
+    public static synchronized void writeAccounts(Context context) throws IOException {
         File root = rootDir(context);
         int uid = Process.myUid();
-        Files.write(new File(root, "etc/passwd").toPath(),
-                ("root:x:" + uid + ":" + uid + ":root:/root:/bin/bash\n").getBytes(StandardCharsets.UTF_8));
-        Files.write(new File(root, "etc/group").toPath(),
-                ("root:x:" + uid + ":\n").getBytes(StandardCharsets.UTF_8));
+        mergeAccounts(new File(root, "etc/passwd"), 2,
+                "root:x:" + uid + ":" + uid + ":root:/root:/bin/bash", "root:x:0:0:root:/root:/bin/bash", uid);
+        mergeAccounts(new File(root, "etc/group"), 2,
+                "root:x:" + uid + ":", "root:x:0:", uid);
+        File group = new File(root, "etc/group");
+        String groups = new String(Files.readAllBytes(group.toPath()), StandardCharsets.UTF_8);
+        writeIfChanged(group, groups, withStorageGroups(groups));
+    }
+
+    private static final String[][] STORAGE_GROUPS = {
+            {"sdcard_rw", "1015"}, {"media_rw", "1023"}, {"everybody", "9997"}};
+
+    static String withStorageGroups(String groups) {
+        StringBuilder out = new StringBuilder();
+        List<String> present = new ArrayList<>();
+        for (String line : groups.split("\n")) {
+            if (line.trim().isEmpty()) continue;
+            String[] fields = line.split(":", -1);
+            if (fields.length >= 4) {
+                for (String[] storage : STORAGE_GROUPS) {
+                    if (fields[0].equals(storage[0])) present.add(storage[0]);
+                    if (!fields[2].equals(storage[1])) continue;
+                    present.add(storage[0]);
+                    if (!java.util.Arrays.asList(fields[3].split(",")).contains("root")) {
+                        fields[3] = fields[3].isEmpty() ? "root" : fields[3] + ",root";
+                        line = String.join(":", fields);
+                    }
+                }
+            }
+            out.append(line).append('\n');
+        }
+        for (String[] storage : STORAGE_GROUPS) {
+            if (!present.contains(storage[0])) {
+                out.append(storage[0]).append(":x:").append(storage[1]).append(":root\n");
+            }
+        }
+        return out.toString();
+    }
+
+    static String mergedAccounts(String existing, int idField, String own, String zero, int uid) {
+        StringBuilder out = new StringBuilder(own).append('\n').append(zero).append('\n');
+        if (existing == null) return out.toString();
+        String ownId = Integer.toString(uid);
+        for (String line : existing.split("\n")) {
+            if (line.trim().isEmpty()) continue;
+            String[] fields = line.split(":", -1);
+            if (fields.length <= idField) continue;
+            if (fields[0].equals("root") || fields[idField].equals("0") || fields[idField].equals(ownId)) continue;
+            out.append(line).append('\n');
+        }
+        return out.toString();
+    }
+
+    private static void mergeAccounts(File file, int idField, String own, String zero, int uid) throws IOException {
+        String existing = file.isFile() ? new String(Files.readAllBytes(file.toPath()), StandardCharsets.UTF_8) : null;
+        writeIfChanged(file, existing, mergedAccounts(existing, idField, own, zero, uid));
+    }
+
+    private static void writeIfChanged(File file, String existing, String merged) throws IOException {
+        if (merged.equals(existing)) return;
+        File staged = File.createTempFile(file.getName(), ".staged", file.getParentFile());
+        Files.write(staged.toPath(), merged.getBytes(StandardCharsets.UTF_8));
+        Files.move(staged.toPath(), file.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+                java.nio.file.StandardCopyOption.ATOMIC_MOVE);
     }
 }

@@ -71,6 +71,31 @@ class PadBridgeRoutingTest {
             InputDevice.KEYBOARD_TYPE_NONE, id = -1)
         assertTrue(virtual.isVirtual)
         assertFalse(PadBridge.isFromController(virtual))
+        for (uinputName in listOf("uinput-xiaomi", "uinput-fpc", "uinput_nav")) {
+            val phantom = device(
+                InputDevice.SOURCE_GAMEPAD or InputDevice.SOURCE_JOYSTICK,
+                InputDevice.KEYBOARD_TYPE_NONE,
+                name = uinputName,
+            )
+            assertFalse(phantom.isVirtual)
+            assertFalse(PadBridge.isFromController(phantom))
+            assertFalse(PadBridge.isControllerKeyEvent(key(phantom, KeyEvent.KEYCODE_BUTTON_A, KeyEvent.ACTION_DOWN)))
+        }
+        assertFalse(PadBridge.anyControllerConnected())
+    }
+
+    @Test fun homeShortcutsIgnoreHomeFromSystemKeys() {
+        val gpio = device(InputDevice.SOURCE_KEYBOARD, InputDevice.KEYBOARD_TYPE_NON_ALPHABETIC, name = "gpio-keys")
+        val pad = device(InputDevice.SOURCE_GAMEPAD or InputDevice.SOURCE_KEYBOARD, InputDevice.KEYBOARD_TYPE_NON_ALPHABETIC)
+        assertFalse(PadBridge.isControllerKeyEvent(key(gpio, KeyEvent.KEYCODE_HOME, KeyEvent.ACTION_DOWN)))
+        assertTrue(PadBridge.isControllerKeyEvent(key(pad, KeyEvent.KEYCODE_HOME, KeyEvent.ACTION_DOWN)))
+        val owner = Any()
+        HomeButtonShortcuts.attach(owner, { true }, { fail("system Home must not press Guide") }, {})
+        try {
+            for (action in listOf(KeyEvent.ACTION_DOWN, KeyEvent.ACTION_UP)) {
+                assertFalse(HomeButtonShortcuts.onKeyEvent(RuntimeEnvironment.getApplication(), key(gpio, KeyEvent.KEYCODE_HOME, action)))
+            }
+        } finally { HomeButtonShortcuts.detach(owner) }
     }
 
     @Test fun keyAndMotionOwnershipDoesNotFollowEverySourceOnTheDevice() {
@@ -122,6 +147,21 @@ class PadBridgeRoutingTest {
         }
     }
 
+    @Test fun onlyAxesTheDeviceReportsReplaceKeyDrivenTriggersAndDpad() {
+        val js = InputDevice.SOURCE_JOYSTICK
+        val sticksOnly = device(js or InputDevice.SOURCE_GAMEPAD, InputDevice.KEYBOARD_TYPE_NON_ALPHABETIC, rangeSource = js, axis = MotionEvent.AXIS_X)
+        val withTrigger = device(js or InputDevice.SOURCE_GAMEPAD, InputDevice.KEYBOARD_TYPE_NON_ALPHABETIC, rangeSource = js, axis = MotionEvent.AXIS_LTRIGGER)
+        val withHat = device(js or InputDevice.SOURCE_GAMEPAD, InputDevice.KEYBOARD_TYPE_NON_ALPHABETIC, rangeSource = js, axis = MotionEvent.AXIS_HAT_Y)
+        val triggers = intArrayOf(MotionEvent.AXIS_LTRIGGER, MotionEvent.AXIS_RTRIGGER, MotionEvent.AXIS_BRAKE, MotionEvent.AXIS_GAS)
+        val hat = intArrayOf(MotionEvent.AXIS_HAT_X, MotionEvent.AXIS_HAT_Y)
+        assertFalse(PadBridge.hasAxis(sticksOnly, js, *triggers))
+        assertFalse(PadBridge.hasAxis(sticksOnly, js, *hat))
+        assertTrue(PadBridge.hasAxis(withTrigger, js, *triggers))
+        assertFalse(PadBridge.hasAxis(withTrigger, js, *hat))
+        assertTrue(PadBridge.hasAxis(withHat, js, *hat))
+        assertFalse(PadBridge.hasAxis(null, js, *hat))
+    }
+
     private fun key(device: InputDevice, code: Int, action: Int, source: Int = InputDevice.SOURCE_KEYBOARD): KeyEvent {
         val event = KeyEvent(0L, 0L, action, code, 0, 0, device.id, 0, 0, source)
         assertSame(device, event.device)
@@ -131,8 +171,8 @@ class PadBridgeRoutingTest {
     private var nextId = 10
 
     private fun device(sources: Int, type: Int, keys: IntArray = intArrayOf(KeyEvent.KEYCODE_A, KeyEvent.KEYCODE_DPAD_UP),
-        rangeSource: Int? = null, axis: Int = MotionEvent.AXIS_X, id: Int = nextId++): InputDevice {
-        val builder = InputDeviceBuilder.newBuilder().setId(id).setName("routing fixture $id")
+        rangeSource: Int? = null, axis: Int = MotionEvent.AXIS_X, id: Int = nextId++, name: String = "routing fixture $id"): InputDevice {
+        val builder = InputDeviceBuilder.newBuilder().setId(id).setName(name)
             .setDescriptor("routing-$id").setExternal(true).setSources(sources).setKeyboardType(type)
             .setKeyCharacterMap(KeyCharacterMap.load(KeyCharacterMap.VIRTUAL_KEYBOARD))
         if (rangeSource != null) builder.addMotionRange(axis, rangeSource, -1f, 1f, 0f, 0f, 0f)

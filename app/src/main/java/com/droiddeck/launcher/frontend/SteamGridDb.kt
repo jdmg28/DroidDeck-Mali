@@ -70,32 +70,44 @@ object SteamGridDb {
         if (!tmp.renameTo(f)) { f.delete(); tmp.renameTo(f) }
     }
 
-    fun gameId(key: String, steamAppId: Int?, name: String): Int? {
+    fun gameId(key: String, steamAppId: Int?, name: String): Int? = gameId(key, steamAppId, name, ::match)
+
+    fun exactGameId(key: String, steamAppId: Int?, name: String): Int? = gameId(key, steamAppId, name, ::exactMatch)
+
+    private fun gameId(key: String, steamAppId: Int?, name: String, pick: (String, List<Pair<Int, String>>) -> Int?): Int? {
         if (steamAppId != null) {
             json(key, "$API/games/steam/$steamAppId")?.optJSONObject("data")?.optInt("id")?.takeIf { it > 0 }?.let { return it }
         }
         val term = URLEncoder.encode(name, "UTF-8").replace("+", "%20")
         val results = json(key, "$API/search/autocomplete/$term")?.optJSONArray("data") ?: return null
-        return match(name, (0 until results.length()).map { results.getJSONObject(it) }.map { it.optInt("id") to it.optString("name") })
+        return pick(name, (0 until results.length()).map { results.getJSONObject(it) }.map { it.optInt("id") to it.optString("name") })
     }
+
+    internal fun exactMatch(name: String, results: List<Pair<Int, String>>): Int? =
+        results.firstOrNull { (id, got) -> id > 0 && AddedGameArt.nameMatch(name, got) == 3 }?.first
 
     internal fun match(name: String, results: List<Pair<Int, String>>): Int? =
         results.map { (id, got) -> id to AddedGameArt.nameMatch(name, got) }
             .filter { it.second > 0 && it.first > 0 }
             .maxByOrNull { it.second }?.first
 
-    fun download(key: String, id: Int, cache: File): Boolean {
+    internal fun cacheName(slot: AddedGameArt.Slot): String =
+        when (slot) {
+            AddedGameArt.Slot.COVER -> "p.jpg"
+            AddedGameArt.Slot.WIDE -> "header.jpg"
+            AddedGameArt.Slot.BACKGROUND -> "hero.jpg"
+            AddedGameArt.Slot.LOGO -> "logo.png"
+            AddedGameArt.Slot.ICON -> "icon-sgdb.png"
+        }
+
+    fun download(key: String, id: Int, cache: File, slots: Set<AddedGameArt.Slot> = AddedGameArt.Slot.values().toSet()): Boolean {
         var got = false
-        for ((path, local) in listOf(
-            "grids/game/$id?dimensions=600x900&$QUERY" to "p.jpg",
-            "grids/game/$id?dimensions=460x215,920x430&$QUERY" to "header.jpg",
-            "heroes/game/$id?$QUERY" to "hero.jpg",
-            "logos/game/$id?$QUERY" to "logo.png",
-            "icons/game/$id?$QUERY" to "icon-sgdb.png",
-        )) {
+        for (slot in AddedGameArt.Slot.values()) {
+            if (slot !in slots) continue
+            val local = cacheName(slot)
             val dst = File(cache, local)
             if (dst.isFile) continue
-            val items = json(key, "$API/$path")?.optJSONArray("data") ?: continue
+            val items = json(key, "$API/${path(id, slot)}")?.optJSONArray("data") ?: continue
             val url = best(items, local.endsWith(".png")) ?: continue
             val bytes = AddedGameArt.get(url) ?: continue
             val tmp = File(cache, "$local.tmp")

@@ -2,13 +2,30 @@ package com.droiddeck.launcher.ui
 
 import androidx.annotation.StringRes
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ProvideTextStyle
+import androidx.compose.material3.Typography
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.style.TextDirection
 import androidx.compose.material3.darkColorScheme
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.key
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.staticCompositionLocalOf
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import android.content.Context
 import androidx.compose.runtime.remember
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
 import com.droiddeck.launcher.R
 import androidx.compose.ui.platform.LocalConfiguration
@@ -31,6 +48,58 @@ object Themes {
     const val PAPER = "paper"
     const val ICON_BLUE = "blue"
     const val ELECTRIC = "electric"
+    const val INNER_GAMER = "inner_gamer"
+    const val GRADIENT = "gradient"
+
+    const val DEFAULT_PRIMARY = 0xFF8B5CF6.toInt()
+    const val DEFAULT_SECONDARY = 0xFF22D3EE.toInt()
+
+    var gradientColors by mutableStateOf(DEFAULT_PRIMARY to DEFAULT_SECONDARY)
+        private set
+
+    const val RGB_SPEEDS = 10
+    const val DEFAULT_RGB_SPEED = 3
+    const val RGB_HUE_STEP = 3f
+    const val WHITE_RED = "white_red"
+
+    var rgbSpeed by mutableStateOf(DEFAULT_RGB_SPEED)
+        private set
+
+    var rgbHue by mutableStateOf(0f)
+        private set
+
+    fun moveRgbHue(hue: Float) {
+        rgbHue = hue
+    }
+
+    fun setRgbSpeed(context: Context, speed: Int) {
+        val value = speed.coerceIn(1, RGB_SPEEDS)
+        SessionPrefs.setRgbSpeed(context, value)
+        rgbSpeed = value
+    }
+
+    fun rgbCycleMillis(speed: Int): Int = 30_000 / speed.coerceIn(1, RGB_SPEEDS)
+
+    fun loadGradient(context: Context) {
+        gradientColors = SessionPrefs.gradientColors(context)
+        rgbSpeed = SessionPrefs.rgbSpeed(context)
+    }
+
+    fun innerGamer(hue: Float): Palette = ThemeColors.palette(
+        Color.hsv(hue % 360f, 0.9f, 1f).toArgb(), Color.hsv((hue + 60f) % 360f, 0.9f, 1f).toArgb(),
+        R.string.theme_inner_gamer, R.string.theme_inner_gamer_detail, INNER_GAMER,
+    )
+
+    fun setGradient(context: Context, primary: Int, secondary: Int) {
+        SessionPrefs.setGradientColors(context, primary, secondary)
+        gradientColors = primary to secondary
+    }
+
+    fun current(context: Context): Palette {
+        val id = SessionPrefs.theme(context)
+        if (id == GRADIENT || id == INNER_GAMER) loadGradient(context)
+        return byId(id)
+    }
 
     val all: List<Palette> = listOf(
         Palette(
@@ -65,12 +134,25 @@ object Themes {
             ELECTRIC, R.string.theme_electric, R.string.theme_electric_detail,
             background = Color(0xFF070A10), surface = Color(0xFF0F1522), surfaceVariant = Color(0xFF16203A), line = Color(0xFF1E2A47), line2 = Color(0xFF2A3A5E),
             onBackground = Color(0xFFEEF3FF), onSurfaceVariant = Color(0xFF8B9AB8),
-            primary = Color(0xFF2E86FF), primary2 = Color(0xFF136CE0), onPrimary = Color(0xFFFFFFFF), signal = Color(0xFF2E86FF),
+            primary = Color(0xFF2E86FF), primary2 = Color(0xFF2684FF), onPrimary = Color(0xFF03111F), signal = Color(0xFF2E86FF),
             good = Color(0xFF4CD37F),
         ),
+        Palette(
+            WHITE_RED, R.string.theme_white_red, R.string.theme_white_red_detail,
+            background = Color(0xFFF8F8F8), surface = Color(0xFFFFFFFF), surfaceVariant = Color(0xFFF0F0F0), line = Color(0xFFDDDDDD), line2 = Color(0xFFC8C8C8),
+            onBackground = Color(0xFF191919), onSurfaceVariant = Color(0xFF555555),
+            primary = Color(0xFFD62828), primary2 = Color(0xFFB71C1C), onPrimary = Color(0xFFFFFFFF), signal = Color(0xFFD62828),
+            good = Color(0xFF248548),
+        ),
+        innerGamer(0f),
+        ThemeColors.palette(DEFAULT_PRIMARY, DEFAULT_SECONDARY, R.string.theme_gradient, R.string.theme_gradient_detail),
     )
 
-    fun byId(id: String): Palette = all.firstOrNull { it.id == id } ?: all[0]
+    fun byId(id: String): Palette {
+        if (id == INNER_GAMER) return innerGamer(rgbHue)
+        if (id == GRADIENT) return ThemeColors.palette(gradientColors.first, gradientColors.second, R.string.theme_gradient, R.string.theme_gradient_detail)
+        return all.firstOrNull { it.id == id } ?: all[0]
+    }
 }
 
 val LocalPalette = staticCompositionLocalOf { Themes.byId(Themes.STEAM_PURPLE) }
@@ -84,6 +166,7 @@ val Palette.onSignal: Color get() = if (signal.luminance() > 0.18f) Color(0xFF03
 @Composable
 fun DroidDeckTheme(theme: String? = null, appScale: Int = AppUiPrefs.DEFAULT_SCALE, content: @Composable () -> Unit) {
     val id = theme ?: SessionPrefs.theme(LocalContext.current)
+    if (id == Themes.INNER_GAMER) InnerGamerHue(Themes.rgbSpeed)
     val p = Themes.byId(id)
     val scheme = darkColorScheme(
         primary = p.primary, onPrimary = p.onPrimary, secondary = p.onSurfaceVariant,
@@ -100,5 +183,36 @@ fun DroidDeckTheme(theme: String? = null, appScale: Int = AppUiPrefs.DEFAULT_SCA
         LocalPalette provides p,
         LocalDensity provides density,
         LocalConfiguration provides configuration,
-    ) { MaterialTheme(colorScheme = scheme, content = content) }
+    ) {
+        MaterialTheme(colorScheme = scheme, typography = ContentDirected) {
+            FocusGlideHost { ProvideTextStyle(TextStyle(textDirection = TextDirection.Content), content) }
+        }
+    }
+}
+
+private val ContentDirected = Typography().run {
+    fun TextStyle.byContent() = copy(textDirection = TextDirection.Content)
+    Typography(
+        displayLarge.byContent(), displayMedium.byContent(), displaySmall.byContent(),
+        headlineLarge.byContent(), headlineMedium.byContent(), headlineSmall.byContent(),
+        titleLarge.byContent(), titleMedium.byContent(), titleSmall.byContent(),
+        bodyLarge.byContent(), bodyMedium.byContent(), bodySmall.byContent(),
+        labelLarge.byContent(), labelMedium.byContent(), labelSmall.byContent(),
+    )
+}
+
+@Composable
+private fun InnerGamerHue(speed: Int) {
+    if (Motion.scale == 0f) return
+    key(speed) { InnerGamerCycle(speed) }
+}
+
+@Composable
+private fun InnerGamerCycle(speed: Int) {
+    val start = remember { Themes.rgbHue }
+    val hue by rememberInfiniteTransition(label = "innerGamer").animateFloat(
+        start, start + 360f, infiniteRepeatable(tween(Themes.rgbCycleMillis(speed).coerceAtLeast(1), easing = LinearEasing), RepeatMode.Restart), label = "hue",
+    )
+    val stepped = ((hue % 360f) / Themes.RGB_HUE_STEP).toInt() * Themes.RGB_HUE_STEP
+    SideEffect { Themes.moveRgbHue(stepped) }
 }

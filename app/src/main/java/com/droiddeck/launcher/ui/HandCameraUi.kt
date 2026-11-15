@@ -1,9 +1,12 @@
 package com.droiddeck.launcher.ui
 
+import androidx.compose.foundation.shape.CircleShape
+import com.droiddeck.launcher.core.AddonPack
 import android.Manifest
 import android.content.Intent
 import android.net.Uri
 import android.provider.Settings
+import android.text.format.Formatter
 import android.speech.tts.TextToSpeech
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -26,7 +29,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.AlertDialog
+import com.droiddeck.launcher.ui.GlideAlertDialog as AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.RadioButton
@@ -61,7 +64,7 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.window.Dialog
+import com.droiddeck.launcher.ui.GlideDialog as Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -70,6 +73,7 @@ import com.droiddeck.launcher.handtracking.Advice
 import com.droiddeck.launcher.handtracking.BodyPose
 import com.droiddeck.launcher.handtracking.HandCamera
 import com.droiddeck.launcher.handtracking.HandTracking
+import com.droiddeck.launcher.handtracking.TrackingPack
 import com.droiddeck.launcher.handtracking.Landmark
 import com.droiddeck.launcher.handtracking.TrackingCameras
 import kotlinx.coroutines.delay
@@ -126,7 +130,7 @@ internal fun HandCameraPrompt(sides: Set<String>, onAllow: (String?) -> Unit, on
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp))
-                            .selectable(side == id, role = Role.RadioButton) { side = id }
+                            .focusGlide(RoundedCornerShape(8.dp)).selectable(side == id, role = Role.RadioButton) { side = id }
                             .testTag("hand-camera-$id")
                             .padding(vertical = 4.dp),
                     ) {
@@ -141,12 +145,12 @@ internal fun HandCameraPrompt(sides: Set<String>, onAllow: (String?) -> Unit, on
             }
         },
         confirmButton = {
-            TextButton(onClick = { onAllow(if (choose) side else null) }, modifier = Modifier.testTag("hand-camera-allow")) {
+            TextButton(onClick = { onAllow(if (choose) side else null) }, modifier = Modifier.testTag("hand-camera-allow").focusGlide(CircleShape)) {
                 Text(stringResource(R.string.hand_camera_allow))
             }
         },
         dismissButton = {
-            TextButton(onClick = onNotNow, modifier = Modifier.testTag("hand-camera-not-now")) { Text(stringResource(R.string.hand_camera_not_now)) }
+            TextButton(onClick = onNotNow, modifier = Modifier.testTag("hand-camera-not-now").focusGlide(CircleShape)) { Text(stringResource(R.string.hand_camera_not_now)) }
         },
     )
 }
@@ -186,8 +190,24 @@ internal fun HandCameraRows(host: MenuHost, track: (String) -> Modifier, inSessi
             })
         !s.permitted -> ActionRow(stringResource(R.string.hand_camera_access), stringResource(R.string.hand_camera_access_hint),
             stringResource(R.string.hand_camera_allow_button), { ask.launch(Manifest.permission.CAMERA) })
+        !s.downloaded -> TrackingPackRow()
         !inSession -> ActionRow(stringResource(R.string.hand_camera_placement), stringResource(R.string.hand_camera_placement_hint),
             stringResource(R.string.hand_camera_check), { HandTracking.requestCheck() })
+    }
+}
+
+@Composable
+private fun TrackingPackRow() {
+    val context = LocalContext.current
+    val pack by TrackingPack.state.collectAsState()
+    val size = Formatter.formatShortFileSize(context, TrackingPack.size)
+    when (val now = pack) {
+        is AddonPack.State.Downloading -> ActionRow(stringResource(R.string.tracking_pack_title),
+            stringResource(R.string.tracking_pack_hint, size), stringResource(R.string.tracking_pack_download), {}, progress = now.progress)
+        AddonPack.State.Failed -> ActionRow(stringResource(R.string.tracking_pack_title),
+            stringResource(R.string.tracking_pack_failed), stringResource(R.string.tracking_pack_retry), { TrackingPack.ensure(context) })
+        else -> ActionRow(stringResource(R.string.tracking_pack_title),
+            stringResource(R.string.tracking_pack_hint, size), stringResource(R.string.tracking_pack_download), { TrackingPack.ensure(context) })
     }
 }
 

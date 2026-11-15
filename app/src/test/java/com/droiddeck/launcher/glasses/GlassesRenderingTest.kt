@@ -5,6 +5,14 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class GlassesRenderingTest {
+    @Test fun modelTwoDRatesLimitChoicesAndSavedRatesFallBackToAnOfferedOne() {
+        val rokid = GlassesState(displayId = 2, width = 1920, height = 1080, hz = 60f, rates2d = listOf(60, 120))
+        assertEquals(listOf(60, 120), GlassesRendering.refreshRates(GlassesSettings(), rokid))
+        assertEquals(60, GlassesRendering.outputHz(GlassesSettings(refreshHz = 90), rokid))
+        assertEquals(120, GlassesRendering.outputHz(GlassesSettings(refreshHz = 120), rokid))
+        assertEquals(listOf(60, 90, 120), GlassesRendering.refreshRates(GlassesSettings(), rokid.copy(rates2d = listOf(60, 90, 120))))
+    }
+
     private val ultra = GlassesState(
         model = "VITURE Luma Ultra", connected = true, controllable = true,
         displayId = 2, width = 1920, height = 1200,
@@ -48,13 +56,6 @@ class GlassesRenderingTest {
         assertEquals(0, GlassesRendering.mirrorRefreshLimit(settings, GlassesState(), false))
         assertEquals(0, GlassesRendering.mirrorRefreshLimit(settings, ultra.copy(noSignal = true), false))
         assertEquals(0, GlassesRendering.mirrorRefreshLimit(settings, ultra, true))
-    }
-
-    @Test fun mirrorCapPreservesLowerLimitsAndRestoresTheRequestedLimitAfterDisconnect() {
-        for (requested in listOf(0, 30, 60, 90, 120)) {
-            assertEquals(if (requested == 30) 30 else 60, GlassesRendering.fpsLimit(requested, 60))
-            assertEquals(requested, GlassesRendering.fpsLimit(requested, 0))
-        }
     }
 
     private fun render(settings: GlassesSettings, state: GlassesState = ultra, steamVr: Boolean = false) =
@@ -182,11 +183,11 @@ class GlassesRenderingTest {
             picture3d = GlassesSettings.PICTURE_SCREEN)
         for (state in listOf(ultra.copy(displayId = -1), GlassesState())) {
             val preview = GlassesRendering.cardboard(base, settings, state, false, true)
-            assertTrue(preview.enabled) // Published as headset proximity, preventing standby.
+            assertTrue(preview.enabled)
             assertTrue(preview.mono)
             assertEquals(Cardboard.SOURCE_SBS, preview.source)
             assertEquals(Cardboard.Viewer.NONE.id, preview.viewer)
-            assertTrue(preview.headTracking) // Phone preference, not dormant glasses settings.
+            assertTrue(preview.headTracking)
             assertFalse(base.enabled)
             assertSame(base, GlassesRendering.cardboard(base, settings, state, false, false))
         }

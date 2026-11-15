@@ -12,7 +12,7 @@
     X(CreateAndroidSurfaceKHR) X(DestroySurfaceKHR) X(CreateDevice) \
     X(GetDeviceProcAddr) X(EnumerateDeviceExtensionProperties) \
     X(GetPhysicalDeviceMemoryProperties) X(GetPhysicalDeviceFormatProperties2) \
-    X(GetPhysicalDeviceImageFormatProperties2)
+    X(GetPhysicalDeviceImageFormatProperties2) X(GetPhysicalDeviceProperties2)
 
 #define VK_DEVICE_FUNCS(X) \
     X(GetDeviceQueue) X(CreateSwapchainKHR) X(DestroySwapchainKHR) X(GetSwapchainImagesKHR) \
@@ -21,7 +21,7 @@
     X(BindImageMemory) X(DestroyImage) X(FreeMemory) X(AcquireNextImageKHR) \
     X(ResetCommandBuffer) X(BeginCommandBuffer) X(CmdPipelineBarrier) X(CmdBlitImage) \
     X(EndCommandBuffer) X(ResetFences) X(QueueSubmit) X(QueuePresentKHR) X(WaitForFences) \
-    X(QueueWaitIdle) X(GetMemoryFdPropertiesKHR) \
+    X(QueueWaitIdle) X(GetMemoryFdPropertiesKHR) X(GetAndroidHardwareBufferPropertiesANDROID) \
     X(GetImageSubresourceLayout) X(MapMemory) X(UnmapMemory) X(CmdClearColorImage) \
       \
     X(CreateShaderModule) X(DestroyShaderModule) X(CreatePipelineLayout) X(DestroyPipelineLayout) \

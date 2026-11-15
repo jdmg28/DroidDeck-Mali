@@ -1,42 +1,105 @@
 #!/bin/bash
 set -u
+# A GPU that is not an Adreno (BL_RAISE_NOFILE=1): the open-files limit goes up to the hard limit
+# for the whole session tree (gamescope, Steam, games). A Mali PanVK session ran out after ten
+# minutes ("Too many open files" importing sync files and dma-bufs) and froze.
+if [ "${BL_RAISE_NOFILE:-0}" = 1 ] && [ -z "${BL_INSIDE:-}" ]; then
+  bl_nofile_was="$(ulimit -Sn)/$(ulimit -Hn)"
+  ulimit -Sn "$(ulimit -Hn)" 2>/dev/null || true
+  echo "== open files: soft/hard $bl_nofile_was -> soft $(ulimit -Sn)"
+  [ -n "${BL_DEBUG_DIR:-}" ] && echo "soft/hard $bl_nofile_was -> soft $(ulimit -Sn) (session tree)" > "$BL_DEBUG_DIR/limits.txt" 2>/dev/null
+  unset bl_nofile_was
+fi
 export HOME=${HOME:-/root}
 mode=${1:-desktop}
 shift || true
-step() { echo "== STEP $(date -u +%H:%M:%S) $*"; }
+step() { echo "== STEP $(date -u +%H:%M:%S.%3N) $*"; }
+steam_setup_failed() {
+  echo "== steam: the Steam client could not be set up (status $1)"
+  [ -z "${BL_STEAM_EXIT_FILE:-}" ] || printf '%s\n' "$1" > "$BL_STEAM_EXIT_FILE"
+  exit "$1"
+}
 if [ -n "${BL_LOG:-}" ] && [ -z "${BL_INSIDE:-}" ]; then
   mkdir -p "$(dirname "$BL_LOG")" 2>/dev/null
   if [ "$(stat -c %s "$BL_LOG" 2>/dev/null || echo 0)" -gt 8388608 ]; then
     mv -f "$BL_LOG" "$BL_LOG.1"
   fi
-  exec > >({ dd of="$BL_LOG" oflag=append conv=notrunc iflag=count_bytes count="${BL_LOG_CAP:-268435456}" bs=65536 status=none; cat >/dev/null; }) 2>&1
+  dd=$(command -v gnudd || echo dd)
+  exec > >({ "$dd" of="$BL_LOG" oflag=append conv=notrunc iflag=count_bytes count="${BL_LOG_CAP:-268435456}" bs=65536 status=none; cat >/dev/null; }) 2>&1
   echo "== droiddeck-session $(date) mode=$mode $*"
-  echo "== uid=$(id -u) size=${BL_WIDTH:-?}x${BL_HEIGHT:-?} fps=${BL_FPS:-0} icd=${VK_ICD_FILENAMES:-none}"
+  echo "== uid=$(id -u) size=${BL_WIDTH:-?}x${BL_HEIGHT:-?} icd=${VK_ICD_FILENAMES:-none}"
   echo "== gamescope: $(gamescope --version 2>&1 | head -1) at $(command -v gamescope)"
   echo "== rootfs: $(cat /.version 2>/dev/null || echo unversioned)"
-  # Build 40's own log: the GPU stack spent one file descriptor per submission and never
-  # gave it back - 56 a second, from the first half minute, until nine minutes in every
-  # allocation in the session failed with 'Too many open files': no GPU memory, no X
-  # connections, no game. Memory was never what ran out - 1.8 GB was still free when it
-  # went. So a session lasts as long as its ceiling allows, and the ceiling is the one
-  # thing here that can be raised: take every descriptor the OS will hand over and say in
-  # the log how many that was. Raising the soft limit to the hard one needs no privilege.
-  _bl_fd_hard=$(ulimit -Hn 2>/dev/null) || _bl_fd_hard=
-  if [ -n "$_bl_fd_hard" ]; then
-    ulimit -n "$_bl_fd_hard" 2>/dev/null || :
-    echo "== fd limit: soft $(ulimit -Sn 2>/dev/null || echo '?') hard $_bl_fd_hard"
-  fi
 fi
+
+start_diagnostic_inventory() {
+  [ "${DROIDDECK_ENHANCED_DIAGNOSTICS:-0}" = 1 ] || return 0
+  [ -z "${BL_INSIDE:-}" ] || return 0
+  if ! command -v droiddeck-diagnostic-inventory >/dev/null 2>&1; then
+    printf '%s\n' 'DROIDDECK_PROCESS_TRACE {"schema":1,"event":"provider","status":"unavailable"}'
+    return 0
+  fi
+  droiddeck-diagnostic-inventory --watch --root-pid "$$" &
+  _bl_diagnostic_inventory=$!
+  trap 'kill "$_bl_diagnostic_inventory" 2>/dev/null || true; wait "$_bl_diagnostic_inventory" 2>/dev/null || true' EXIT
+}
+start_diagnostic_inventory
+
+sync_timezone() {
+  local zone=${TZ:-}
+  case "$zone" in ''|/*|*..*) return 0 ;; esac
+  [ -f "/usr/share/zoneinfo/$zone" ] || return 0
+  if [ "$(readlink /etc/localtime 2>/dev/null)" != "/usr/share/zoneinfo/$zone" ]; then
+    ln -sfn "/usr/share/zoneinfo/$zone" /etc/localtime.droiddeck && mv -Tf /etc/localtime.droiddeck /etc/localtime || return 0
+  fi
+  [ "$(cat /etc/timezone 2>/dev/null)" = "$zone" ] || printf '%s\n' "$zone" > /etc/timezone
+} 2>/dev/null
+sync_timezone
+
+ensure_machine_id() {
+  local id=
+  id=$(< /etc/machine-id)
+  [[ $id =~ ^[0-9a-f]{32}$ && $id != 00000000000000000000000000000000 ]] && return 0
+  id=$(dbus-uuidgen) || return 0
+  [[ $id =~ ^[0-9a-f]{32}$ ]] || return 0
+  printf '%s\n' "$id" > /etc/machine-id.droiddeck && mv -f /etc/machine-id.droiddeck /etc/machine-id
+} 2>/dev/null
+ensure_machine_id
+
+write_system_bus_config() {
+  mkdir -p /run/dbus /usr/local/share/droiddeck
+  cat > /usr/local/share/droiddeck/system-bus.conf <<'BUSCONF'
+<!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">
+<busconfig>
+  <type>system</type>
+  <listen>unix:path=/run/dbus/system_bus_socket</listen>
+  <auth>EXTERNAL</auth>
+  <servicedir>/usr/share/droiddeck/system-services</servicedir>
+  <policy context="default">
+    <allow user="*"/>
+    <allow own="*"/>
+    <allow send_destination="*"/>
+    <allow receive_sender="*"/>
+  </policy>
+</busconfig>
+BUSCONF
+  rm -f /run/dbus/system_bus_socket
+}
 
 prepare_locale() {
   local dir=/usr/lib/locale stamp=/usr/lib/locale/.droiddeck-archive want have= pkg
-  pkg=(/var/lib/pacman/local/glibc-[0-9]*)
-  want=${pkg[0]##*/}
+  if [ -d /var/lib/pacman/local ]; then
+    pkg=(/var/lib/pacman/local/glibc-[0-9]*)
+    want=${pkg[0]##*/}
+  else
+    want=libc6-$(dpkg-query -W -f='${Version}' libc6 2>/dev/null)
+  fi
   [ -f "$stamp" ] && read -r have < "$stamp"
   [ "$have" = "$want" ] && [ -f "$dir/locale-archive" ] && [ ! "$dir/locale-archive" -nt "$stamp" ] && return 0
   [ -d "$dir/C.utf8" ] && command -v localedef >/dev/null 2>&1 || return 0
   DROIDDECK_LINK_RENAME=1 localedef --add-to-archive --replace "$dir/C.utf8" >/dev/null 2>&1 || return 0
-  rm -f /usr/lib/gconv/gconv-modules.cache
+  rm -f /usr/lib/gconv/gconv-modules.cache /usr/lib/aarch64-linux-gnu/gconv/gconv-modules.cache
   command -v iconvconfig >/dev/null 2>&1 && iconvconfig >/dev/null 2>&1
   printf '%s\n' "$want" > "$stamp"
   echo "== locale archive built for $want"
@@ -67,11 +130,39 @@ clear_stale_tmp() {
   return 0
 }
 [ -z "${BL_INSIDE:-}" ] && clear_stale_tmp
+if [ -z "${BL_INSIDE:-}" ]; then
+  if [ "${BL_ZRAM:-0}" = 1 ]; then printf 0 > /tmp/.bl-zram; else rm -f /tmp/.bl-zram; fi
+  rm -f /tmp/.bl-clock
+  head -c 8 /dev/zero > /tmp/.bl-clock
+fi
 
-# Until the runtime is stable, Steam's own logs are copied beside the session log at exit so a
-# failed launch can be handed over as one folder.
+steam_devtools() {
+  _bl_cdp=()
+  if [ -f "$steam_root/.cef-enable-remote-debugging" ]; then
+    if timeout 5 python3 -c 'import socket, sys
+s = socket.socket()
+s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+s.bind(("127.0.0.1", int(sys.argv[1])))' "$1" 2>/dev/null; then
+      BL_CDP_PORT=$1
+      return 0
+    fi
+    echo "== steam: port $1 is held by another app; Decky cannot load this session and Steam's devtools use another port"
+  fi
+  BL_CDP_PORT=$((20000 + RANDOM % 30000))
+  _bl_cdp=(-cef-enable-debugging -devtools-port "$BL_CDP_PORT")
+}
+
 steam_update_stuck() {
-  [ "$1" -lt 60 ] || steam_updates=0
+  local stamp
+  stamp=$(stat -c '%n %Y %s' "${steam_root:-}"/package/*.installed 2>/dev/null)
+  if [ "$1" -ge 60 ]; then
+    steam_updates=0
+    steam_installs=0
+  elif [ "$stamp" != "${steam_update_stamp-$stamp}" ] && [ "${steam_installs:-0}" -lt 5 ]; then
+    steam_updates=0
+    steam_installs=$((${steam_installs:-0} + 1))
+  fi
+  steam_update_stamp=$stamp
   steam_updates=$((steam_updates + 1))
   [ "$steam_updates" -ge 3 ]
 }
@@ -80,39 +171,22 @@ run_gamescope() (
   local status_file child_status compositor_status
   status_file=$(mktemp "${XDG_RUNTIME_DIR:-/tmp}/droiddeck-steam-exit.XXXXXX") || exit 73
   trap 'rm -f "$status_file"' EXIT
-  # Gamescope can return success when its primary child crashed.
   BL_STEAM_EXIT_FILE="$status_file" gamescope "$@"
   compositor_status=$?
   if read -r child_status < "$status_file" && [[ $child_status =~ ^[0-9]{1,3}$ ]] \
-     && [ "$child_status" -gt 0 ] && [ "$child_status" -le 255 ]; then
-    exit "$child_status"
+     && [ "$child_status" -le 255 ]; then
+    if [ "${DROIDDECK_ENHANCED_DIAGNOSTICS:-0}" = 1 ]; then
+      printf 'DROIDDECK_DIAGNOSTICS event=session_exit compositor_status=%s steam_status=%s\n' "$compositor_status" "$child_status"
+    fi
+    [ "$child_status" -eq 0 ] || exit "$child_status"
+  elif [ "${DROIDDECK_ENHANCED_DIAGNOSTICS:-0}" = 1 ]; then
+    printf 'DROIDDECK_DIAGNOSTICS event=session_exit compositor_status=%s steam_status=unavailable\n' "$compositor_status"
   fi
   exit "$compositor_status"
 )
 
 collect_steam_logs() {
   [ -n "${BL_DEBUG_DIR:-}" ] || return 0
-  local steam_root=${XDG_DATA_HOME:-$HOME/.local/share}/Steam
-  [ "${steam_x64:-0}" = 1 ] && steam_root=${BL_X64_HOME:-$HOME/.droiddeck-x64}/.local/share/Steam
-  mkdir -p "$BL_DEBUG_DIR/steam" 2>/dev/null || return 0
-  [ -d "$steam_root/logs" ] && find "$steam_root/logs" -maxdepth 1 -type f -size -8192k \
-    -exec cp {} "$BL_DEBUG_DIR/steam/" \; 2>/dev/null
-  [ "${steam_x64:-0}" = 0 ] && [ -f "$HOME/.steam/steam/logs/steamwebhelper.log" ] && cp "$HOME/.steam/steam/logs/steamwebhelper.log" "$BL_DEBUG_DIR/steam/" 2>/dev/null
-  # Proton's own log, when BL_PROTON_LOG=1 asked for it. It is pointed at this folder through
-  # PROTON_LOG_DIR; a Proton that does not read that writes steam-<appid>.log in $HOME instead,
-  # and that is still the only thing that says why a game stopped.
-  find "$HOME" -maxdepth 1 -type f -name 'steam-*.log' -size -8192k \
-    -exec cp {} "$BL_DEBUG_DIR/steam/" \; 2>/dev/null
-  # One past that is trimmed to its end instead of dropped, which is what the app now does with a
-  # big log in this folder when it shares it: a run with +loaddll writes more than 8 MB, and this
-  # log's answer to why a game stopped is its last lines, never its first.
-  find "$HOME" -maxdepth 1 -type f -name 'steam-*.log' ! -size -8192k -print 2>/dev/null \
-  | while IFS= read -r proton_log; do
-      { echo "... (this log was trimmed: only its last 8 MB are here)"
-        tail -c 8388608 "$proton_log" | tail -n +2; } > "$BL_DEBUG_DIR/steam/${proton_log##*/}" 2>/dev/null
-    done
-  # NOT copied, ever: loginusers.vdf, config.vdf and the ssfn* files, which hold the credentials
-  # themselves rather than a mention of them.
   local sync_store=$HOME/.local/share/droiddeck-esync sync_file
   if [ -d "$sync_store" ] && mkdir -p "$BL_DEBUG_DIR/droiddeck-esync" 2>/dev/null; then
     for sync_file in launches.log tools.tsv wanted.tsv prefixes.json; do
@@ -123,37 +197,8 @@ collect_steam_logs() {
   if [ -d "$fex_state" ] && mkdir -p "$BL_DEBUG_DIR/droiddeck-fex" 2>/dev/null; then
     cp "$fex_state/status.json" "$fex_state/config/Config.json" "$BL_DEBUG_DIR/droiddeck-fex/" 2>/dev/null
   fi
-  echo "== steam logs copied to $BL_DEBUG_DIR/steam"
 }
-trap 'collect_steam_logs 2>/dev/null || true' TERM INT HUP
-# The driver everything in this session draws with: gamescope's compositing, the client's UI
-# (OpenGL through Zink), every game Proton launches, and in desktop mode every program on it.
-# BL_VK_DRIVER names an imported driver's ICD manifest on the Android side, which is bound into the
-# session at its own path; unset means the runtime keeps the Turnip it was built with.
-# VK_DRIVER_FILES REPLACES the loader's search, so a manifest whose library is unreadable would
-# leave the session with no Vulkan at all - check both before setting it, and say so in the log
-# rather than fail silently half a minute later.
-# GPU safety (BL_GPU_SAFETY): "software" means the app has kept the device's own GPU out of the
-# guest - no /dev/mali0, no render node - and the session draws with an imported CPU driver
-# (lavapipe). Nothing here asks the GPU for anything in that mode: no probe, no PanVK requirement.
-software=no
-[ "${BL_GPU_SAFETY:-}" = software ] && software=yes
-if [ "$software" = yes ]; then
-  # A stat, not an open: what the guest sees where the device node would be. "no char device"
-  # is the whole point, and it is what the app's bind was put there for.
-  if [ -c /dev/mali0 ]; then
-    echo "== gpu safety: SOFTWARE, but /dev/mali0 IS still a character device in the guest"
-  else
-    echo "== gpu safety: SOFTWARE - /dev/mali0 is not a character device in the guest"
-  fi
-  # What the node is in here, and how many the app meant to cover: with one hid and a character
-  # device still in front of us, the bind is what failed, not the count.
-  echo "== gpu safety: /dev/mali0 here is $(stat -c '%F, %s bytes' /dev/mali0 2>&1); the app hid ${BL_GPU_HIDDEN:-?} GPU node(s)"
-fi
-if [ "$software" != yes ] && [ "${BL_GPU_FAMILY:-}" = mali ] && [ -z "${BL_VK_DRIVER:-}" ]; then
-  echo "DD_MALI_DRIVER_REQUIRED: import/select the Linux PanVK package; Turnip cannot run on Mali"
-  exit 78
-fi
+trap 'bl_stopping=1; collect_steam_logs 2>/dev/null || true' TERM INT HUP
 if [ -n "${BL_VK_DRIVER:-}" ]; then
   bl_icd_lib=$(sed -n 's/.*"library_path"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$BL_VK_DRIVER" 2>/dev/null | head -1)
   bl_icd_lib=$(printf '%s' "$bl_icd_lib" | sed 's|\\/|/|g')
@@ -166,55 +211,165 @@ if [ -n "${BL_VK_DRIVER:-}" ]; then
     export VK_ICD_FILENAMES="$BL_VK_DRIVER"
     echo "== vulkan driver: imported $bl_icd_lib (via $BL_VK_DRIVER)"
   else
-    if [ "$software" = yes ]; then
-      echo "DD_SOFTWARE_BAD_ICD: manifest or library is unreadable: $BL_VK_DRIVER"
-      exit 78
-    fi
-    if [ "${BL_GPU_FAMILY:-}" = mali ]; then
-      echo "DD_MALI_BAD_ICD: manifest or backend wrapper is unreadable: $BL_VK_DRIVER"
-      exit 78
-    fi
     echo "== vulkan driver: IGNORING $BL_VK_DRIVER (manifest or ${bl_icd_lib:-library} unreadable); using the runtime's own"
   fi
   unset bl_icd_lib
 fi
-# The Mali probe loads the imported ICD and enumerates devices: GPU work, and the one thing
-# software mode exists to avoid. Skipped there; it also never runs inside gamescope's own pass.
-if [ "$software" != yes ] && [ "${BL_GPU_FAMILY:-}" = mali ] && [ -z "${BL_INSIDE:-}" ]; then
-  /usr/local/bin/droiddeck-mali-check || exit 78
-fi
-# What the driver's WSI was told to be: 1 = dma-buf + AFBC (the fast path), 0 = CPU/SHM linear
-# copies. Wrong here reads straight off the fps - worth one line beside the driver's own.
-if [ "$software" != yes ] && [ "${BL_GPU_FAMILY:-}" = mali ]; then
+# Mali (this fork): the driver knobs and the safe-mode rung, one line each in the session log.
+if [ "${BL_GPU_FAMILY:-}" = mali ]; then
   echo "== mali wsi: PANVK_KBASE_DRI3=${PANVK_KBASE_DRI3:-unset} (1 = dma-buf/AFBC, 0 = shm copies)"
-  echo "== mali sema-waits: PANVK_KBASE_GPU_SEMAPHORE_WAITS=${PANVK_KBASE_GPU_SEMAPHORE_WAITS:-unset} (1 = waits inside the submit ring; Download/droiddeck-mali-semawaits=0 undoes it)"
+  echo "== mali sema-waits: PANVK_KBASE_GPU_SEMAPHORE_WAITS=${PANVK_KBASE_GPU_SEMAPHORE_WAITS:-unset} (1 = waits inside the submit ring)"
   if [ -n "${PANVK_BC_AFRC:-}" ]; then
-    echo "== mali bc: PANVK_BC_AFRC=${PANVK_BC_AFRC} (0 = exact BC decode; Download/droiddeck-mali-afrc or the game page set it)"
+    echo "== mali bc: PANVK_BC_AFRC=${PANVK_BC_AFRC} (0 = exact BC decode)"
   fi
-  # The safe-mode ladder (RebootGuard in the app): the phone restarted with a game in it, so this
-  # session runs one rung lower than the user's own switches ask for. Say which, and what it took.
-  if [ "${BL_SAFE_LEVEL:-0}" -gt 0 ] 2>/dev/null; then
-    echo "== safe mode: level ${BL_SAFE_LEVEL} after a restart with a game running - browser on the CPU and shared-memory present (>=1), no in-ring semaphore waits (>=2), 1280x720 at most (>=3). Ajustes del modo Steam > Steam > Modo seguro: Volver a normal undoes it"
-  fi
-  # Games' present path. The gamescope WSI layer (the XWayland-bypass swapchain) hung after the
-  # first frame on both 2026-10-12 and 2026-10-14 sessions: swapchain created, no error back,
-  # audio and input alive, picture frozen at the game's logo. It never reads PANVK_KBASE_DRI3,
-  # which is why the dma-buf store fix left games untouched. With the layer bypassed a game
-  # presents through panvk's own X11 DRI3 - the transport the client and gamescope's output
-  # already use - and the app sends BL_MALI_GAMESCOPE_WSI=0 for that (1 = the layer, for a
-  # controlled experiment; unset here defaults to the bypass too).
+  # gamescope's WSI layer stalls its dma-buf handoff on panvk-kbase, so games present through
+  # panvk's own X11 DRI3. BL_MALI_GAMESCOPE_WSI=1 puts the layer back for an experiment.
   case "${BL_MALI_GAMESCOPE_WSI:-0}" in
-    1) echo "== mali games: gamescope WSI layer ON (Download/droiddeck-mali-gamescope-wsi)" ;;
-    *) export DISABLE_GAMESCOPE_WSI=1
-       echo "== mali games: gamescope WSI layer bypassed - games present via X11 DRI3 (Download/droiddeck-mali-gamescope-wsi=1 puts it back)" ;;
+    1) echo "== mali wsi: gamescope WSI layer ON (experiment)" ;;
+    *) export DISABLE_GAMESCOPE_WSI=1 ;;
   esac
+  if [ "${BL_SAFE_LEVEL:-0}" -gt 0 ] 2>/dev/null; then
+    echo "== safe mode: level ${BL_SAFE_LEVEL} after a restart with a game running - browser on the CPU and shared-memory present (>=1), no in-ring semaphore waits (>=2), 1280x720 at most (>=3)"
+  fi
 fi
-# The app's gamescope build (tools/gamescope) asks for realtime-priority Vulkan queues on this
-# switch instead of on CAP_SYS_NICE, which proot never has; it falls back to normal priority
-# where the driver refuses, and the runtime's own build ignores it. On KGSL Turnip (Mesa 26.2) it
-# changes nothing yet: the driver reports one submit-queue priority and creates every KGSL context
-# with the same flags, so no priority reaches the GPU. Kept for a driver that maps it, and off
-# unless the app's Performance page turns it on (BL_GAMESCOPE_REALTIME=1).
+
+bl_webhelper_layout() {
+  if [ -n "${BL_VKBRIDGE_WEBHELPER_ARGS:-}" ]; then
+    printf '%s\n' "$BL_VKBRIDGE_WEBHELPER_ARGS"
+  elif [ -z "${BL_VKBRIDGE_CEF_ANGLE:-}" ]; then
+    echo stock
+  elif [ "$BL_VKBRIDGE_CEF_ANGLE" = vulkan ] && [ "${BL_VKBRIDGE_CEF_VULKAN:-1}" != 0 ]; then
+    echo "--use-gl=angle --use-angle=vulkan +Vulkan +VulkanFromANGLE +DefaultANGLEVulkan"
+  else
+    echo "--use-gl=angle --use-angle=$BL_VKBRIDGE_CEF_ANGLE"
+  fi
+}
+bl_now_ms() {
+  if [ -n "${EPOCHREALTIME:-}" ]; then
+    local t=${EPOCHREALTIME/[.,]/}
+    echo $((10#$t / 1000))
+  else
+    date +%s%3N
+  fi
+}
+vkbridge_wait_socket() {
+  local sock=$1 limit=${2:-10000} start now waited
+  [ -n "$sock" ] || return 1
+  if [ -S "$sock" ]; then
+    echo "== vkbridge: server socket ready (waited 0 ms)"
+    return 0
+  fi
+  start=$(bl_now_ms)
+  while :; do
+    now=$(bl_now_ms)
+    waited=$((now - start))
+    if [ -S "$sock" ]; then
+      echo "== vkbridge: server socket ready (waited $waited ms; the server listens after its startup probe)"
+      return 0
+    fi
+    if [ -n "${bl_stopping:-}" ]; then
+      echo "== vkbridge: no server socket after $waited ms; the session is stopping"
+      return 1
+    fi
+    if [ "$waited" -ge "$limit" ]; then
+      echo "== vkbridge: no server socket after $waited ms (gave up at $limit ms)"
+      return 1
+    fi
+    sleep 0.05
+  done
+}
+if [ "${BL_VKBRIDGE:-0}" = 1 ]; then
+  bl_vkb_icd=/usr/local/share/vkbridge/droidbridge_icd.json
+  [ -z "${BL_INSIDE:-}" ] && vkbridge_wait_socket "${VKBRIDGE_SOCKET:-}" "${BL_VKBRIDGE_WAIT_MS:-10000}"
+  bl_vkb_missing=
+  [ -r "$bl_vkb_icd" ] || bl_vkb_missing="$bl_vkb_missing icd"
+  [ -r /usr/local/lib/vkbridge/libvulkan_droidbridge.so ] || bl_vkb_missing="$bl_vkb_missing library"
+  [ -S "${VKBRIDGE_SOCKET:-}" ] || bl_vkb_missing="$bl_vkb_missing socket"
+  if [ -z "$bl_vkb_missing" ]; then
+    export VK_DRIVER_FILES=$bl_vkb_icd VK_ICD_FILENAMES=$bl_vkb_icd
+    export VKBRIDGE_SOCKET VKBRIDGE_CLIENT_LOG
+    if [ -r /root/.vkbridge-env ]; then
+      while IFS='=' read -r _k _v; do
+        case "$_k" in VKBRIDGE_*|BL_VKBRIDGE_*) export "$_k=$_v" ;; esac
+      done < /root/.vkbridge-env
+      [ -z "${BL_INSIDE:-}" ] && echo "== vkbridge: development settings from /root/.vkbridge-env: $(cut -d= -f1 /root/.vkbridge-env | tr '\n' ' ')"
+    fi
+    export VKD3D_FEATURE_LEVEL=${VKD3D_FEATURE_LEVEL:-12_0}
+    unset TU_DEBUG
+    if [ -z "${BL_INSIDE:-}" ]; then
+      step "vkbridge self-test"
+      bl_vkb_smoke=$(timeout 60 /usr/local/bin/droiddeck-vkbridge-smoke 2>&1)
+      printf '%s\n' "$bl_vkb_smoke" | sed 's/^/== vkbridge: /'
+      bl_vkb_why=
+      if printf '%s\n' "$bl_vkb_smoke" | grep -qE '^FAIL memory sharing'; then
+        bl_vkb_why=memory
+      elif printf '%s\n' "$bl_vkb_smoke" | grep -qE '^FAIL (image clear|draw)'; then
+        bl_vkb_why=draw
+      fi
+      if [ -n "$bl_vkb_why" ] && [ -r "${BL_VKBRIDGE_FALLBACK_ICD:-}" ]; then
+        export VK_DRIVER_FILES=$BL_VKBRIDGE_FALLBACK_ICD VK_ICD_FILENAMES=$BL_VKBRIDGE_FALLBACK_ICD BL_VKBRIDGE=0
+        export BL_OPEN_DRIVER=1 BL_DRM_STANDIN=/dev/mali0
+        [ "${BL_STEAM_GPU_COMPOSITING:-0}" = 1 ] || export BL_STEAM_SOFT_COMPOSITING=1
+        if [ "$bl_vkb_why" = memory ]; then
+          echo "== vkbridge: memory sharing = none (no method passed the server's self-test); this session uses the PanVK pair instead ($BL_VKBRIDGE_FALLBACK_ICD)"
+        else
+          echo "== vkbridge: self-test failed images or draws; this session uses the PanVK pair instead ($BL_VKBRIDGE_FALLBACK_ICD)"
+        fi
+        [ -n "${BL_DEBUG_DIR:-}" ] && printf '%s\n%s\n' "$BL_VKBRIDGE_FALLBACK_ICD" "$bl_vkb_why" > "$BL_DEBUG_DIR/vkbridge-fallback" 2>/dev/null
+      elif [ -n "$bl_vkb_why" ]; then
+        echo "== vkbridge: self-test failed ($bl_vkb_why) and no PanVK pair is installed to fall back on; expect a black screen or a lost device - set a Mali driver pair in Setup"
+      fi
+      unset bl_vkb_why
+      unset bl_vkb_smoke
+      if command -v vulkaninfo >/dev/null 2>&1; then
+        timeout 30 vulkaninfo --summary 2>&1 | sed -n '/^Devices:/,$p' | head -40 | sed 's/^/== vulkaninfo: /'
+      fi
+    fi
+    [ "${BL_VKBRIDGE:-0}" = 1 ] && echo "== vulkan driver: Mali bridge ($bl_vkb_icd, server at $VKBRIDGE_SOCKET)"
+  else
+    echo "== vulkan driver: Mali bridge requested but NOT usable (icd $bl_vkb_icd, socket ${VKBRIDGE_SOCKET:-unset}; missing:$bl_vkb_missing)"
+    [ -n "${BL_INSIDE:-}" ] || exit 69
+  fi
+  unset bl_vkb_icd bl_vkb_missing
+fi
+if [ "${BL_VENUS:-0}" = 1 ] && [ -z "${BL_INSIDE:-}" ] && command -v vulkaninfo >/dev/null 2>&1; then
+  if bl_vn_info=$(timeout 30 vulkaninfo 2>/dev/null); then
+    case $(printf '%s\n' "$bl_vn_info" | grep -m1 'nullDescriptor') in
+      *true*) echo "== venus: nullDescriptor present (Zink keeps the GPU)" ;;
+      *)
+        export GALLIUM_DRIVER=llvmpipe LIBGL_ALWAYS_SOFTWARE=1
+        unset MESA_LOADER_DRIVER_OVERRIDE LIBGL_KOPPER_DRI2
+        echo "== venus: no nullDescriptor on this device even with the Mali compatibility layer; Steam's GL and Xwayland use llvmpipe (software)"
+        ;;
+    esac
+  else
+    echo "== venus: vulkaninfo failed or timed out; GL left on Zink"
+  fi
+  unset bl_vn_info
+fi
+if [ "${BL_GAME_LOGS:-0}" = 1 ] && [ -z "${BL_INSIDE:-}" ] && [ -n "${BL_DEBUG_DIR:-}" ]; then
+  (
+    {
+      echo "== VK_DRIVER_FILES=${VK_DRIVER_FILES:-} VK_ICD_FILENAMES=${VK_ICD_FILENAMES:-} BL_DRM_STANDIN=${BL_DRM_STANDIN:-}"
+      if command -v vulkaninfo >/dev/null 2>&1; then
+        timeout 10 vulkaninfo --summary
+        echo "== vulkaninfo exit: $?"
+        if timeout 20 vulkaninfo > "$BL_DEBUG_DIR/vulkan-full.txt" 2>&1; then
+          echo "== device extensions (full list in vulkan-full.txt):"
+          sed -n '/^Device Extensions:/,/^$/p' "$BL_DEBUG_DIR/vulkan-full.txt" | grep -o 'VK_[A-Za-z0-9_]*' | sort -u | tr '\n' ' ' | fold -s -w 200
+          echo
+          echo "== key features:"
+          grep -E '^[[:space:]]+(robustBufferAccess2?|robustImageAccess2?|nullDescriptor|logicOp|fillModeNonSolid|shaderClipDistance|shaderCullDistance|dualSrcBlend|geometryShader|scalarBlockLayout|timelineSemaphore|dynamicRendering|synchronization2|maintenance4|maintenance5|maintenance6|shaderDrawParameters|descriptorIndexing|bufferDeviceAddress|vulkanMemoryModel|hostQueryReset|imagelessFramebuffer|samplerYcbcrConversion|shaderInt64|shaderFloat64|shaderInt16|shaderFloat16|storageBuffer16BitAccess|extendedDynamicState[23]?|vertexInputDynamicState|customBorderColors|customBorderColorWithoutFormat|depthClipEnable|multiViewport|textureCompressionBC|indexTypeUint8|rectangularLines|bresenhamLines|transformFeedback|geometryStreams|graphicsPipelineLibrary|pushDescriptor|primitiveTopologyListRestart|dynamicRenderingLocalRead|shaderDemoteToHelperInvocation|subgroupSizeControl|computeFullSubgroups|inlineUniformBlock|pipelineCreationCacheControl) = ' "$BL_DEBUG_DIR/vulkan-full.txt" | sed 's/^[[:space:]]*/  /' | sort -u
+        else
+          echo "== full vulkaninfo failed or timed out (exit $?)"
+        fi
+      else
+        echo "== vulkaninfo is not in this runtime; GPU nodes:"
+        ls -l /dev/kgsl-3d0 /dev/mali0 /dev/dri 2>&1
+      fi
+    } > "$BL_DEBUG_DIR/vulkan-summary.txt" 2>&1
+  ) &
+fi
 export GAMESCOPE_FORCE_VULKAN_REALTIME=${BL_GAMESCOPE_REALTIME:-0}
 
 start_agent() {
@@ -226,13 +381,48 @@ nap() {
   [ -n "${bl_nap_fd:-}" ] || exec {bl_nap_fd}<> <(:)
   read -r -t "$1" -u "$bl_nap_fd" _ 2>/dev/null || :
 }
+# Which program a driver error came from: Mesa's lines ("radv/amdgpu: The CS has been rejected",
+# "ZINK: vkQueueWaitIdle failed") carry no process name. For the first three minutes of an open
+# driver pair's session, every process that appears goes into processes.txt with the session log's
+# line count at that moment, so an error's line number in session.log points at what had just
+# started. Pure bash over /proc (no execs: see nap).
+watch_processes() {
+  local out=$BL_DEBUG_DIR/processes.txt log=$BL_DEBUG_DIR/session.log i p pid comm lines
+  local -a argv new
+  local -A seen=()
+  echo "# seconds  session.log-lines  pid  name  command line" > "$out" 2>/dev/null || return 0
+  for ((i = 0; i < 360; i++)); do
+    new=()
+    for p in /proc/[0-9]*; do
+      pid=${p#/proc/}
+      [ -n "${seen[$pid]:-}" ] && continue
+      seen[$pid]=1
+      read -r comm < "$p/comm" 2>/dev/null || continue
+      argv=()
+      mapfile -d '' -t argv < "$p/cmdline" 2>/dev/null
+      new+=("$pid"$'\t'"$comm"$'\t'"${argv[*]:0:8}")
+    done
+    if [ ${#new[@]} -gt 0 ]; then
+      lines=0
+      [ -r "$log" ] && { mapfile -t argv < "$log"; lines=${#argv[@]}; argv=(); }
+      for p in "${new[@]}"; do printf '%s\t%s\t%.200s\n' "$SECONDS" "$lines" "$p"; done >> "$out"
+    fi
+    nap 0.5
+  done
+}
+if [ "${BL_OPEN_DRIVER:-0}" = 1 ] && [ -z "${BL_INSIDE:-}" ] && [ -n "${BL_DEBUG_DIR:-}" ]; then
+  watch_processes &
+fi
 export XDG_DATA_HOME=${XDG_DATA_HOME:-$HOME/.local/share}
 export XDG_CONFIG_HOME=${XDG_CONFIG_HOME:-$HOME/.config}
 export XDG_CACHE_HOME=${XDG_CACHE_HOME:-$HOME/.cache}
 mkdir -p "$XDG_DATA_HOME" "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME"
 rm -f "${XDG_RUNTIME_DIR:-/run/droiddeck}/droiddeck-steamvr/active"
+rm -f "${XDG_RUNTIME_DIR:-/run/droiddeck}/droiddeck-remote-play"
+/usr/local/bin/droiddeck-steamvr unregister >/dev/null 2>&1 || true
 if [ "$mode" = lxqt ] || [ "$mode" = desktop ]; then
   /usr/local/bin/droiddeck-desktop-bookmarks || true
+  /usr/local/bin/droiddeck-downloads || true
 fi
 export FLATPAK_BWRAP=/usr/local/bin/droiddeck-bwrap
 export XDG_DATA_DIRS=$XDG_DATA_HOME/flatpak/exports/share:${XDG_DATA_DIRS:-/usr/local/share:/usr/share}
@@ -256,6 +446,7 @@ program_cores() {
   [ "${BL_PIN_CORES:-1}" = 0 ] && return 0
   command -v taskset >/dev/null 2>&1 || return 0
   if [ -n "${BL_GAME_CPUS:-}" ]; then echo "$BL_GAME_CPUS"; return 0; fi
+  [ "$mode" = run ] && return 0
   local f n max min= list=
   for f in /sys/devices/system/cpu/cpu[0-9]*/cpufreq/cpuinfo_max_freq; do
     max=$(cat "$f" 2>/dev/null) || continue
@@ -300,6 +491,20 @@ if [ -z "${BL_INSIDE:-}" ]; then
     step "starting the desktop"
     start_agent --no-focus
     [ -x /usr/local/bin/droiddeck-desktop ] || { echo "== the desktop package is not installed"; exit 66; }
+    if command -v dbus-daemon >/dev/null 2>&1 && command -v droiddeck-netmanager >/dev/null 2>&1; then
+      write_system_bus_config
+      dbus-daemon --config-file=/usr/local/share/droiddeck/system-bus.conf --nofork --nopidfile &
+      for _ in $(seq 1 50); do
+        [ -S /run/dbus/system_bus_socket ] && break
+        nap 0.1
+      done
+      if [ -S /run/dbus/system_bus_socket ]; then
+        droiddeck-login1 --with-netmanager &
+        echo "== desktop: system bus up, network and power services running"
+      else
+        echo "== desktop: the system bus did not come up"
+      fi
+    fi
     cores=$(program_cores)
     if [ -n "$cores" ]; then
       echo "== desktop cores: $cores (the desktop and every program started from it)"
@@ -310,53 +515,49 @@ if [ -z "${BL_INSIDE:-}" ]; then
   width=${BL_WIDTH:-1280}
   height=${BL_HEIGHT:-720}
   nested=$width
+  nested_h=$height
   if [ "${BL_FOLLOW_OUTPUT:-0}" = 1 ]; then
     echo "== gamescope: the output follows the screen (${width}x${height} to start)"
   elif [ "$mode" = steam ] && [ "${BL_GAMESCOPE_STRETCH_16X9:-0}" = 1 ]; then
     wide=$(( (height * 16 + 4) / 9 / 2 * 2 ))
+    tall=$(( (width * 9 + 8) / 16 / 2 * 2 ))
     if [ "$wide" -gt "$width" ]; then
       nested=$wide
-      echo "== gamescope: games at ${nested}x${height} stretched to the ${width}x${height} output"
+    elif [ "$tall" -gt "$height" ]; then
+      nested_h=$tall
+    fi
+    if [ "$nested" != "$width" ] || [ "$nested_h" != "$height" ]; then
+      echo "== gamescope: games at ${nested}x${nested_h} stretched to the ${width}x${height} output"
     fi
   fi
-  # Native resolution on Mali is not what any of these sessions was tuned on: 1600x720 is, and
-  # the client's browser and the compositor cost about three times the memory and the time per
-  # frame at 2712x1220. The 2026-10-19 session that reported 0-3 fps in a game, and 91% of RAM,
-  # had this size and FEX's EXTREME preset on at once; say which of the two the session is
-  # running at, with the switch that changes it, so the next log answers it instead of guessing.
-  if [ "$mode" = steam ] && [ "${BL_GPU_FAMILY:-}" = mali ] && [ $(( width * height )) -gt $(( 1600 * 720 )) ]; then
-    echo "== note: the session is ${width}x${height}; on Mali 1600x720 is the tested size (Ajustes del modo Steam > Pantalla > Resolucion)"
-  fi
-  if [ "$mode" = steam ]; then
+  backend=${BL_GAMESCOPE_BACKEND:-wayland}
+  case "$backend" in
+    wayland) ;;
+    sdl) export SDL_VIDEODRIVER=wayland ;;
+    *) echo "== unsupported gamescope backend: $backend"; exit 64 ;;
+  esac
+  if [ "$mode" = steam ] && [ "${BL_CURSOR_COMPOSITE:-0}" = 1 ]; then
     export gamescope_cursor_composite=2
   fi
-  args=(--backend wayland --expose-wayland -f -W "$width" -H "$height" -w "$nested" -h "$height")
-  [ "$nested" != "$width" ] && args+=(-S stretch) && export BL_STRETCHED=1
-  if [ "${BL_FPS:-0}" -gt 0 ]; then
-    args+=(-r "$BL_FPS")
-    # The 2026-10-14 X6 Pro session ran with the limiter at 30 and its game read a 30 Hz display
-    # (DXVK: "Reported refresh rate: 30.0 Hz"), which reads as a broken display when the complaint
-    # is speed. Say it once, beside everything else.
-    if [ "$mode" = steam ] && [ "${BL_FPS}" -lt 45 ]; then
-      echo "== note: the app's FPS limiter is ${BL_FPS} - games see a ${BL_FPS} Hz display and cannot exceed it"
-    fi
-  elif [ "${BL_REFRESH:-0}" -gt 0 ]; then
+  # Through the Mali bridge, Steam's UI flickered while gamescope handed its layers to the phone's
+  # compositor as separate planes, for a reason not yet found; one composited image does not
+  # (Mali-G76 MC4: 145 footer flips in 6 s at rest, 0 composited).
+  if [ "$mode" = steam ] && [ "${BL_VKBRIDGE:-0}" = 1 ] && [ -z "${gamescope_composite_force:-}" ]; then
+    export gamescope_composite_force=1
+    echo "== gamescope: composites every frame (Mali bridge: the Steam UI flickers on separate planes)"
+  fi
+  args=(--backend "$backend" --expose-wayland -f -W "$width" -H "$height" -w "$nested" -h "$nested_h")
+  if [ "$nested" != "$width" ] || [ "$nested_h" != "$height" ]; then
+    args+=(-S stretch)
+    export BL_STRETCHED=1
+  fi
+  if [ "${BL_REFRESH:-0}" -gt 0 ]; then
     args+=(-r "$BL_REFRESH")
+    export GAMESCOPE_NESTED_REFRESH_FOLLOWS_HOST=1
   fi
   [ "$mode" = steam ] && [ "${BL_STEAM_UI:-}" != desktop ] && args+=(-e)
-  # Two Xwayland servers, as SteamOS runs Steam: the client on the first, games on the second
-  # (STEAM_GAME_DISPLAY_0). The client then sizes the games' server to each game's Game Resolution
-  # (GAMESCOPE_XWAYLAND_MODE_CONTROL; native unless one is set), and gamescope scales it to the
-  # output. With one server the client and its games share the output's size, so a game's own Game
-  # Resolution never reaches its display (docs/development/steam-display-scaling.md). The client's
-  # overlay is also on another server than the game, so opening it no longer takes the game's X
-  # keyboard focus, which made games like FlatOut shrink their window.
-  # One Xwayland server by default on this 7.1 GB Mali branch: a second Xwayland server loads a
-  # second Mesa Zink + PanVK + Fossilize stack (~215 MB of RAM before a game even starts) and lets
-  # STEAM_MULTIPLE_XWAYLANDS=1 override the game server's mode to 800x600@120 even when the session
-  # is 960x720@30. BL_XWAYLAND_COUNT=2 in Download/droiddeck-env restores two servers.
-  if [ "$mode" = steam ] && [ "${BL_XWAYLAND_COUNT:-1}" -gt 1 ]; then
-    args+=(--xwayland-count "${BL_XWAYLAND_COUNT:-1}")
+  if [ "$mode" = steam ] && [ "${BL_XWAYLAND_COUNT:-2}" -gt 1 ]; then
+    args+=(--xwayland-count "${BL_XWAYLAND_COUNT:-2}")
     export STEAM_MULTIPLE_XWAYLANDS=1
   fi
   [ "$mode" = steam ] && args+=(--default-touch-mode 4)
@@ -364,54 +565,29 @@ if [ -z "${BL_INSIDE:-}" ]; then
   [ -n "${BL_GAMESCOPE_ARGS:-}" ] && read -r -a _bl_extra <<<"$BL_GAMESCOPE_ARGS" && args+=("${_bl_extra[@]}")
   if [ "$mode" = steam ] && [ "${BL_MANGOAPP:-1}" = 1 ] \
      && [ "${BL_STEAM_UI:-}" != desktop ] && command -v mangoapp >/dev/null 2>&1; then
-    # One fixed file, rewritten each session: a mktemp name per session was never removed.
     MANGOHUD_CONFIGFILE=/tmp/droiddeck-mangohud.conf
     echo no_display > "$MANGOHUD_CONFIGFILE"
     export MANGOHUD_CONFIGFILE STEAM_USE_MANGOAPP=1 STEAM_MANGOAPP_PRESETS_SUPPORTED=1 STEAM_MANGOAPP_HORIZONTAL_SUPPORTED=1
     args+=(--mangoapp)
     echo "== gamescope: mangoapp on ($(command -v mangoapp), config $MANGOHUD_CONFIGFILE)"
   fi
+  mkdir -p /run/droiddeck-hud && export DROIDDECK_HUD_FRAMES=/run/droiddeck-hud/frames
   export BL_INSIDE=1
-  if [ "$software" = yes ]; then
-    # gamescope composites on the GPU and cannot do without one: it imports the client's buffers
-    # as dma-bufs and synchronises with sync files (VK_KHR_external_semaphore_fd, VK_EXT_image_
-    # drm_format_modifier), none of which lavapipe has - it names the missing extension and
-    # exits, as a session log on a Mali phone showed. Software mode therefore runs the session's
-    # program straight into the app's compositor, with Xwayland where gamescope would have been.
-    echo "== software: gamescope needs a GPU and is skipped; Xwayland takes its place"
-    if ! command -v Xwayland >/dev/null 2>&1; then
-      echo "DD_SOFTWARE_NO_XWAYLAND: this runtime has no Xwayland, so nothing can be displayed"
-      exit 66
+  rm -f "${XDG_RUNTIME_DIR:-/tmp}"/gamescope-limiter-*
+  export GAMESCOPE_LIMITER_FILE="${XDG_RUNTIME_DIR:-/tmp}/droiddeck-gamescope-limiter"
+  rm -f "$GAMESCOPE_LIMITER_FILE"
+  if [ "$mode" = steam ]; then
+    if /usr/local/bin/droiddeck-pipewire start; then
+      eval "$(/usr/local/bin/droiddeck-pipewire env)"
+    else
+      echo "== pipewire: not running; Remote Play and game recording have no picture"
     fi
-    # -geometry, not -screen: this Xwayland takes the size of its window from -geometry and
-    # rejects -screen outright ("Unrecognized option: -screen", fatal) - which is how the first
-    # software session ended, with Steam unable to open a display.
-    # No display number of our own, and -displayfd instead of -nolock: the server takes the first
-    # free display and writes its number to the fd, and -displayfd is what turns the lock off -
-    # xserver sets nolock for it (os/utils.c) for any user. -nolock itself is refused to everyone
-    # but root ("Warning: the -nolock option can only be used by root", and this session runs as
-    # uid 10370), and the lock then cannot be linked into place under proot either:
-    # "Linking lock file (/tmp/.X1-lock) in place failed: Operation not permitted", fatal. It is
-    # how gamescope starts its own Xwaylands, which is why they come up where ours did not.
-    _bl_xdisplay=$(mktemp "${BL_DEBUG_DIR:-/tmp}/xwayland-display.XXXXXX")
-    Xwayland -geometry "${width}x${height}" -nolisten tcp -displayfd 3 3>"$_bl_xdisplay" \
-      >>"${BL_DEBUG_DIR:-/tmp}/xwayland.log" 2>&1 &
-    for _ in $(seq 1 100); do [ -s "$_bl_xdisplay" ] && break; sleep 0.1; done
-    _bl_xnum=$(tr -cd 0-9 < "$_bl_xdisplay")
-    rm -f "$_bl_xdisplay"
-    if [ -z "$_bl_xnum" ]; then
-      echo "DD_SOFTWARE_XWAYLAND_FAILED: Xwayland never answered; see xwayland.log"
-      exit 66
-    fi
-    for _ in $(seq 1 100); do [ -S "/tmp/.X11-unix/X$_bl_xnum" ] && break; sleep 0.1; done
-    export DISPLAY=:$_bl_xnum
-    echo "== software: Xwayland on $DISPLAY at ${width}x${height}, a client of ${WAYLAND_DISPLAY:-no compositor}"
-  elif [ "$mode" = steam ]; then
     run_gamescope "${args[@]}" -- "$0" "$mode" "$@"
-    exit $?
-  else
-    exec gamescope "${args[@]}" -- "$0" "$mode" "$@"
+    _bl_status=$?
+    /usr/local/bin/droiddeck-pipewire stop
+    exit $_bl_status
   fi
+  exec gamescope "${args[@]}" -- "$0" "$mode" "$@"
 fi
 
 bl_displays() {
@@ -465,8 +641,9 @@ case $mode in
       taskset -cp "$cores" $$ >/dev/null 2>&1 || true
     fi
     python3 /usr/local/bin/droiddeck-pad-defaults 2>&1 || true
-    # The program is waited for so its exit code can be handed to the app: a plain exec leaves a
-    # session that closes over a game which crashed with no way to tell it from one the user quit.
+    if [ -n "${GAMESCOPE_WAYLAND_DISPLAY:-}" ]; then
+      export WAYLAND_DISPLAY= XDG_SESSION_TYPE=x11
+    fi
     run_program() {
       local rc=0 child sig forwarded=0
       { trap - INT QUIT; exec "$@"; } <&0 &
@@ -485,10 +662,6 @@ case $mode in
       fi
       exit "$rc"
     }
-    # A launch whose target never shows up dies here with a line the front end can read, not a
-    # bare "No such file or directory" from exec (the same words a missing ELF interpreter gets).
-    [ -e "$target" ] || { echo "== run: $target does not exist in the guest; stage it again"; exit 127; }
-    [ -s "$target" ] || { echo "== run: $target is empty; pick it again"; exit 126; }
     fex=()
     if [ -x /usr/local/bin/droiddeck-fex ]; then
       case $(od -An -tu2 -j18 -N2 "$target" 2>/dev/null | tr -d ' ') in
@@ -497,16 +670,7 @@ case $mode in
     fi
     case ${target,,} in
       *.appimage)
-        export APPIMAGE_EXTRACT_AND_RUN=1
-        chmod +x "$target" 2>/dev/null
-        # AppImages are decided by droiddeck-fex itself (mode auto: its own ELF read sends x86_64
-        # to FEX and an ARM AppImage runs native, and an uninstalled FEX says so in words). The
-        # od probe above has no say here - a read it missed used to exec the image raw, and the
-        # kernel answered with the same "No such file or directory" as a missing interpreter.
-        if [ -x /usr/local/bin/droiddeck-fex ]; then
-          run_program /usr/local/bin/droiddeck-fex run --mode auto -- "$target" "$@"
-        fi
-        run_program "$target" "$@"
+        run_program /usr/local/bin/droiddeck-appimage-exec "$target" "$@"
         ;;
       *.sh)
         if [ -x /usr/local/bin/droiddeck-fex ]; then
@@ -521,18 +685,23 @@ case $mode in
     esac
     ;;
   steam)
+    if [ -n "${GAMESCOPE_WAYLAND_DISPLAY:-}" ]; then
+      export WAYLAND_DISPLAY= XDG_SESSION_TYPE=x11
+    fi
+    export MOZ_DISABLE_CONTENT_SANDBOX=1 MOZ_DISABLE_GMP_SANDBOX=1 MOZ_DISABLE_RDD_SANDBOX=1
+    export MOZ_DISABLE_SOCKET_PROCESS_SANDBOX=1 MOZ_DISABLE_UTILITY_SANDBOX=1
+    export MOZ_SHM_NO_SEALS=1
     steam_x64=0
     [ "${BL_STEAM_CLIENT_ARCH:-}" = x86_64 ] && steam_x64=1
     steam_cef_gpu=1
     if [ "$steam_x64" = 1 ]; then
       step "checking the Steam client's arm64 parts (first run downloads them, ~1-2 min)"
-      # droiddeck-steam-install removes the repair request: read it first so Repair Steam covers both clients.
       _bl_x64_repair=0
       [ -e "$HOME/.bl-steam-repair" ] && _bl_x64_repair=1
-      droiddeck-steam-install || exit $?
+      droiddeck-steam-install || steam_setup_failed $?
       droiddeck-steam-install --sync steamdeck_publicbeta || step "could not update the arm64 client's parts; the x86-64 client keeps its own web helper"
       step "checking the x86-64 Steam client (FEX, experimental; the first run downloads ~2 GB)"
-      BL_X64_REPAIR=$_bl_x64_repair droiddeck-steam-x64 --prepare || exit $?
+      BL_X64_REPAIR=$_bl_x64_repair droiddeck-steam-x64 --prepare || steam_setup_failed $?
       step "x86-64 Steam client ready"
       steam_root=${BL_X64_HOME:-$HOME/.droiddeck-x64}/.local/share/Steam
       steam_client=(droiddeck-steam-x64 --exec)
@@ -542,13 +711,19 @@ case $mode in
       fi
     else
       step "checking the Steam client (first run downloads it, ~1-2 min with nothing on screen)"
-      droiddeck-steam-install || exit $?
+      droiddeck-steam-install || steam_setup_failed $?
       step "Steam client ready"
       steam_root=$XDG_DATA_HOME/Steam
       if [ -f "${BL_X64_HOME:-$HOME/.droiddeck-x64}/.local/share/Steam/local.vdf" ]; then
         droiddeck-steam-x64 --sync-login || true
+        droiddeck-steam-x64 --share || true
       fi
       steam_client=("$steam_root/steamrtarm64/steam")
+      _bl_srt_shim=$HOME/.droiddeck-steamrt-shim
+      if droiddeck-steamrt-shim "$steam_root/steamrtarm64" "$_bl_srt_shim"; then
+        echo "== steam: Valve containerized the arm64 Steam client (it carries a Steam Runtime container); starting it through $_bl_srt_shim"
+        steam_client=(env STEAM_RUNTIME_STEAMRT="$_bl_srt_shim" PATH="$_bl_srt_shim/bin:$PATH" "${steam_client[@]}")
+      fi
     fi
     _bl_proton_root=$steam_root
     if [ "$steam_x64" = 1 ]; then
@@ -590,66 +765,359 @@ case $mode in
       step "client cores: $BL_CLIENT_CPUS"
     fi
     if [ "${BL_ZRAM:-0}" = 1 ]; then
-      printf 0 > /tmp/.bl-zram
       step "zRAM compression: on"
+      [ "${BL_ZRAM_CLIENT:-1}" = 1 ] || step "zRAM: Steam, the hidden Epic Games Launcher and Battle.net are not compressed while games run (turned off in Performance)"
+      _bl_ram_cap=0
+      case ${BL_RAM_CAP_MB:-} in
+        ''|0) ;;
+        *[!0-9]*|0*|???????*) step "RAM cap: ignored invalid value '$BL_RAM_CAP_MB'" ;;
+        *) _bl_ram_cap=$((BL_RAM_CAP_MB * 1024)); step "RAM cap: ${BL_RAM_CAP_MB} MB" ;;
+      esac
       (
-        declare -A _bl_pinned=()
         bl_zram_scan() {
-          _bl_game=0 _bl_pids=()
+          _bl_game=0 _bl_pids=() _bl_others=() _bl_apps=
+          local _d _c _args _name _a _id _fex _lower _bnet=() _bnet_game=0
           for _d in /proc/[0-9]*; do
-            # Under FEX the program is FEX's first argument.
-            { IFS= read -r -d '' _c && case ${_c##*/} in FEX|FEXInterpreter) IFS= read -r -d '' _c ;; esac; } \
-              2>/dev/null < "$_d/cmdline" || continue
-            case ${_c##*/} in
-              reaper) _bl_game=1 ;;
-              steam|steamwebhelper|gamescope) _bl_pids+=("${_d#/proc/}") ;;
-            esac
-            if [ -n "${BL_CLIENT_CPUS:-}" ]; then
-              _t=("$_d"/task/*)
-              _p=${_d#/proc/}
-              if [ "${_bl_pinned[$_p]:-}" != "${#_t[@]}" ]; then
-                taskset -a -cp "$BL_CLIENT_CPUS" "$_p" >/dev/null 2>&1 || true
-                _bl_pinned[$_p]=${#_t[@]}
-              fi
+            [ "${_d##*/}" != "$BASHPID" ] || continue
+            _args=()
+            while IFS= read -r -d '' _c; do _args+=("$_c"); done 2>/dev/null < "$_d/cmdline" || true
+            [ "${#_args[@]}" -gt 0 ] || continue
+            _name=${_args[0]} _fex=0
+            if [ "${#_args[@]}" -gt 1 ]; then
+              case ${_name##*/} in FEX|FEXInterpreter) _name=${_args[1]} _fex=1 ;; esac
             fi
+            case ${_name##*/} in
+              reaper)
+                for _a in "${_args[@]}"; do
+                  case $_a in
+                    AppId=769) ;;
+                    AppId=[0-9]*)
+                      _id=${_a#AppId=}
+                      case $_id in *[!0-9]*) ;; *) _bl_game=1; _bl_apps="$_bl_apps $_id" ;; esac
+                      ;;
+                  esac
+                done
+                ;;
+              steam|steamwebhelper) _bl_pids+=("${_d##*/}") ;;
+              *)
+                _lower=${_name,,}
+                if [ "$_fex" = 1 ] && grep -qz '^DROIDDECK_EPIC_HIDDEN=1$' "$_d/environ" 2>/dev/null; then
+                  _bl_pids+=("${_d##*/}")
+                elif [[ $_lower == [a-z]:[\\/]'program files (x86)'[\\/]battle.net[\\/]* ||
+                        $_lower == [a-z]:[\\/]programdata[\\/]battle.net[\\/]* ]]; then
+                  _bnet+=("${_d##*/}")
+                else
+                  _bl_others+=("${_d##*/}")
+                  if [[ $_lower == [a-z]:[\\/]* ]]; then
+                    case ${_lower##*[\\/]} in
+                      agent.exe|conhost.exe|explorer.exe|lsass.exe|plugplay.exe|rpcss.exe|services.exe|start.exe|\
+                      steam.exe|svchost.exe|tabtip.exe|winedevice.exe|rundll32.exe|wineboot.exe|winemenubuilder.exe) ;;
+                      *)
+                        for _a in "${_args[@]:1}"; do
+                          [ "${_a,,}" = -uid ] && _bnet_game=1
+                        done
+                        ;;
+                    esac
+                  fi
+                fi
+                ;;
+            esac
           done
+          if [ "$_bnet_game" = 1 ]; then
+            _bl_pids+=("${_bnet[@]}")
+          else
+            _bl_others+=("${_bnet[@]}")
+          fi
         }
         bl_zram_usage() {
           local _p _k _v _u _rss=0 _swap=0
-          for _p in "${_bl_pids[@]}"; do
+          for _p in "$@"; do
             while read -r _k _v _u; do
               case $_k in VmRSS:) _rss=$((_rss + _v)) ;; VmSwap:) _swap=$((_swap + _v)) ;; esac
             done 2>/dev/null < "/proc/$_p/status"
           done
-          echo "${#_bl_pids[@]} processes, resident $((_rss / 1024)) MB, in zram $((_swap / 1024)) MB"
+          _bl_rss=$_rss
+          _bl_swap=$_swap
+          echo "$# processes, resident $((_rss / 1024)) MB, in zram $((_swap / 1024)) MB"
+        }
+        bl_memory_read() {
+          local _k _v _u _kind _fields _avg
+          _bl_mem_total=0 _bl_available=-1 _bl_swap_total=0 _bl_swap_free=-1 _bl_psi=0
+          while read -r _k _v _u; do
+            case $_v in ''|*[!0-9]*) continue ;; esac
+            case $_k in
+              MemTotal:) _bl_mem_total=$_v ;;
+              MemAvailable:) _bl_available=$_v ;;
+              SwapTotal:) _bl_swap_total=$_v ;;
+              SwapFree:) _bl_swap_free=$_v ;;
+            esac
+          done 2>/dev/null < /proc/meminfo
+          if [ -r /proc/pressure/memory ]; then
+            while read -r _kind _fields; do
+              [ "$_kind" = some ] || continue
+              _avg=${_fields#avg10=} _avg=${_avg%% *} _avg=${_avg%%.*}
+              case $_avg in ''|*[!0-9]*) ;; *) _bl_psi=$((10#$_avg)) ;; esac
+            done 2>/dev/null < /proc/pressure/memory
+          fi
+          _bl_headroom=$((_bl_mem_total / 5))
+          [ "$_bl_headroom" -ge $((512 * 1024)) ] || _bl_headroom=$((512 * 1024))
+          [ "$_bl_headroom" -le $((1536 * 1024)) ] || _bl_headroom=$((1536 * 1024))
+          _bl_tier_headroom=$((_bl_mem_total / 4))
+          [ "$_bl_tier_headroom" -ge $((768 * 1024)) ] || _bl_tier_headroom=$((768 * 1024))
+          [ "$_bl_tier_headroom" -le $((2560 * 1024)) ] || _bl_tier_headroom=$((2560 * 1024))
+          _bl_swap_reserve=$((_bl_swap_total / 5))
+          [ "$_bl_swap_reserve" -ge $((256 * 1024)) ] || _bl_swap_reserve=$((256 * 1024))
+        }
+        bl_memory_tight() {
+          [ "$_bl_mem_total" -gt 0 ] && [ "$_bl_available" -ge 0 ] &&
+            { [ "$_bl_available" -lt "$_bl_headroom" ] ||
+              { [ "$_bl_psi" -ge 1 ] && [ "$_bl_available" -lt $((_bl_mem_total / 3)) ]; }; }
+        }
+        bl_client_can_pageout() {
+          bl_memory_read
+          bl_zram_usage "${_bl_pids[@]}" > /dev/null
+          [ "$_bl_mem_total" -gt 0 ] && [ "$_bl_swap_total" -gt 0 ] &&
+            [ $((_bl_swap_free - _bl_rss)) -ge "$_bl_swap_reserve" ]
+        }
+        bl_client_can_readback() {
+          bl_memory_read
+          bl_zram_usage "${_bl_pids[@]}" > /dev/null
+          [ "$_bl_mem_total" -gt 0 ] && ! bl_memory_tight &&
+            [ "$_bl_available" -ge $((_bl_swap * 2)) ] &&
+            [ $((_bl_available - _bl_swap)) -ge "$_bl_headroom" ]
+        }
+        bl_client_pressure() {
+          [ "${BL_ZRAM_CLIENT:-1}" = 1 ] && [ "$_bl_game" = 1 ] &&
+            [ "${#_bl_pids[@]}" -gt 0 ] && bl_memory_tight || return 0
+          [ "$_bl_pressure_at" -lt 0 ] ||
+            [ $((SECONDS - _bl_pressure_at)) -ge "$_bl_pressure_backoff" ] || return 0
+          [ "$_bl_packed" -lt 0 ] || [ $((SECONDS - _bl_packed)) -ge 30 ] || return 0
+          _bl_pressure_at=$SECONDS
+          if ! bl_client_can_pageout; then
+            step "zRAM: pressure reclaim skipped, swap headroom too small ($((_bl_swap_free / 1024)) MB free)"
+            return 0
+          fi
+          [ "$_bl_rss" -ge $((128 * 1024)) ] || return 0
+          local _before=$_bl_rss
+          bl_zram_send 1 "memory pressure, compressing the client (available $((_bl_available / 1024)) MB, swap free $((_bl_swap_free / 1024)) MB)" client
+          _bl_packed=$SECONDS
+          [ "${_bl_pageout_complete:-0}" = 1 ] || return 0
+          bl_zram_usage "${_bl_pids[@]}" > /dev/null
+          if [ $((_before - _bl_rss)) -lt $((16 * 1024)) ]; then
+            _bl_pressure_backoff=$((_bl_pressure_backoff * 2 > 300 ? 300 : _bl_pressure_backoff * 2))
+          else
+            _bl_pressure_backoff=30
+          fi
+        }
+        bl_memory_critical() {
+          [ "$_bl_mem_total" -gt 0 ] && [ "$_bl_available" -ge 0 ] &&
+            { [ "$_bl_available" -lt "$_bl_tier_headroom" ] ||
+              { [ "$_bl_psi" -ge 1 ] && [ "$_bl_available" -lt $((_bl_tier_headroom * 3 / 2)) ]; }; }
+        }
+        bl_low_ram() {
+          [ "$_bl_mem_total" -gt 0 ] && [ "$_bl_mem_total" -le $((13 * 1024 * 1024)) ]
+        }
+        bl_session_pressure() {
+          bl_memory_read
+          [ "$_bl_game" = 1 ] && bl_low_ram && bl_memory_critical || return 0
+          local _wait=$_bl_tier_backoff _before _pids _targets
+          [ "$_bl_available" -ge $((_bl_headroom / 2)) ] || [ "$_bl_tier_pushed" -lt 0 ] || _wait=30
+          [ "$_bl_tier_at" -lt 0 ] || [ $((SECONDS - _bl_tier_at)) -ge "$_wait" ] || return 0
+          if [ "$_bl_tier_at" -ge 0 ] && [ "$_bl_tier_pushed" -gt 0 ]; then
+            bl_tier_readback
+            if [ "$_bl_tier_back" -le $((_bl_tier_pushed / 2)) ]; then
+              _bl_tier_backoff=30
+            else
+              _bl_tier_backoff=$((_bl_tier_backoff * 2 > 300 ? 300 : _bl_tier_backoff * 2))
+              _bl_tier_at=$SECONDS _bl_tier_pushed=-1
+              step "zRAM: the game read back most of its last page-out, next try in ${_bl_tier_backoff} s"
+              return 0
+            fi
+          fi
+          _bl_tier_at=$SECONDS _bl_tier_pushed=0
+          bl_zram_pick game
+          bl_zram_usage "${_pids[@]}" > /dev/null
+          [ "$_bl_rss" -ge $((256 * 1024)) ] || return 0
+          if [ "$_bl_swap_total" -le 0 ] || [ $((_bl_swap_free - _bl_rss)) -lt "$_bl_swap_reserve" ]; then
+            step "zRAM: low-memory page-out skipped, swap headroom too small ($((_bl_swap_free / 1024)) MB free)"
+            return 0
+          fi
+          _targets=("${_pids[@]}") _before=$_bl_swap
+          bl_zram_send 1 "low memory (available $((_bl_available / 1024)) MB), compressing idle game memory" game
+          bl_zram_usage "${_targets[@]}" > /dev/null
+          _bl_tier_pushed=$((_bl_swap - _before))
+          bl_tier_note "${_targets[@]}"
+          if [ "${_bl_pageout_complete:-0}" = 1 ] && [ "${BL_ZRAM_CLIENT:-1}" = 1 ] && [ "${#_bl_pids[@]}" -gt 0 ]; then
+            _bl_pressure_at=$SECONDS _bl_packed=$SECONDS
+          fi
+        }
+        bl_proc_start() {
+          local _s=
+          _bl_start=
+          read -r _s 2>/dev/null < "/proc/$1/stat" || return 1
+          _s=${_s##*) }
+          set -- $_s
+          [ "$1" != Z ] && [ "$#" -ge 20 ] || return 1
+          _bl_start=${20}
+        }
+        bl_tier_note() {
+          local _p
+          _bl_tier_targets=() _bl_tier_swaps=() _bl_tier_starts=()
+          for _p in "$@"; do
+            bl_proc_start "$_p" || continue
+            bl_zram_usage "$_p" > /dev/null
+            _bl_tier_targets+=("$_p") _bl_tier_swaps+=("$_bl_swap") _bl_tier_starts+=("$_bl_start")
+          done
+        }
+        bl_tier_readback() {
+          local _i _back=0
+          for _i in "${!_bl_tier_targets[@]}"; do
+            bl_proc_start "${_bl_tier_targets[$_i]}" && [ "$_bl_start" = "${_bl_tier_starts[$_i]}" ] || continue
+            bl_zram_usage "${_bl_tier_targets[$_i]}" > /dev/null
+            [ "${_bl_tier_swaps[$_i]}" -le "$_bl_swap" ] || _back=$((_back + _bl_tier_swaps[_i] - _bl_swap))
+          done
+          _bl_tier_back=$_back
+        }
+        bl_watch_nap() {
+          local _i
+          if [ "$_bl_game" = 1 ] && bl_low_ram && [ "$_bl_available" -ge 0 ] && [ "$_bl_available" -lt $((_bl_tier_headroom * 2)) ]; then
+            for _i in 1 2 3 4 5; do
+              nap 1
+              bl_memory_read
+              bl_memory_critical && return 0
+            done
+          else
+            nap 5
+          fi
+          return 0
+        }
+        bl_session_others() {
+          local _p
+          _bl_session=()
+          for _p in "${_bl_others[@]}"; do
+            grep -q -m1 '/libblsession\.so$' "/proc/$_p/maps" 2>/dev/null && _bl_session+=("$_p")
+          done
+        }
+        bl_zram_pick() {
+          if [ "$1" = game ]; then
+            bl_session_others
+            _pids=("${_bl_session[@]}")
+            [ "${BL_ZRAM_CLIENT:-1}" != 1 ] || _pids+=("${_bl_pids[@]}")
+          elif [ "$1" = session ]; then
+            bl_session_others
+            _pids=("${_bl_session[@]}")
+          else
+            _pids=("${_bl_pids[@]}")
+          fi
+        }
+        bl_zram_wait() {
+          local _p _left _start=$SECONDS
+          while [ $((SECONDS - _start)) -lt 12 ]; do
+            _left=0
+            for _p in "$@"; do
+              [ -s "/tmp/.bl-zram.ack.$_p" ] && continue
+              [ -d "/proc/$_p" ] || continue
+              [ $((SECONDS - _start)) -ge 2 ] && [ ! -e "/tmp/.bl-zram.ack.$_p" ] && continue
+              _left=1
+            done
+            [ "$_left" = 1 ] || break
+            nap 0.2
+          done
+          _bl_pageout_complete=1
+          for _p in "$@"; do
+            if [ -d "/proc/$_p" ] && [ ! -s "/tmp/.bl-zram.ack.$_p" ]; then _bl_pageout_complete=0; fi
+            rm -f "/tmp/.bl-zram.ack.$_p"
+          done
         }
         bl_zram_send() {
-          step "zRAM: $2 ($(bl_zram_usage))"
-          printf '%s' "$1" > /tmp/.bl-zram
-          [ "${#_bl_pids[@]}" = 0 ] || kill -URG "${_bl_pids[@]}" 2>/dev/null
-          nap 5
+          local _mode=$1 _what=$2 _which=$3 _pids _p
+          bl_zram_pick "$_which"
+          step "zRAM: $_what ($(bl_zram_usage "${_pids[@]}"))"
+          for _p in "${_pids[@]}"; do rm -f "/tmp/.bl-zram.ack.$_p"; done
+          printf '%s' "$_mode" > /tmp/.bl-zram
+          [ "${#_pids[@]}" = 0 ] || kill -URG "${_pids[@]}" 2>/dev/null
+          if [ "$_mode" = 1 ]; then bl_zram_wait "${_pids[@]}"; else nap 5; fi
           bl_zram_scan
-          step "zRAM: done ($(bl_zram_usage))"
+          bl_zram_pick "$_which"
+          step "zRAM: done ($(bl_zram_usage "${_pids[@]}"))"
         }
-        _bl_since=-1 _bl_packed=-1
+        bl_game_focused() {
+          if [ "${BL_DESKTOP:-}" = 1 ] || [ -z "${BL_LAUNCH_DIR:-}" ]; then
+            return 0
+          fi
+          local id
+          id=$(sed -n 's/.*"focusedApp"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' \
+            "$BL_LAUNCH_DIR/agent/focus.json" 2>/dev/null | head -1)
+          [ -n "$id" ] || return 1
+          case " ${_bl_apps-} " in
+            *" $id "*) return 0 ;;
+          esac
+          return 1
+        }
+        bl_over_cap() {
+          [ "$_bl_ram_cap" -gt 0 ] || return 1
+          _bl_measured=$SECONDS
+          bl_session_others
+          bl_zram_usage "${_bl_pids[@]}" "${_bl_session[@]}" > /dev/null
+          [ "$_bl_rss" -gt "$_bl_ram_cap" ]
+        }
+        bl_cap_due() {
+          [ "$_bl_ram_cap" -gt 0 ] && { [ "$_bl_measured" -lt 0 ] || [ $((SECONDS - _bl_measured)) -ge 30 ]; }
+        }
+        _bl_since=-1 _bl_since_apps= _bl_packed=-1 _bl_measured=-1 _bl_unpack=0 _bl_capped=-1 _bl_backoff=30
+        _bl_pressure_at=-1 _bl_pressure_backoff=30 _bl_tier_at=-1 _bl_tier_backoff=30 _bl_tier_pushed=0 _bl_tier_back=0 _bl_tier_targets=() _bl_tier_swaps=() _bl_tier_starts=()
         while kill -0 $$ 2>/dev/null; do
           bl_zram_scan
-          if [ "$_bl_game" = 1 ]; then
-            [ "$_bl_since" -ge 0 ] || _bl_since=$SECONDS
-            if [ $((SECONDS - _bl_since)) -ge 20 ] && [ "${#_bl_pids[@]}" -gt 0 ] &&
-               { [ "$_bl_packed" -lt 0 ] || [ $((SECONDS - _bl_packed)) -ge 300 ]; }; then
-              bl_zram_send 1 "compressing the client"
+          bl_memory_read
+          if bl_cap_due; then
+            if bl_over_cap; then
+              if [ "$_bl_capped" -lt 0 ] || [ $((SECONDS - _bl_capped)) -ge "$_bl_backoff" ]; then
+                bl_zram_usage "${_bl_pids[@]}" > /dev/null
+                if [ "$_bl_rss" -ge $((512 * 1024)) ]; then
+                  bl_zram_send 1 "over the ${BL_RAM_CAP_MB} MB RAM cap, compressing the client" client
+                  [ "$_bl_game" = 1 ] && _bl_packed=$SECONDS
+                else
+                  step "RAM cap: over, client already small ($((_bl_rss / 1024)) MB resident), skipping it"
+                fi
+                bl_over_cap && bl_zram_send 1 "still over the RAM cap, compressing the rest of the session" session
+                if bl_over_cap; then
+                  _bl_backoff=$((_bl_backoff * 2 > 600 ? 600 : _bl_backoff * 2))
+                  step "RAM cap: still over after paging out, next try in ${_bl_backoff} s"
+                else
+                  _bl_backoff=30
+                fi
+                _bl_capped=$SECONDS
+              fi
+            else
+              _bl_backoff=30
+            fi
+          fi
+          bl_session_pressure
+          bl_client_pressure
+          if [ "$_bl_game" = 1 ] && bl_game_focused; then
+            if [ "$_bl_since" -lt 0 ] || [ "$_bl_since_apps" != "$_bl_apps" ]; then
+              _bl_since=$SECONDS _bl_since_apps=$_bl_apps
+            fi
+            if [ "${BL_ZRAM_CLIENT:-1}" = 1 ] && [ $((SECONDS - _bl_since)) -ge 20 ] && [ "${#_bl_pids[@]}" -gt 0 ] &&
+               { [ "$_bl_packed" -lt 0 ] || [ $((SECONDS - _bl_packed)) -ge 300 ]; } && bl_client_can_pageout; then
+              bl_zram_send 1 "compressing the client" client
               _bl_packed=$SECONDS
             fi
-          elif [ "$_bl_since" -ge 0 ]; then
-            [ "$_bl_packed" -lt 0 ] || bl_zram_send 0 "game closed, reading the client back"
-            _bl_since=-1 _bl_packed=-1
+          elif [ "$_bl_game" != 1 ]; then
+            if [ "$_bl_packed" -ge 0 ]; then
+              _bl_unpack=1
+            fi
+            _bl_since=-1 _bl_packed=-1 _bl_tier_at=-1 _bl_tier_backoff=30 _bl_tier_pushed=0 _bl_tier_targets=() _bl_tier_swaps=() _bl_tier_starts=()
+          else
+            _bl_since=-1
           fi
-          nap 5
+          if [ "$_bl_unpack" = 1 ] && [ "$_bl_game" = 0 ] && ! bl_over_cap && bl_client_can_readback; then
+            bl_zram_send 0 "memory recovered, reading the client back" client
+            _bl_unpack=0
+          fi
+          bl_watch_nap
         done
       ) &
-    else
-      rm -f /tmp/.bl-zram
     fi
     if [ "${BL_LAUNCHER_CORES:-1}" != 0 ] && [ -n "${BL_LAUNCH_DIR:-}" ] && [ -z "${BL_DESKTOP:-}" ] \
        && [ "${BL_STEAM_UI:-}" != desktop ] && [ -x /usr/local/bin/droiddeck-launcher-cores ]; then
@@ -683,6 +1151,11 @@ case $mode in
       droiddeck-steam-ui-scale "$steam_root" "${BL_WIDTH:-1280}" "${BL_HEIGHT:-720}" || true
     fi
     droiddeck-seed-redists "$steam_root" || true
+    fi
+    if [ -n "${BL_SHADER_PRECACHE:-}" ]; then
+      droiddeck-steam-shaders "$BL_SHADER_PRECACHE" "$XDG_DATA_HOME/Steam" \
+        "${BL_X64_HOME:-$HOME/.droiddeck-x64}/.local/share/Steam" &&
+        echo "$BL_SHADER_PRECACHE" > "$HOME/.bl-shader-precache-applied" || true
     fi
     if [ "$steam_x64" = 0 ] && [ ! -f "$steam_root/steamapps/appmanifest_4427310.acf" ]; then
       step "asking the client to fetch the ARM64 Proton"
@@ -778,41 +1251,50 @@ case $mode in
       done < <(xprop -spy -root "${atoms[@]}" 2>/dev/null)
     ) &
     steam_hold_launch() {
-      _bl_launch_ready=
+      local game=$1 shortcut= waited=0 status=0
+      _bl_focused() { xprop -root GAMESCOPE_FOCUSED_APP 2>/dev/null | sed -n 's/.*= *//p'; }
+      _bl_starting() { pgrep -f "reaper SteamLaunch AppId=$(((game >> 32) & 0xffffffff))( |$)" >/dev/null 2>&1; }
+      _bl_hand_off() {
+        printf '%s\n' "$game" > "$BL_LAUNCH_DIR/steam-game.tmp" && mv -f "$BL_LAUNCH_DIR/steam-game.tmp" "$BL_LAUNCH_DIR/steam-game"
+      }
       _bl_end=$((SECONDS + 120))
-      until [ "$(xprop -root GAMESCOPE_FOCUSED_APP 2>/dev/null | sed -n 's/.*= *//p')" = 769 ] || [ "$SECONDS" -ge "$_bl_end" ]; do
+      until [ "$(_bl_focused)" = 769 ] || [ "$SECONDS" -ge "$_bl_end" ]; do
         sleep 1
       done
-      # With a large library the overview can stay missing for 30+ minutes while Steam already takes the launch URL.
-      _bl_overview_status=1
-      _bl_overview_tries=0
-      while [ "$_bl_overview_tries" -lt 2 ]; do
-        if /usr/local/bin/droiddeck-agent --wait-steam-shortcut-overview "$1" 45; then
-          _bl_overview_status=0
-        else
-          _bl_overview_status=$?
-        fi
-        if [ "$_bl_overview_status" -ne 1 ]; then
-          break
-        fi
-        _bl_overview_tries=$((_bl_overview_tries + 1))
-        echo "== steam: shortcut overview not ready yet (attempt $_bl_overview_tries of 2)"
-        sleep 2
+      [ "${#game}" -gt 10 ] && shortcut=1
+      _bl_ready_end=$((SECONDS + 30))
+      while [ "$waited" -lt 30 ] && [ "$((_bl_ready_end - SECONDS))" -gt 0 ]; do
+        timeout "$((_bl_ready_end - SECONDS))" /usr/local/bin/droiddeck-agent --steam-ready >/dev/null 2>&1 && break
+        [ "$((_bl_ready_end - SECONDS))" -gt 1 ] || break
+        sleep 1
+        waited=$((waited + 1))
       done
-      if [ "$_bl_overview_status" -eq 0 ]; then
-        echo "== steam: shortcut overview ready; launching the requested game $1"
-        _bl_launch_ready=1
-      elif [ "$_bl_overview_status" -eq 3 ]; then
-        echo "== steam: not a shortcut CGameID; keeping the existing launch path"
-        sleep 4
-        _bl_launch_ready=1
-      else
-        echo "== steam: shortcut overview not ready after about 90 s; launching the requested game anyway $1"
-        _bl_launch_ready=1
+      waited=0
+      echo "== steam: interface up; launching the requested game $game"
+      _bl_hand_off
+      [ -n "$shortcut" ] || return 0
+      while [ "$(_bl_focused)" = 769 ] && [ "$waited" -lt 20 ]; do
+        sleep 1
+        waited=$((waited + 1))
+      done
+      [ "$(_bl_focused)" = 769 ] || return 0
+      if _bl_starting; then
+        echo "== steam: the requested game is already starting; not launching again"
+        return 0
       fi
-      if [ "$_bl_launch_ready" = 1 ]; then
-        echo "== steam: interface up; launching the requested game $1"
-        printf '%s\n' "$1" > "$BL_LAUNCH_DIR/steam-game.tmp" && mv -f "$BL_LAUNCH_DIR/steam-game.tmp" "$BL_LAUNCH_DIR/steam-game"
+      echo "== steam: the game is not in front after about 20 s; waiting for the shortcut overview"
+      /usr/local/bin/droiddeck-agent --wait-steam-shortcut-overview "$game" 45 || status=$?
+      if [ "$status" -eq 3 ]; then
+        echo "== steam: not a shortcut CGameID; not launching again"
+      elif _bl_starting; then
+        echo "== steam: the requested game started while waiting; not launching again"
+      elif [ "$(_bl_focused)" = 769 ]; then
+        echo "== steam: clearing the pending launch interstitial for $game (overview status $status)"
+        /usr/local/bin/droiddeck-agent --steam-clear-pending-interstitial "$(((game >> 32) & 0xffffffff))" >/dev/null 2>&1 && return 0
+        echo "== steam: launching the requested game again $game"
+        _bl_hand_off
+      else
+        echo "== steam: the game took focus while waiting; not launching again"
       fi
     }
     if [ -n "${BL_LAUNCH_DIR:-}" ] && [ -z "${BL_DESKTOP:-}" ]; then
@@ -853,23 +1335,7 @@ case $mode in
       set -- "$@" "$_bl_url"
     fi
     if command -v dbus-daemon >/dev/null 2>&1 && command -v droiddeck-netmanager >/dev/null 2>&1; then
-      mkdir -p /run/dbus /usr/local/share/droiddeck
-      cat > /usr/local/share/droiddeck/system-bus.conf <<'BUSCONF'
-<!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN"
- "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">
-<busconfig>
-  <type>system</type>
-  <listen>unix:path=/run/dbus/system_bus_socket</listen>
-  <auth>EXTERNAL</auth>
-  <policy context="default">
-    <allow user="*"/>
-    <allow own="*"/>
-    <allow send_destination="*"/>
-    <allow receive_sender="*"/>
-  </policy>
-</busconfig>
-BUSCONF
-      rm -f /run/dbus/system_bus_socket
+      write_system_bus_config
       dbus-daemon --config-file=/usr/local/share/droiddeck/system-bus.conf --nofork --nopidfile &
       system_bus=$!
       for _ in $(seq 1 50); do
@@ -899,14 +1365,46 @@ BUSCONF
       echo "== network: no dbus-daemon or netmanager in this runtime; the client will show no connection"
       exit 69
     fi
+    # Without a session bus libdbus autolaunches one under the game; it never exits and Steam's
+    # reaper waits on it, so the launch or exit never finishes.
+    if [ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ]; then
+      _bl_bus=${XDG_RUNTIME_DIR:-/run/droiddeck}/bus
+      rm -f "$_bl_bus"
+      dbus-daemon --session --address="unix:path=$_bl_bus" --nofork --nopidfile &
+      for _ in $(seq 1 50); do
+        [ -S "$_bl_bus" ] && break
+        nap 0.1
+      done
+      if [ -S "$_bl_bus" ]; then
+        export DBUS_SESSION_BUS_ADDRESS="unix:path=$_bl_bus"
+        echo "== session bus up at $_bl_bus"
+      else
+        echo "== session bus did not come up; programs may start their own"
+      fi
+    fi
 
-    # The UI bridge launches SteamVR, which needs the guest agent's library environment.
-    _bl_compat_env=(env -u LD_LIBRARY_PATH -u STEAM_RUNTIME)
+    _bl_compat_env=(env -u LD_LIBRARY_PATH -u STEAM_RUNTIME -u STEAM_STEAMRT_RECURSION_GUARD)
     [ "${LD_LIBRARY_PATH+x}" ] && _bl_compat_env+=("LD_LIBRARY_PATH=$LD_LIBRARY_PATH")
     [ "${STEAM_RUNTIME+x}" ] && _bl_compat_env+=("STEAM_RUNTIME=$STEAM_RUNTIME")
+    [ "${STEAM_STEAMRT_RECURSION_GUARD+x}" ] && _bl_compat_env+=("STEAM_STEAMRT_RECURSION_GUARD=$STEAM_STEAMRT_RECURSION_GUARD")
     export STEAM_RUNTIME=1
+    export STEAM_STEAMRT_RECURSION_GUARD=1
     export LD_LIBRARY_PATH=$steam_root/steamrtarm64:$steam_root/steamrtarm64/panorama${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
     export SDL_VIDEO_X11_DGAMOUSE=0
+    bl_steam_path=$PATH
+    bl_steam_angle=vulkan
+    bl_steam_presentation=()
+    if [ "${BL_STEAM_GL_PRESENT:-}" = 1 ]; then
+      bl_steam_path="/usr/local/libexec/droiddeck-steam:$PATH"
+      export DISABLE_GAMESCOPE_WSI=1 LIBGL_KOPPER_DISABLE=true
+      bl_steam_angle=gl
+      bl_steam_presentation=(-cef-disable-gpu-compositing)
+      echo "== steam: system PowerVR uses OpenGL/DRI3 through Zink with software CEF compositing"
+    elif [ "${BL_STEAM_SOFT_COMPOSITING:-}" = 1 ]; then
+      bl_steam_presentation=(-cef-disable-gpu-compositing)
+      echo "== steam: open driver pair - software CEF compositing, GPU raster"
+    fi
+    _bl_cef=(-cef-force-gpu "${bl_steam_presentation[@]}" -cef-use-gl=angle "-cef-use-angle=$bl_steam_angle")
     decky_loader=$HOME/homebrew/services/PluginLoader
     if [ -f "$HOME/.droiddeck-decky-enabled" ] && [ -x "$decky_loader" ]; then
       decky_arch=$(cat "$HOME/homebrew/services/.droiddeck-decky-arch" 2>/dev/null || echo unknown)
@@ -940,44 +1438,64 @@ BUSCONF
         echo "== Decky: installed loader architecture is unsupported by this guest; not starting"
       fi
     fi
-    _bl_cdp=()
-    if [ -f "$steam_root/.cef-enable-remote-debugging" ]; then
-      export BL_CDP_PORT=8080
-    else
-      export BL_CDP_PORT=$((20000 + RANDOM % 30000))
-      _bl_cdp=(-cef-enable-debugging -devtools-port "$BL_CDP_PORT")
-    fi
-    if [ -f "$HOME/.droiddeck-decky-enabled" ] && [ "${decky_arch:-}" = x86_64 ]; then
+    steam_devtools 8080
+    export BL_CDP_PORT
+    if [ -f "$HOME/.droiddeck-decky-enabled" ] && [ "${decky_arch:-}" = x86_64 ] && [ ${#_bl_cdp[@]} = 0 ]; then
       echo "== steam: devtools port $BL_CDP_PORT left open for the x86_64 Decky loader"
     else
       export BL_CDP_GUARD=$BL_CDP_PORT
       echo "== steam: devtools port $BL_CDP_PORT, guest processes only"
     fi
     [ -n "${BL_LAUNCH_DIR:-}" ] && mkdir -p "$BL_LAUNCH_DIR/agent" && echo "$BL_CDP_PORT" > "$BL_LAUNCH_DIR/agent/cdp-port"
-    [ "$steam_x64" = 1 ] || "${_bl_compat_env[@]}" droiddeck-steam-compat "$steam_root" 2>&1 &
+    if [ "$steam_x64" = 1 ]; then
+      { droiddeck-steam-compat --files-only "$steam_root" 2>&1 & }
+    else
+      { "${_bl_compat_env[@]}" droiddeck-steam-compat "$steam_root" 2>&1 & }
+    fi
     _bl_ui=(-gamepadui)
     [ "${BL_STEAM_UI:-}" = desktop ] && _bl_ui=()
-    # Deck mode (BL_STEAMDECK=1, the Steam page's Client settings): -steamdeck is the flag that puts
-    # the Quick Access Menu and the Deck settings pages on screen; the QAM's performance overlay
-    # controls stay greyed out without -steamos3, as SteamOS and Armada launch it. -steamos3 makes
-    # the client manage itself as SteamOS does - it calls steamos-select-branch and writes
-    # steamdeck_stable to package/beta, and a branch on disk that loses to the -clientbeta below
-    # is an update that never installs: exit 42, a restart, for ever (Bannerlator 38996ea1). The
-    # loop below puts package/beta back before every start. The SteamOS helpers the client calls
-    # in this mode are staged as no-op stubs under /usr/bin.
-      # The QAM's Scaling Filter lists NVIDIA Image Scaling only when told gamescope has it (it does).
-      # And shows its Scaling Mode and Scaling Filter only when told gamescope takes them.
-    # The power menu's Shut Down and Restart. Without these the client blanks its interface and
-    # stays up (device, 2026-10-12: System.ShutdownPC and nothing after it). With them it does what
-    # SteamOS's gamescope session expects: writes the sentinel and exits. The loop below ends the
-    # session for one and starts the client again for the other.
-    # What a killed session leaves behind. Android ends sessions without warning (backgrounding, the
-    # low-memory killer), and the client then finds .crash - opening its update UI on the spinner -
-    # and the web helper's Singleton* locks in htmlcache, owned by a process that is gone, which can
-    # leave the Gamepad UI blank. No client or helper is running at this point in a session.
+    # bl_steam_angle / bl_steam_presentation (set above) default to the Adreno values (vulkan,
+    # none); only the system-PowerVR path (BL_STEAM_GL_PRESENT=1) changes them.
+    _bl_cef=(-cef-force-gpu "${bl_steam_presentation[@]}" -cef-use-gl=angle "-cef-use-angle=${bl_steam_angle:-vulkan}")
+    [ "${steam_cef_gpu:-1}" = 1 ] || _bl_cef=(-cef-disable-gpu)
+    # The app decides whether the browser may hold the GPU (BL_CEF_GPU), and which backend it
+    # takes there (BL_CEF_BACKEND). Unset keeps the stock behaviour.
+    if [ -n "${BL_CEF_GPU:-}" ]; then
+      if [ "${BL_CEF_GPU}" = 1 ]; then
+        bl_steam_angle=${BL_CEF_BACKEND:-$bl_steam_angle}
+        [ "$bl_steam_angle" = vulkan ] || bl_steam_angle=gl
+        _bl_cef=(-cef-force-gpu "${bl_steam_presentation[@]}" -cef-use-gl=angle "-cef-use-angle=$bl_steam_angle")
+        echo "== steam: browser UI on the GPU (ANGLE on $bl_steam_angle)"
+      else
+        _bl_cef=(-cef-disable-gpu)
+        echo "== steam: browser UI on the CPU (BL_CEF_GPU=0)"
+      fi
+    fi
     if [ "${BL_DESKTOP:-}" = 1 ] && [ "${BL_STEAM_UI:-}" = desktop ]; then
       _bl_cef=(-cef-disable-gpu)
       _bl_ui=(-nobigpicture)
+    fi
+    if [ "${BL_VKBRIDGE:-0}" = 1 ]; then
+      # On the GPU the Steam UI held about 400 MB through the bridge (Mali-G76 MC4, 3 GB of RAM); with
+      # a game loading beside it, Android's low-memory killer took the whole session down.
+      if [ -z "${BL_VKBRIDGE_CEF_GPU:-}" ]; then
+        _bl_mem_kb=$(awk '/^MemTotal:/ {print $2}' /proc/meminfo 2>/dev/null)
+        if [ "${_bl_mem_kb:-0}" -gt 0 ] && [ "$_bl_mem_kb" -lt 4194304 ]; then
+          BL_VKBRIDGE_CEF_GPU=0
+          echo "== steam: $((_bl_mem_kb / 1024)) MB of RAM: the browser UI draws in software to leave games the memory"
+        fi
+      fi
+      if [ "${BL_VKBRIDGE_CEF_GPU:-1}" = 0 ]; then
+        _bl_cef=(-cef-disable-gpu -cef-disable-gpu-compositing)
+        echo "== steam: browser UI in software (Mali bridge)"
+      elif [ "${_bl_cef[0]}" = -cef-force-gpu ]; then
+        _bl_cef=(-cef-force-gpu -cef-use-gl=angle -cef-use-angle="${BL_VKBRIDGE_CEF_ANGLE:-vulkan}")
+      fi
+      [ "${BL_VKBRIDGE_CEF_LOG:-0}" = 1 ] && _bl_cef+=(-cef-enable-logging=stderr -cef-v=1)
+      [ -n "${BL_VKBRIDGE_CEF_EXTRA:-}" ] && read -r -a _bl_cef_extra <<<"$BL_VKBRIDGE_CEF_EXTRA" && _bl_cef+=("${_bl_cef_extra[@]}")
+      BL_WEBHELPER_ARGS=$(bl_webhelper_layout)
+      export BL_WEBHELPER_ARGS
+      echo "== steam: web helper process layout: $BL_WEBHELPER_ARGS (Mali bridge)"
     fi
     if [ "${BL_STEAM_UI:-}" != desktop ]; then
       if [ "$steam_x64" = 0 ] || [ "${BL_X64_DECK:-1}" != 0 ]; then
@@ -1000,6 +1518,9 @@ BUSCONF
       unset _stale _f
     fi
     steam_channel=steamdeck_publicbeta
+    if [ "$steam_x64" = 0 ]; then
+      steam_channel=$(droiddeck-steam-install --channel 2>/dev/null || echo steamdeck_publicbeta)
+    fi
     _bl_lang=()
     [ -n "${BL_STEAM_LANGUAGE:-}" ] && _bl_lang=(-language "$BL_STEAM_LANGUAGE")
     steam_beta=$steam_root/package/beta
@@ -1013,370 +1534,10 @@ BUSCONF
       fi
       games_watcher=$!
     fi
-    # Lossless Scaling (Steam app 993090): whether this account owns it, asked of the signed-in
-    # client once a session until the answer is yes. From then on the app offers importing
-    # Lossless.dll and passes BL_LOSSLESS_OWNED=1, so the question is never asked again.
-    if [ "${BL_LOSSLESS_OWNED:-0}" != 1 ]; then
-      (
-        owned=$HOME/.config/droiddeck/lossless-owned
-        for ((_i = 0; _i < 60; _i++)); do
-          nap 30
-          [ -e "$owned" ] && exit 0
-          answer=$(droiddeck-steam-games probe "$steam_root" 993090 2>/dev/null) || continue
-          case $answer in
-            *'"993090": true'*) mkdir -p "${owned%/*}" && : > "$owned" && echo "== Lossless Scaling: owned" ;;
-            *) echo "== Lossless Scaling: not owned by this account" ;;
-          esac
-          exit 0
-        done
-      ) &
-    fi
-    # The client's browser (CEF) on the GPU is opt-in and, on Mali, only with the driver built here
-    # with the provoking-vertex address fix (the app answers BL_CEF_GPU=0 for any other driver, so
-    # this script only sees a 1 when that check passed). The history matters to what follows:
-    # on a G615 the session came all the way up and the device restarted seconds after the browser
-    # asked the GPU for Vulkan with the gamescope WSI layer still in the path (RC3, 2026-10-14).
-    # Upstream later found a 32-bit truncated command address that faults the command stream front
-    # end on the renderer path Chromium takes through Zink (wonderkast02 issue 9) - on kbase that
-    # is a kernel-level death, not a lost context. So on Mali the browser goes ANGLE/OpenGL ->
-    # Zink -> PanVK (Kopper, X11 DRI3, no gamescope WSI layer: all three already set for Mali),
-    # which is the combination a G720 tester kept up for five minutes of Big Picture with the fix
-    # in. ANGLE/Vulkan is NOT offered on Mali: it is the path that reset the X6 Pro before the fix.
-    _bl_cef=(-no-cef-sandbox -cef-ozone-platform=x11)
-    # Anything the session wants to add to the client itself, one word list, never evaluated:
-    # BL_STEAM_ARGS="-cef-single-process" runs the whole browser in one process, which is the
-    # largest cut available in the client's own memory - and the one most likely to make the store
-    # come back blank instead, which is why it is not on by default.
-    _bl_extra_args=()
-    if [ -n "${BL_STEAM_ARGS:-}" ]; then
-      read -r -a _bl_extra_args <<<"$BL_STEAM_ARGS"
-    fi
-    if [ "$software" != yes ] && [ "${BL_CEF_GPU:-0}" = 1 ]; then
-      if [ "${BL_GPU_FAMILY:-}" = mali ]; then
-        # Two ways to the GPU, chosen in the app (SessionPrefs.steamUiGpuBackend):
-        #  - gl (default): ANGLE -> OpenGL -> Zink -> PanVK. Two translation layers, and the path
-        #    the fn64 fix was validated on (upstream: Big Picture for five minutes, CEF at
-        #    0.45-0.7 GB);
-        #  - vulkan: ANGLE -> PanVK directly, Chromium's native backend, one layer fewer. It is
-        #    the path that reset the X6 Pro on 2026-10-14, before the address fix existed; with
-        #    fn64 in the driver it is an experiment, and the app's rollback still covers it.
-        if [ "${BL_CEF_BACKEND:-gl}" = vulkan ]; then
-          _bl_cef+=(-cef-use-gl=angle -cef-use-angle=vulkan -cef-force-gpu)
-          echo "== ui-on-gpu: Mali - ANGLE/Vulkan directly on PanVK (experiment); fn64 driver required"
-        else
-          _bl_cef+=(-cef-use-gl=angle -cef-use-angle=gl -cef-force-gpu)
-          echo "== ui-on-gpu: Mali - ANGLE on Zink (Kopper, X11 DRI3) over PanVK; fn64 driver required"
-        fi
-      else
-        _bl_cef+=(-cef-use-gl=angle -cef-use-angle=vulkan -cef-force-gpu)
-        echo "== ui-on-gpu: ANGLE/Vulkan"
-      fi
-      # The browser's own ceiling (Ajustes del modo Steam > Steam > Cliente > Maximo fps en la
-      # interfaz). Chromium caps its compositor at the display's rate and, on a window it believes
-      # is covered, throttles it harder; the store measured 30 fps on this 120 Hz panel.
-      # -cef-disable-occlusion is Steam's own switch for exactly that, and it is the whole of the
-      # default since 2026-10-20: on the first session that also passed Chromium's
-      # --disable-gpu-vsync and --disable-frame-rate-limit, the client's menu drew garbled and the
-      # phone restarted, and CEF has a known regression where --disable-frame-rate-limit leaves a
-      # white window. Those two are behind BL_CEF_RAWFPS now (off unless asked).
-      if [ "${BL_CEF_MAXFPS:-0}" = 1 ]; then
-        _bl_cef+=(-cef-disable-occlusion)
-        echo "== ui-on-gpu: the browser stops throttling itself as a covered window (-cef-disable-occlusion)"
-        if [ "${BL_CEF_RAWFPS:-0}" = 1 ]; then
-          _bl_cef+=(-cef-disable-gpu-vsync -cef-disable-frame-rate-limit)
-          echo "== ui-on-gpu: EXPERIMENT - Chromium's raw --disable-gpu-vsync/--disable-frame-rate-limit are on"
-        fi
-      fi
-    else
-      _bl_cef+=(-cef-disable-gpu -cef-disable-gpu-compositing)
-    fi
-    if [ "${steam_cef_gpu:-1}" = 1 ]; then
-      :
-    else
-      _bl_cef=(-no-cef-sandbox -cef-ozone-platform=x11 -cef-disable-gpu -cef-disable-gpu-compositing)
-      echo "== steam: the x86-64 web helper has no GPU path here; the browser stays on the CPU"
-    fi
-    echo "== steam args: ${_bl_ui[*]} ${_bl_cdp[*]} ${_bl_lang[*]} -clientbeta $steam_channel ${_bl_cef[*]} ${_bl_extra_args[*]:-} $*"
-    # The one thing a session that dies under a game cannot say for itself, and the one thing every
-    # report has needed: whether it ran out of memory or out of CPU. Two reads of /proc every ten
-    # seconds, printed beside everything else, so the last line before a death is the state that
-    # killed it - a load above the core count and a few hundred MB left say different things.
-    # Available on its own did not settle it: two sessions fell from 2.3 GB to 0.4 GB in under three
-    # minutes and died there, which says the memory went somewhere and not what took it. So it now
-    # says apart what is in anonymous pages - a process, or a driver holding it, which is not given
-    # back - from what is cache, which is; and names the three largest processes by resident set.
-    (
-      # How much of the cpu was busy over the last ten seconds, counted from /proc/stat rather than
-      # read off the load average: every one of these sessions has reported load 0.00 while frames
-      # stopped and memory went, and 0.00 says either nothing is running or the number is not the
-      # host's. This one is arithmetic on the host's own counters, so it cannot be quietly wrong -
-      # and it is the difference between a device that is too slow and one that is waiting on the
-      # gpu, which are fixed in opposite directions.
-      _bl_stat() { awk '/^cpu /{ idle = $5 + $6; tot = $2 + $3 + $4 + $5 + $6 + $7 + $8; print tot " " idle }' /proc/stat 2>/dev/null; }
-      _bl_cpu0=$(_bl_stat)
-      for ((_i = 0; _i < 720; _i++)); do
-        nap 10
-        _bl_load=$(cut -d' ' -f1-3 /proc/loadavg 2>/dev/null) || continue
-        _bl_cpu1=$(_bl_stat)
-        _bl_busy=$(awk -v a="${_bl_cpu0:-0 0}" -v b="${_bl_cpu1:-0 0}" 'BEGIN { split(a, p); split(b, n); dt = n[1] - p[1]; di = n[2] - p[2]; printf "cpu %d%%", (dt > 0) ? (dt - di) * 100 / dt : 0 }')
-        _bl_cpu0=$_bl_cpu1
-        _bl_mem=$(awk '/^MemAvailable:/ { a = $2 } /^AnonPages:/ { n = $2 } /^Cached:/ { c = $2 } END { printf "available %d MB · anon %d MB · cached %d MB", a / 1024, n / 1024, c / 1024 }' /proc/meminfo 2>/dev/null)
-        _bl_top=$(ps -eo rss=,pid=,comm= --sort=-rss 2>/dev/null | head -3 | awk '{ printf "%d MB %s [%s] · ", $1 / 1024, $3, $2 }')
-        _bl_top=${_bl_top% · }
-        # The client's browser, on its own: the store, the library and the chat are one CEF renderer
-        # each, and together they are the largest thing a session carries that is not the game. Named
-        # apart from the top three, so a number that climbs is visible as it climbs rather than being
-        # inferred from a bare "available" that has already fallen.
-        _bl_web=$(ps -eo rss=,comm= 2>/dev/null | awk '$2 ~ /steamwebhelper/ { n++; s += $1 } END { printf "%d MB en %d", s / 1024, n }')
-        echo "== heartbeat $(date +%T): ${_bl_busy:-cpu ?} · load ${_bl_load// /,} · ${_bl_mem:-available ?} · tienda ${_bl_web:-?} · top: ${_bl_top:-?}"
-        # Descriptors, not memory, ended the build 40 session (above). Which process spends
-        # them is the one thing that log could not say, so count them: every third beat is
-        # often enough for a leak this slow and keeps the cost of listing them off the CPU
-        # a game is using. At 80% of the ceiling the session is minutes from dying - say so
-        # while there is still a log to read it from.
-        if [ $(( _i % 3 )) -eq 0 ]; then
-          _bl_fd_soft=$(ulimit -Sn 2>/dev/null) || _bl_fd_soft=0
-          _bl_fd_worst=0
-          _bl_fd_who=
-          for _p in $(ps -eo pid= 2>/dev/null); do
-            [ -d "/proc/$_p/fd" ] || continue
-            _bl_n=$(ls -f "/proc/$_p/fd" 2>/dev/null | wc -l) || continue
-            if [ "${_bl_n:-0}" -gt "$_bl_fd_worst" ]; then
-              _bl_fd_worst=$_bl_n
-              _bl_fd_who="$(cat "/proc/$_p/comm" 2>/dev/null) [$_p]"
-            fi
-          done
-          echo "== fds: $_bl_fd_worst of ${_bl_fd_soft:-?} · worst: ${_bl_fd_who:-?}"
-          # The driver's dma-buf allocations, counted from the session's own log: the one number
-          # that matches "it tries to draw the whole game at once" - a game's first frames
-          # allocate its shadow maps, textures and swapchain in a burst, and on kbase a burst
-          # that cannot be satisfied is a GPU fault and a reset. 30 s apart, so it is a rate.
-          _bl_bo_log=${BL_LOG:-${BL_DEBUG_DIR:-/tmp}/session.log}
-          if [ -r "$_bl_bo_log" ]; then
-            _bl_bo_now=$(grep -ac 'bo_alloc_dmabuf: succeeded' "$_bl_bo_log" 2>/dev/null) || _bl_bo_now=0
-            _bl_bo_d=$(( ${_bl_bo_now:-0} - ${_bl_bo_total:-0} ))
-            _bl_bo_total=${_bl_bo_now:-0}
-            if [ "$_bl_bo_d" -gt 0 ]; then
-              echo "== dma-buf: +$_bl_bo_d allocations in the last 30 s (${_bl_bo_total} since start)$([ "$_bl_bo_d" -ge 50 ] && printf ' - burst')"
-            fi
-          fi
-          if [ "${_bl_fd_soft:-0}" -gt 0 ] &&
-             [ $(( _bl_fd_worst * 100 / _bl_fd_soft )) -ge 80 ]; then
-            echo "== fd warning: ${_bl_fd_who:-?} holds $_bl_fd_worst of $_bl_fd_soft descriptors; at the ceiling nothing in this session can allocate GPU memory"
-            # Written once, so the report says it happened even when the session then died
-            # without a teardown: it travels with the folder like game-started.txt does.
-            if [ -n "${BL_LAUNCH_DIR:-}" ] && [ ! -e "$BL_LAUNCH_DIR/fd-pressure" ]; then
-              printf '%s of %s descriptors, worst %s\n' "$_bl_fd_worst" "$_bl_fd_soft" "${_bl_fd_who:-?}" \
-                > "$BL_LAUNCH_DIR/fd-pressure" 2>/dev/null || :
-            fi
-          fi
-        fi
-        # Below BL_MEM_LOG_MB the three largest are no longer enough to say anything: sessions have
-        # been lost with 900 MB free, three processes named, and none of them the one that took it.
-        # So from there down every beat names eight, with their arguments, which is what tells a
-        # game's own resident set apart from the browser's, FEX's and the shader compilers'.
-        _bl_free=$(awk '/^MemAvailable:/ { print $2 }' /proc/meminfo 2>/dev/null)
-        if [ -n "$_bl_free" ] && [ "$_bl_free" -lt $(( ${BL_MEM_LOG_MB:-1024} * 1024 )) ]; then
-          _bl_who=$(ps -eo rss=,pid=,args= --sort=-rss 2>/dev/null | head -8 |
-            awk '{ cmd = substr($0, index($0, $3), 44); printf "%d MB [%s] %s · ", $1 / 1024, $2, cmd }')
-          echo "== memory low ($(( _bl_free / 1024 )) MB): ${_bl_who% · }"
-        fi
-        # The R7 killer named: Clicker Heroes grew to 3.1 GB resident and Android's low-memory
-        # killer took the whole session - no crash, no error, just gone. When a game itself holds
-        # more than 2.5 GB, say so while it is still alive, so "it closed" arrives with the reason.
-        _bl_game_rss=$(ps -eo rss=,args= --sort=-rss 2>/dev/null | awk '$2 ~ /steamapps/ && $0 ~ /steamapps.common/ { print $1; exit }')
-        if [ -n "${_bl_game_rss:-}" ] && [ "$_bl_game_rss" -gt 2560000 ]; then
-          echo "== game memory: the game holds $(( _bl_game_rss / 1024 )) MB resident - near what Android tolerates on this device; close background apps and expect a kill above this"
-        fi
-        # A game running, read off /proc rather than guessed: the client launches one with the
-        # game's own path (Linux slashes or Wine backslashes) or reaper's SteamLaunch AppId= in
-        # its command line, and nothing else in the session carries it.
-        #
-        # Its first second and its last are what every "it does not open" and every restart has
-        # been about, so both are named: the pid and executable when it appears, and how long it
-        # lived - with the last resident size - when it is gone. A launch that dies in three
-        # seconds and a game that ran for ten minutes are different bugs, and until now the log
-        # could not tell them apart.
-        _bl_game=0
-        _bl_game_pid=
-        _bl_game_cmd=
-        for _d in /proc/[0-9]*; do
-          _c=$(tr '\0' ' ' < "$_d/cmdline" 2>/dev/null) || continue
-          # The session's own guest process carries the Steam library path in its arguments, so it
-          # matched the patterns below and every session reported a game from its first second -
-          # gpu-watch named pid 16506 (the guest), 4 MB resident, "game=1" before anything had been
-          # launched, and the ladder counted every restart as one "with a game inside". Nothing that
-          # runs out of /data/app or /data/user is a game: those are Android packages, this app's
-          # own included.
-          case $_c in
-            /data/app/*|/data/user/*) continue ;;
-          esac
-          case $_c in
-            *steamapps/common*|*steamapps\\common*|*"SteamLaunch AppId="*)
-              _bl_game=1
-              _bl_game_pid=${_d#/proc/}
-              _bl_game_cmd=$(printf '%s' "$_c" | cut -c1-90)
-              break ;;
-          esac
-        done
-        if [ "$_bl_game" = 1 ] && [ -z "${_bl_game_since:-}" ]; then
-          _bl_game_since=$(date +%s)
-          echo "== game: started [$_bl_game_pid] $_bl_game_cmd"
-        elif [ "$_bl_game" = 0 ] && [ -n "${_bl_game_since:-}" ]; then
-          echo "== game: gone after $(( $(date +%s) - _bl_game_since ))s (last resident ${_bl_game_rss_mb:-?} MB)"
-          if [ -n "${BL_DEBUG_DIR:-}" ]; then
-            printf 'game gone after %ss at %s\n' "$(( $(date +%s) - _bl_game_since ))" "$(date +%T)" \
-              >> "$BL_DEBUG_DIR/games.txt" 2>/dev/null
-          fi
-          _bl_game_since=
-        fi
-        if [ "$_bl_game" = 1 ] && [ -n "${_bl_game_pid:-}" ] && [ -d "/proc/$_bl_game_pid" ]; then
-          _bl_game_rss_mb=$(awk '/^VmRSS:/ { printf "%d", $2 / 1024 }' "/proc/$_bl_game_pid/status" 2>/dev/null)
-        fi
-        # Did CEF get the switches? Steam builds the webhelper's command line from its -cef-
-        # arguments, and an unknown one is silently dropped. One line, once, naming the switch this
-        # session actually asked for, so the next log answers "was it applied?" without inference.
-        if [ "${BL_CEF_GPU:-0}" = 1 ] && [ "${_bl_cef_checked:-0}" = 0 ]; then
-          _bl_cef_want=
-          [ "${BL_CEF_MAXFPS:-0}" = 1 ] && _bl_cef_want=disable-occlusion
-          [ "${BL_CEF_RAWFPS:-0}" = 1 ] && _bl_cef_want=disable-gpu-vsync
-          if [ -n "$_bl_cef_want" ]; then
-            _bl_cef_args=
-            for _d in /proc/[0-9]*; do
-              _a=$(tr '\0' ' ' < "$_d/cmdline" 2>/dev/null) || continue
-              case $_a in *steamwebhelper*) _bl_cef_args=$_a; break ;; esac
-            done
-            case $_bl_cef_args in
-              *"--$_bl_cef_want"*)
-                echo "== ui-on-gpu: the webhelper carries --$_bl_cef_want (the browser switch was applied)"
-                _bl_cef_checked=1 ;;
-              *steamwebhelper*)
-                echo "== ui-on-gpu: the webhelper does NOT carry --$_bl_cef_want; Steam dropped it (that switch had no effect)"
-                _bl_cef_checked=1 ;;
-            esac
-          fi
-        fi
-        # The two things a reboot takes away, written small and synced so they survive it:
-        #  - that a game ran in this session. The app's rollback of the store-on-GPU switch is
-        #    for a session the browser took down; on 2026-10-19 a reboot while a game was being
-        #    torn down turned the switch off after a store that had run fine for two minutes.
-        #  - the last beat, because the guest's own log lost the seconds before the reset (its
-        #    tail was zeros in the copy the app gathered at the next start).
-        if [ -n "${BL_DEBUG_DIR:-}" ]; then
-          if [ "$_bl_game" = 1 ] && [ ! -f "$BL_DEBUG_DIR/game-started.txt" ]; then
-            printf 'a game was running in this session at %s\n' "$(date +%T)" > "$BL_DEBUG_DIR/game-started.txt" 2>/dev/null
-            sync -f "$BL_DEBUG_DIR/game-started.txt" 2>/dev/null || :
-          fi
-          printf '%s · game %s\n' "heartbeat $(date +%T): ${_bl_busy:-cpu ?} · ${_bl_mem:-available ?} · tienda ${_bl_web:-?}" "$_bl_game" \
-            > "$BL_DEBUG_DIR/last-heartbeat.txt" 2>/dev/null
-          sync -f "$BL_DEBUG_DIR/last-heartbeat.txt" 2>/dev/null || :
-          # The black box: one line, rewritten every beat and synced, with what a restart takes
-          # away - the game the session was running, how long it had been up, its resident set,
-          # the driver's dma-buf allocations so far, and the descriptors. A session that ends in
-          # the GPU's watchdog leaves its last state here, a second old at most.
-          {
-            printf '%s ' "$(date +%T)"
-            printf 'level=%s ' "${BL_SAFE_LEVEL:-0}"
-            printf 'avail=%s ' "$(awk '/^MemAvailable:/ { printf "%dMB", $2 / 1024 }' /proc/meminfo 2>/dev/null)"
-            printf 'cpu=%s ' "${_bl_busy:-?}"
-            printf 'game=%s ' "$_bl_game"
-            [ -n "${_bl_game_pid:-}" ] && printf 'pid=%s up=%ss rss=%sMB ' "$_bl_game_pid" \
-              "$(( $(date +%s) - ${_bl_game_since:-$(date +%s)} ))" "${_bl_game_rss_mb:-?}"
-            [ -n "${_bl_game_cmd:-}" ] && printf 'cmd=%s ' "$(printf '%s' "$_bl_game_cmd" | cut -c1-60)"
-            printf 'web=%s ' "${_bl_web:-?}"
-            printf 'bo=%s ' "${_bl_bo_total:-?}"
-            printf '\n'
-          } > "$BL_DEBUG_DIR/gpu-watch.txt" 2>/dev/null
-          sync -f "$BL_DEBUG_DIR/gpu-watch.txt" 2>/dev/null || :
-        fi
-        # Pick the largest replaceable CEF --type=renderer process (never the main steamwebhelper
-        # browser, --type=gpu-process, --type=zygote, or --type=utility: killing gpu-process 3
-        # times triggers CEF's gpu:3 full browser shutdown and restarts the Steam UI).
-        _bl_largest_renderer() {
-          local _p _a _rss _best_pid= _best_rss=0 _count=0
-          for _d in /proc/[0-9]*; do
-            _p=${_d#/proc/}
-            _a=$(tr '\0' ' ' < "$_d/cmdline" 2>/dev/null) || continue
-            case $_a in *steamwebhelper*--type=renderer*) ;; *) continue ;; esac
-            _count=$(( _count + 1 ))
-            _rss=$(awk '/^VmRSS:/ { printf "%d", $2 }' "$_d/status" 2>/dev/null) || continue
-            if [ "${_rss:-0}" -gt "$_best_rss" ]; then
-              _best_rss=$_rss
-              _best_pid=$_p
-            fi
-          done
-          [ "$_count" -gt "${BL_WEB_MIN:-3}" ] && [ -n "$_best_pid" ] && printf '%s' "$_best_pid"
-        }
-        # Optional browser renderer budget (off by default now that steamwebhelper is isolated
-        # from panvk/ANGLE; set BL_WEB_MB to enable).
-        _bl_web_cap=${BL_WEB_MB:-0}
-        # ...and never while a game is still starting: a launch is the client's own renderers
-        # talking to the client, and taking one away then is how a "Play" that does nothing
-        # happens. A launch that has not reached 90 s is left alone.
-        _bl_game_up=$(( $(date +%s) - ${_bl_game_since:-$(date +%s)} ))
-        [ "$_bl_game" = 1 ] && [ "$_bl_game_up" -ge 90 ] && [ "${BL_WEB_MB:-0}" -gt 0 ] 2>/dev/null \
-          && _bl_web_cap=${BL_WEB_GAME_MB:-350}
-        if [ "$_bl_web_cap" -gt 0 ] 2>/dev/null; then
-          _bl_web_mb=$(ps -eo rss=,comm= 2>/dev/null |
-            awk '$2 ~ /steamwebhelper/ { n++; s += $1 } END { printf "%d %d", s / 1024, n }')
-          if [ "${_bl_web_mb%% *}" -gt "$_bl_web_cap" ] 2>/dev/null; then
-            _bl_now=$(date +%s)
-            if [ $(( _bl_now - ${_bl_web_at:-0} )) -ge "${BL_WEB_SECS:-30}" ]; then
-              _bl_fat=$(_bl_largest_renderer)
-              if [ -n "$_bl_fat" ]; then
-                _bl_web_at=$_bl_now
-                echo "== web trim: the client's browser is ${_bl_web_mb%% *} MB in ${_bl_web_mb##* } processes, over its $_bl_web_cap MB budget - dropping renderer [$_bl_fat]"
-                kill "$_bl_fat" 2>/dev/null || :
-              fi
-            fi
-          fi
-        fi
-        # Wine servers the client's own probes leave behind. On the way in the client runs Proton
-        # in the shared prefix to ask the machine what it is, and those runs leave a wineserver
-        # with an explorer.exe drawing a desktop nobody ever sees: 197 MB each, two of them, held
-        # for the whole session in build 41's log. No game runs in that prefix - a real launch
-        # gets one of its own - so with memory this tight they are the safest thing here to take
-        # back. BL_WINE_SWEEP_MB=0 turns it off.
-        if [ "${_bl_free:-0}" -lt $(( ${BL_WINE_SWEEP_MB:-1500} * 1024 )) ] &&
-           [ "${BL_WINE_SWEEP_MB:-1500}" -gt 0 ] 2>/dev/null; then
-          _bl_now=$(date +%s)
-          if [ $(( _bl_now - ${_bl_sweep_at:-0} )) -ge "${BL_MEM_VALVE_SECS:-30}" ]; then
-            for _pat in '(explorer|services|winedevice|plugplay)\.exe' '^wineserver$'; do
-              for _d in /proc/[0-9]*; do
-                _p=${_d#/proc/}
-                _bl_c=$(cat "$_d/comm" 2>/dev/null) || continue
-                _bl_a=$(tr '\0' ' ' < "$_d/cmdline" 2>/dev/null) || _bl_a=
-                [[ $_bl_c =~ $_pat || $_bl_a =~ $_pat ]] || continue
-                tr '\0' '\n' < "$_d/environ" 2>/dev/null |
-                  grep -q '^WINEPREFIX=.*/compatdata/0/*$' || continue
-                _bl_rss=$(awk '/^VmRSS:/ { printf "%d", $2 / 1024 }' "$_d/status" 2>/dev/null)
-                if kill "$_p" 2>/dev/null; then
-                  _bl_sweep_at=$_bl_now
-                  echo "== wine sweep: $_bl_c [$_p] ${_bl_rss:-?} MB - a server the client's own probes left in the shared prefix"
-                fi
-              done
-            done
-          fi
-        fi
-        # BL_MEM_VALVE_MB (off unless set): with the device this close to killing the session, drop
-        # the largest extra browser renderer. Only ever a replaceable --type=renderer: never the
-        # main browser, never --type=gpu-process, never the client, never the game.
-        if [ -n "${BL_MEM_VALVE_MB:-}" ] && [ -n "$_bl_free" ] && [ "$_bl_free" -lt $(( BL_MEM_VALVE_MB * 1024 )) ]; then
-          _bl_now=$(date +%s)
-          if [ $(( _bl_now - ${_bl_valve_at:-0} )) -ge "${BL_MEM_VALVE_SECS:-30}" ]; then
-            _bl_fat=$(_bl_largest_renderer)
-            if [ -n "$_bl_fat" ]; then
-              _bl_valve_at=$_bl_now
-              echo "== memory valve: ${BL_MEM_VALVE_MB} MB left, dropping browser renderer [$_bl_fat]"
-              kill "$_bl_fat" 2>/dev/null || true
-            fi
-          fi
-        fi
-      done
-    ) &
-    # An update that cannot install asks for a restart (rc=42) every time; the count is capped so a
-    # session can never again loop in silence, which reads as a menu opening and closing by itself.
+    echo "== steam args: ${_bl_ui[*]} ${_bl_cdp[*]} ${_bl_lang[*]} -clientbeta $steam_channel -no-cef-sandbox -cef-ozone-platform=x11 ${_bl_cef[*]} $*$([ "$steam_x64" = 1 ] && echo ' (x86-64 client under FEX)')"
     steam_updates=0
+    steam_installs=0
+    steam_update_stamp=$(stat -c '%n %Y %s' "$steam_root"/package/*.installed 2>/dev/null)
     rm -f "$HOME/.bl-stop-requested" "$STEAMOS_STEAM_SHUTDOWN_SENTINEL" "$STEAMOS_STEAM_REBOOT_SENTINEL"
     steam_other_game_running() {
       local line value n open
@@ -1476,6 +1637,7 @@ BUSCONF
         return 0
       done
     }
+    requests=
     if [ -n "${BL_LAUNCH_DIR:-}" ] && [ -d "$BL_LAUNCH_DIR" ]; then
       rm -f "$BL_LAUNCH_DIR/steam-stop" "$BL_LAUNCH_DIR/steam-game" "$BL_LAUNCH_DIR/steam-game.tmp"
       requests=1
@@ -1529,13 +1691,12 @@ BUSCONF
       : > "$compat_restarted"
       compat_restarts=0
       compat_settled() {
-        local app m flags r card=/mnt/droiddeck-sd
-        # The arm64 card library may hold that client's copy of the same title.
-        [ "$steam_x64" = 1 ] && card=/mnt/droiddeck-sd/x86-64
+        local app m flags r card=/mnt/droiddeck-sd added=(/mnt/droiddeck-lib/*)
+        [ "$steam_x64" = 1 ] && { card=/mnt/droiddeck-sd/x86-64; added=(/mnt/droiddeck-lib/*/x86-64); }
         while read -r app; do
           [ -n "$app" ] || continue
           m=
-          for r in "$steam_root" "$card"; do
+          for r in "$steam_root" "$card" "${added[@]}"; do
             [ -f "$r/steamapps/appmanifest_$app.acf" ] && { m=$r/steamapps/appmanifest_$app.acf; break; }
           done
           [ -n "$m" ] || return 1
@@ -1604,7 +1765,7 @@ BUSCONF
           done
         fi
         if [ "$beat" -le 720 ] && [ "$((beat % 3))" -eq 0 ] && { [ -z "$library_job" ] || ! kill -0 "$library_job" 2>/dev/null; }; then
-          libraries=("$steam_root/steamapps" /mnt/droiddeck/steamapps /mnt/droiddeck-sd/steamapps /root/Games/*/steamapps)
+          libraries=("$steam_root/steamapps" /mnt/droiddeck/steamapps /mnt/droiddeck-sd/steamapps /mnt/droiddeck-lib/*/steamapps /mnt/droiddeck-lib/*/x86-64/steamapps /root/Games/*/steamapps)
           seed=; compat=
           seed_due && seed=1
           compat_due && compat=1
@@ -1647,7 +1808,6 @@ BUSCONF
             lossless_left=0
           elif ! pgrep -x wineserver >/dev/null 2>&1; then
             (
-              # The probe reaches the x86-64 client through the arm64 client's steamclient.so, as the import watcher does.
               if [ "$steam_x64" = 1 ]; then export BL_STEAMCLIENT=$XDG_DATA_HOME/Steam/steamrtarm64/steamclient.so; fi
               answer=$(droiddeck-steam-games probe "$steam_root" 993090 2>/dev/null) || exit 0
               case $answer in
@@ -1662,6 +1822,36 @@ BUSCONF
       done
     ) &
     stop_watcher=$!
+    if [ "${BL_VENUS:-0}" = 1 ] && [ -x /usr/local/bin/droiddeck-glprobe ] && [ "${GALLIUM_DRIVER:-}" = zink ]; then
+      LIBGL_DEBUG=verbose MESA_LOG_LEVEL=debug timeout 20 /usr/local/bin/droiddeck-glprobe 2>&1 | grep -v drirc | head -60 | sed 's/^/== glprobe: /'
+      if [ "${PIPESTATUS[0]}" = 1 ]; then
+        VK_LOADER_DEBUG=error,warn timeout 20 /usr/local/bin/droiddeck-glprobe 2>&1 | grep -v drirc | head -40 | sed 's/^/== glprobe (loader): /'
+        DROIDDECK_MALI_COMPAT_TRACE=1 MESA_DEBUG=1 MESA_LOG_LEVEL=debug LIBGL_DEBUG=verbose ZINK_DEBUG=mem VN_DEBUG=init,result,log_ctx_info \
+          timeout 30 /usr/local/bin/droiddeck-glprobe > "${BL_DEBUG_DIR:-/tmp}/glprobe-trace.txt" 2>&1
+        grep -v drirc "${BL_DEBUG_DIR:-/tmp}/glprobe-trace.txt" | head -120 | sed 's/^/== glprobe (trace): /'
+        echo "== glprobe (trace): last pre-device query before Zink gave up: $(grep 'droiddeck-mali-compat: trace:' "${BL_DEBUG_DIR:-/tmp}/glprobe-trace.txt" | grep -v 'trace:   extensions:' | tail -1)"
+        command -v vulkaninfo >/dev/null 2>&1 && DROIDDECK_MALI_COMPAT_TRACE=1 timeout 20 vulkaninfo --summary 2>&1 | head -40 | sed 's/^/== glprobe (vulkaninfo): /'
+        bl_gl_ok=
+        for bl_variant in "ZINK_DEBUG=" "ZINK_DEBUG= ZINK_DESCRIPTORS=auto" "ZINK_DEBUG= LIBGL_KOPPER_DISABLE=true" "ZINK_DEBUG= DROIDDECK_MALI_COMPAT=0"; do
+          if env $bl_variant timeout 20 /usr/local/bin/droiddeck-glprobe 2>&1 | grep -v drirc | head -20 | sed "s/^/== glprobe ($bl_variant): /"; [ "${PIPESTATUS[0]}" = 0 ]; then
+            bl_gl_ok=$bl_variant
+            break
+          fi
+        done
+        if [ -n "$bl_gl_ok" ] && [ "$bl_gl_ok" != "ZINK_DEBUG= DROIDDECK_MALI_COMPAT=0" ]; then
+          for bl_kv in $bl_gl_ok; do
+            case $bl_kv in *=) unset "${bl_kv%=}" ;; *) export "$bl_kv" ;; esac
+          done
+          echo "== venus: GL through Zink starts with: $bl_gl_ok (the Steam client gets that)"
+        else
+          [ -n "$bl_gl_ok" ] && echo "== venus: Zink starts only without the Mali compatibility layer (then without nullDescriptor); not used"
+          export GALLIUM_DRIVER=llvmpipe LIBGL_ALWAYS_SOFTWARE=1
+          unset MESA_LOADER_DRIVER_OVERRIDE LIBGL_KOPPER_DRI2
+          echo "== venus: GL through Zink did not start (see glprobe above); the Steam client's GL uses llvmpipe (software)"
+        fi
+        unset bl_gl_ok bl_variant bl_kv
+      fi
+    fi
     rm -f "$HOME/.bl-restart-game" "$HOME/.bl-restarted-for"
     while :; do
       rm -f "$HOME/.bl-restart-once" "$HOME/.bl-restart-lost"
@@ -1687,8 +1877,10 @@ BUSCONF
         desktop_ui_pid=$!
       fi
       steam_started=$SECONDS
+      PATH="$bl_steam_path" \
+      BL_STEAM_WEBHELPER="$steam_root/steamrtarm64/steamwebhelper" \
       "${steam_client[@]}" "${_bl_ui[@]}" "${_bl_cdp[@]}" "${_bl_lang[@]}" -clientbeta "$steam_channel" \
-        "${_bl_cef[@]}" ${_bl_extra_args[@]+"${_bl_extra_args[@]}"} "$@"
+        -no-cef-sandbox -cef-ozone-platform=x11 "${_bl_cef[@]}" "$@"
       rc=$?
       steam_ran=$((SECONDS - steam_started))
       if [ -n "$desktop_ui_pid" ]; then
@@ -1696,6 +1888,9 @@ BUSCONF
         wait "$desktop_ui_pid" 2>/dev/null || true
       fi
       echo "== steam exited rc=$rc"
+      if [ "${DROIDDECK_ENHANCED_DIAGNOSTICS:-0}" = 1 ]; then
+        printf 'DROIDDECK_DIAGNOSTICS event=steam_exit shell_status=%s elapsed_seconds=%s\n' "$rc" "$steam_ran"
+      fi
       collect_steam_logs
       if [ -f "$HOME/.config/droiddeck/fex-wanted" ] && [ -x /usr/local/bin/droiddeck-fex ]; then
         /usr/local/bin/droiddeck-fex status >/dev/null 2>&1 || true
@@ -1707,7 +1902,6 @@ BUSCONF
           BL_COMPAT_TOOL=$_bl_x64_tool droiddeck-steam-shortcuts "$steam_root" "$BL_ADDED_GAMES" || true
         fi
       fi
-      # The x86-64 client rewrote config.vdf from memory on exit, over the live passes' mapping.
       if [ "$steam_x64" = 1 ]; then
         [ -z "${_bl_x64_tool:-}" ] ||
           BL_COMPAT_TOOL=$_bl_x64_tool steam-compatibility "$steam_root" --x64 >/dev/null 2>&1 || true
@@ -1729,8 +1923,6 @@ BUSCONF
         set --
         continue
       fi
-      # The session asked for this exit (the ARM64 Proton landed): start again, without the URL
-      # arguments, which were acted on. Not counted against the update cap.
       if [ -s "$HOME/.bl-restart-game" ]; then
         _bl_again=$(cat "$HOME/.bl-restart-game" 2>/dev/null)
         rm -f "$HOME/.bl-restart-game"
@@ -1752,6 +1944,12 @@ BUSCONF
       fi
       if [ -f "$HOME/.bl-restart-once" ]; then
         echo "== steam: restarting once so the new compatibility layer is in the client's lists"
+        set --
+        continue
+      fi
+      if [ "$steam_x64" = 1 ] && [ "$rc" -eq 132 ] && [ -z "${_bl_x64_sigill:-}" ]; then
+        _bl_x64_sigill=1
+        echo "== steam: the x86-64 client stopped on an illegal instruction after it updated itself; starting it again once"
         set --
         continue
       fi

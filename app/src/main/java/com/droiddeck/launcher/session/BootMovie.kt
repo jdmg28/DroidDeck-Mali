@@ -24,13 +24,12 @@ object BootMovie {
         DROIDDECK_60 to "droiddeck-startup-60.webm",
     )
 
-    // Steam's CEF player only takes WebM codecs; MediaMuxer's WebM writer cannot take AV1.
     internal val VIDEO_CODECS = setOf(MediaFormat.MIMETYPE_VIDEO_VP8, MediaFormat.MIMETYPE_VIDEO_VP9, MediaFormat.MIMETYPE_VIDEO_AV1)
     private val REMUX_CODECS = setOf(MediaFormat.MIMETYPE_VIDEO_VP8, MediaFormat.MIMETYPE_VIDEO_VP9)
     internal val AUDIO_CODECS = setOf(MediaFormat.MIMETYPE_AUDIO_OPUS, MediaFormat.MIMETYPE_AUDIO_VORBIS)
 
     sealed class Import {
-        data class Done(val name: String, val audioDropped: Boolean) : Import()
+        data class Done(val name: String, val audioDropped: Boolean, val id: String = "") : Import()
         object TooLong : Import()
         data class Unsupported(val codec: String?) : Import()
         object Failed : Import()
@@ -39,6 +38,17 @@ object BootMovie {
     private fun dir(context: Context) = File(context.filesDir, "boot-movie")
     private fun customFile(context: Context) = File(dir(context), "custom.webm")
 
+    internal fun legacyCustomFile(context: Context) = customFile(context)
+
+    internal fun assetFile(context: Context, id: String): File? = ASSETS[id]?.let { extractAsset(context, it) }
+
+    fun select(context: Context, id: String) {
+        SessionPrefs.setBootMovie(context, id)
+        SessionPrefs.setBootMovieApplyNext(context, true)
+        BootMovieReport.note(context, "picked $id here; Steam names ${SessionFiles.startupMoviePath(BootMovieLibrary.steamConfig(context))}")
+        SessionFiles.startupMovieLocalPath(BootMovieLibrary.steamConfig(context))?.let { SessionPrefs.setBootMovieSteamSeen(context, it) }
+    }
+
     fun customName(context: Context): String? =
         if (customFile(context).isFile) SessionPrefs.bootMovieCustomName(context) ?: "custom.webm" else null
 
@@ -46,21 +56,114 @@ object BootMovie {
         val chosen = SessionPrefs.bootMovie(context)
         return when {
             chosen == CUSTOM && customFile(context).isFile -> CUSTOM
+            isLibraryId(chosen) && BootMovieLibrary.file(context, chosen) != null -> chosen
             chosen in ASSETS -> chosen
             else -> DROIDDECK_30
         }
     }
 
+    fun currentFile(context: Context): File? = sourceOf(context, choice(context))
+
+    private fun sourceOf(context: Context, choice: String): File? = when {
+        choice == CUSTOM -> customFile(context)
+        isLibraryId(choice) -> BootMovieLibrary.file(context, choice)
+        else -> ASSETS[choice]?.let { extractAsset(context, it) }
+    }
+
+    private fun isLibraryId(id: String) = id.startsWith(BootMovieLibrary.PREFIX) || id.startsWith(BootMovieLibrary.STEAM_PREFIX)
+
     fun prepare(context: Context): File? {
-        val choice = choice(context)
-        val source = if (choice == CUSTOM) customFile(context) else extractAsset(context, ASSETS.getValue(choice)) ?: return null
-        if (SessionPrefs.bootMovieSound(context)) return source
-        val muted = File(source.parentFile, source.nameWithoutExtension + "-muted.webm")
-        if (muted.isFile && muted.lastModified() >= source.lastModified()) return muted
-        if (remux(source, muted, audio = false)) return muted
-        if (BootMovieTranscoder.transcode(source, muted, keepAudio = false) {} != null) return muted
-        Log.e(TAG, "could not strip audio from ${source.name}; not staging it")
-        return null
+        BootMovieLibrary.restore(context)
+        val source = sourceOf(context, choice(context)) ?: return null
+        return variant(context, source)
+    }
+
+    private fun variant(context: Context, source: File): File? {
+        val volume = if (SessionPrefs.bootMovieSound(context)) SessionPrefs.bootMovieVolume(context) else 0
+        val seconds = SessionPrefs.bootMovieSeconds(context)
+        val folder = File(dir(context), "variants")
+        val plan = if (isOversized(source)) oversizedPlan(volume) else plan(volume, seconds)
+        if (plan.passthrough) {
+            prune(folder, null)
+            return source
+        }
+        folder.mkdirs()
+        val limitUs = if (seconds > 0) seconds * 1_000_000L else Long.MAX_VALUE
+        val out = File(folder, BootMovieLibrary.variantPrefix(source) + "v$volume-s$seconds.webm")
+        if (out.isFile && out.length() > 0L && out.lastModified() >= source.lastModified()) {
+            prune(folder, out.name)
+            return out
+        }
+        val staged = File(folder, out.name + ".staged")
+        val ok = runCatching {
+            plan.steps.any { step ->
+                when (step) {
+                    Step.REMUX_SILENT -> remux(source, staged, audio = false, limitUs)
+                    Step.REMUX_AUDIO -> remux(source, staged, audio = true, limitUs)
+                    Step.TRANSCODE_SILENT -> transcodeSilent(source, staged, limitUs)
+                    Step.TRANSCODE_AUDIO -> BootMovieTranscoder.transcode(source, staged, limitUs = limitUs, gain = volume / 100f) {} != null
+                    Step.REGAIN -> BootMovieTranscoder.regain(source, staged, volume / 100f, limitUs)
+                }
+            }
+        }.getOrDefault(false)
+        if (ok && staged.renameTo(out)) {
+            prune(folder, out.name)
+            return out
+        }
+        staged.delete()
+        Log.e(TAG, "could not prepare ${source.name} (volume $volume, $seconds s)")
+        return if (plan.sourceOnFailure) source else null
+    }
+
+    internal enum class Step { REMUX_SILENT, REMUX_AUDIO, TRANSCODE_SILENT, TRANSCODE_AUDIO, REGAIN }
+
+    internal class Plan(val passthrough: Boolean, val steps: List<Step>, val sourceOnFailure: Boolean)
+
+    internal fun plan(volume: Int, seconds: Int): Plan = when {
+        volume == 100 && seconds == 0 -> Plan(true, emptyList(), true)
+        volume == 0 -> Plan(false, listOf(Step.REMUX_SILENT, Step.TRANSCODE_SILENT), false)
+        volume == 100 -> Plan(false, listOf(Step.REMUX_AUDIO, Step.TRANSCODE_AUDIO), true)
+        else -> Plan(false, listOf(Step.REGAIN, Step.REMUX_SILENT, Step.TRANSCODE_AUDIO), false)
+    }
+
+    internal const val MAX_LONG_SIDE = 1920
+    internal const val MAX_SHORT_SIDE = 1080
+
+    internal fun oversized(width: Int, height: Int) = maxOf(width, height) > MAX_LONG_SIDE || minOf(width, height) > MAX_SHORT_SIDE
+
+    private fun oversized(format: MediaFormat) =
+        format.containsKey(MediaFormat.KEY_WIDTH) && format.containsKey(MediaFormat.KEY_HEIGHT) &&
+            oversized(format.getInteger(MediaFormat.KEY_WIDTH), format.getInteger(MediaFormat.KEY_HEIGHT))
+
+    private fun isOversized(source: File): Boolean = probe(source)?.first?.let { oversized(it) } == true
+
+    internal fun oversizedPlan(volume: Int): Plan =
+        Plan(false, listOf(if (volume == 0) Step.TRANSCODE_SILENT else Step.TRANSCODE_AUDIO), false)
+
+    private fun transcodeSilent(source: File, target: File, limitUs: Long) =
+        BootMovieTranscoder.transcode(source, target, keepAudio = false, limitUs = limitUs) {} != null
+
+    private fun prune(folder: File, keep: String?) {
+        folder.listFiles()?.forEach { if (it.name != keep) it.delete() }
+    }
+
+    fun syncFromSteam(context: Context): Boolean {
+        val named = SessionFiles.startupMovieLocalPath(BootMovieLibrary.steamConfig(context)) ?: return false
+        val seen = SessionPrefs.bootMovieSteamSeen(context)
+        if (named == seen) return false
+        SessionPrefs.setBootMovieSteamSeen(context, named)
+        if (named == SessionFiles.BOOT_MOVIE_PATH || (named.isEmpty() && seen == null)) return false
+        val path = named.ifEmpty { "/movies/steam_os_startup.webm" }
+        val prefix = "/uioverrides/movies/"
+        val id = if (path.startsWith(prefix)) BootMovieLibrary.idOf(path.removePrefix(prefix)) else {
+            val listed = BootMovieLibrary.list(context).firstOrNull { it.id.startsWith(BootMovieLibrary.STEAM_PREFIX) && it.id.endsWith(path) }
+            listed?.id ?: BootMovieLibrary.STEAM_PREFIX + path
+        }
+        if (BootMovieLibrary.file(context, id) == null) return false
+        val changed = SessionPrefs.bootMovie(context) != id
+        BootMovieReport.note(context, "Steam names $path, taken over as $id")
+        SessionPrefs.setBootMovie(context, id)
+        return changed
     }
 
     private fun extractAsset(context: Context, name: String): File? {
@@ -82,11 +185,15 @@ object BootMovie {
         }
     }
 
-    fun import(context: Context, file: File, onStart: () -> Unit = {}, onProgress: (Int) -> Unit = {}): Import {
+    fun import(
+        context: Context, file: File, onStart: () -> Unit = {}, onProgress: (Int) -> Unit = {},
+        title: String? = null, source: String = BootMovieLibrary.SOURCE_IMPORT, repoId: String? = null,
+        cover: ByteArray? = null, use: Boolean = true,
+    ): Import {
         val (format, audio) = probe(file) ?: return Import.Unsupported(null)
         val video = format.getString(MediaFormat.KEY_MIME)
         val audioPlayable = audio == null || audio in AUDIO_CODECS
-        val playable = video in VIDEO_CODECS && file.length() <= MAX_BYTES
+        val playable = video in VIDEO_CODECS && file.length() <= MAX_BYTES && !oversized(format)
         val copy = playable && audioPlayable && isWebm(file)
         val remux = !copy && playable && video in REMUX_CODECS
         if (!copy && !remux) {
@@ -95,11 +202,12 @@ object BootMovie {
             if (durationUs > MAX_CONVERT_SECONDS * 1_000_000L) return Import.TooLong
             onStart()
         }
-        val target = customFile(context)
-        val staged = File(dir(context), "custom.webm.staged")
+        val shown = title?.takeIf { it.isNotBlank() } ?: file.nameWithoutExtension
+        val library = BootMovieLibrary.libraryDir(context)
+        val staged = File(library, ".import-${System.nanoTime()}.staged")
         var audioDropped = remux && !audioPlayable
         return try {
-            target.parentFile?.mkdirs()
+            library.mkdirs()
             val ok = when {
                 copy -> {
                     file.inputStream().use { input -> staged.outputStream().use { output -> FileUtils.copy(input, output) } }
@@ -108,11 +216,10 @@ object BootMovie {
                 remux -> remux(file, staged, audio = true)
                 else -> BootMovieTranscoder.transcode(file, staged, onProgress = onProgress)?.also { audioDropped = it.audioDropped } != null
             }
-            if (!ok || !staged.renameTo(target)) return Import.Failed
-            File(target.parentFile, "custom-muted.webm").delete()
-            SessionPrefs.setBootMovieCustomName(context, file.name)
-            SessionPrefs.setBootMovie(context, CUSTOM)
-            Import.Done(file.name, audioDropped)
+            if (!ok || !staged.setReadable(true, false)) return Import.Failed
+            val name = BootMovieLibrary.commit(context, staged, shown, source, repoId, cover) ?: return Import.Failed
+            if (use) select(context, BootMovieLibrary.idOf(name))
+            Import.Done(shown, audioDropped, BootMovieLibrary.idOf(name))
         } catch (e: Exception) {
             Log.w(TAG, "could not import ${file.name}", e)
             Import.Failed
@@ -124,8 +231,9 @@ object BootMovie {
     fun removeCustom(context: Context) {
         customFile(context).delete()
         File(dir(context), "custom-muted.webm").delete()
+        File(dir(context), "variants").listFiles { f -> f.name.startsWith(BootMovieLibrary.variantPrefix(customFile(context))) }?.forEach { it.delete() }
         SessionPrefs.setBootMovieCustomName(context, null)
-        if (SessionPrefs.bootMovie(context) == CUSTOM) SessionPrefs.setBootMovie(context, DROIDDECK_30)
+        if (SessionPrefs.bootMovie(context) == CUSTOM) select(context, DROIDDECK_30)
     }
 
     private fun isWebm(file: File): Boolean {
@@ -156,7 +264,7 @@ object BootMovie {
         }
     }
 
-    private fun remux(source: File, target: File, audio: Boolean): Boolean {
+    private fun remux(source: File, target: File, audio: Boolean, limitUs: Long = Long.MAX_VALUE): Boolean {
         val staged = File(target.parentFile, target.name + ".remux")
         val extractor = MediaExtractor()
         var muxer: MediaMuxer? = null
@@ -183,7 +291,7 @@ object BootMovie {
             val info = MediaCodec.BufferInfo()
             while (true) {
                 val size = extractor.readSampleData(buffer, 0)
-                if (size < 0) break
+                if (size < 0 || extractor.sampleTime > limitUs) break
                 val track = tracks[extractor.sampleTrackIndex]
                 if (track != null) {
                     val key = extractor.sampleFlags and MediaExtractor.SAMPLE_FLAG_SYNC != 0

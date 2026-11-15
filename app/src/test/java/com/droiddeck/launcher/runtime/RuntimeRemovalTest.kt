@@ -1,5 +1,6 @@
 package com.droiddeck.launcher.runtime
 
+import com.droiddeck.launcher.assumeFilePermissionsEnforced
 import java.io.File
 import java.nio.file.Files
 import java.nio.file.LinkOption.NOFOLLOW_LINKS
@@ -69,6 +70,7 @@ class RuntimeRemovalTest {
         val old = File(dir, "linuxfs.old").apply { File(this, "root").mkdirs() }
         val staging = File(dir, "linuxfs.new").apply { File(this, "root").mkdirs() }
         File(staging, "root/save").writeText("user data")
+        File(staging, LinuxRuntimeInstaller.CARRY_MARKER).writeText("1")
         for (tree in listOf(old, staging))
             Files.setPosixFilePermissions(tree.toPath(), PosixFilePermissions.fromString("r-xr-xr-x"))
         LinuxRuntimeInstaller.recoverInterruptedSwap(root, staging, old)
@@ -127,6 +129,7 @@ class RuntimeRemovalTest {
     }
 
     @Test fun aPartialRemovalStaysQuarantinedAndRetryable() {
+        assumeFilePermissionsEnforced()
         val root = runtime()
         try {
             val removal = LinuxRuntimeInstaller.beginUninstall(null, root)!!
@@ -145,6 +148,7 @@ class RuntimeRemovalTest {
     }
 
     @Test fun reportsFailureWhenTheRuntimeCannotBeQuarantinedAndAllowsRetry() {
+        assumeFilePermissionsEnforced()
         val root = runtime()
         Files.setPosixFilePermissions(dir.toPath(), PosixFilePermissions.fromString("r-xr-xr-x"))
         try {

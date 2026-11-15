@@ -34,6 +34,17 @@ class StoreGameSidecarTest {
         assertEquals("ns", back.extra["namespace"])
     }
 
+    @Test fun theStoreLogoRoundTripsAndOlderFilesHaveNone() {
+        val withLogo = sample.copy(logo = "https://x/logo.png")
+        val back = StoreGameSidecar.parse(withLogo.toJson().toString())!!
+        assertEquals("https://x/logo.png", back.logo)
+        assertEquals("https://x/logo.png", back.copy(state = StoreGameSidecar.STATE_UPDATING).logo)
+        assertFalse(sample.toJson().has("logo"))
+        assertNull(StoreGameSidecar.parse(sample.toJson().toString())!!.logo)
+        assertNull(StoreGameSidecar.parse("""{"store":"gog","id":"1","title":"T","exe":"game.exe","cover":"c","hero":"h"}""")!!.logo)
+        assertNull(StoreGameSidecar.parse("""{"store":"gog","id":"1","title":"T","exe":"game.exe","logo":""}""")!!.logo)
+    }
+
     @Test fun defaultsWhenFieldsAreAbsent() {
         val back = StoreGameSidecar.parse("""{"store":"gog","id":"1","title":"T","exe":"bin\\game.exe","addToSteam":false}""")!!
         assertEquals("bin/game.exe", back.exe)
@@ -111,6 +122,25 @@ class StoreGameSidecarTest {
         assertTrue(text.contains("set \"DD_X=\" & \"%~dp0Binaries\\Win64\\Celeste.exe\" -EpicPortal -epicusername=\"Some One\" -AUTH_LOGIN=unused -AUTH_PASSWORD=%DD_X% -AUTH_TYPE=exchangecode\r\n"))
         assertFalse(text.contains("AUTH="))
         assertFalse(text.contains("DD_AUTH"))
+    }
+
+    @Test fun aWorkingDirectoryTravelsWithTheSidecar() {
+        val root = StoreGameSidecar(Store.GOG, "1207658924", "The Witcher", "System/witcher.exe", workdir = "")
+        assertTrue(root.toJson().has("workdir"))
+        assertEquals("", StoreGameSidecar.parse(root.toJson().toString())!!.workdir)
+        assertEquals("bin", StoreGameSidecar.parse(root.copy(workdir = "bin").toJson().toString())!!.workdir)
+        assertNull(StoreGameSidecar.parse(root.copy(workdir = null).toJson().toString())!!.workdir)
+        assertNull(StoreGameSidecar.parse("""{"store":"gog","id":"1","title":"T","exe":"game.exe"}""")!!.workdir)
+        assertNull(StoreGameSidecar.parse("""{"store":"gog","id":"1","title":"T","exe":"game.exe","workdir":"../x"}""")!!.workdir)
+    }
+
+    @Test fun theLauncherCdsIntoTheTaskWorkingDirectory() {
+        assertTrue(StoreLaunch.launcherText(sample.copy(exe = "System/witcher.exe", workdir = ""))
+            .contains("cd /d \"%~dp0\"\r\n"))
+        assertTrue(StoreLaunch.launcherText(sample.copy(exe = "bin/x64/game.exe", workdir = "bin/x64"))
+            .contains("cd /d \"%~dp0bin\\x64\"\r\n"))
+        assertTrue(StoreLaunch.launcherText(sample.copy(exe = "bin/game.exe", workdir = null))
+            .contains("cd /d \"%~dp0bin\"\r\n"))
     }
 
     @Test fun epicLauncherPrefersTheClientsArguments() {

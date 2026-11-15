@@ -14,10 +14,25 @@
     <string name="gpu_safety_label">Rendering</string>
     <string name="gpu_safety_hint">Software draws on the CPU and never touches the GPU. \u26a0\ufe0f Very slow: for checking, not for playing.</string>
     <string name="gpu_safety_auto">Auto (software here)</string>
-    <string name="gpu_safety_auto_detail">Software on this Mali GPU; nothing changes on other devices</string>
+    <string name="gpu_safety_auto_detail">Software on this Mali GPU unless Venus or the bridge is chosen; nothing changes on other devices</string>
     <string name="gpu_safety_software">Software (lavapipe)</string>
     <string name="gpu_safety_software_detail">CPU only; the GPU node is never handed to the session</string>
     <string name="gpu_safety_mali">Mali driver (experimental)</string>
     <string name="gpu_safety_mali_detail">Hands /dev/mali0 to the session as a render node. \u26a0\ufe0f Can restart the phone.</string>
     <string name="gpu_safety_mali_picked">Mali driver selected. \u26a0\ufe0f It can restart the phone; Auto and Software never touch the GPU.</string>
+
+    <!-- The session's Mali knobs, in the Steam settings sheet. -->
+    <string name="mode_mali_group">Mali</string>
+    <string name="mode_mali_present">Game frame path</string>
+    <string name="mode_mali_present_hint">How a game's frame reaches gamescope.</string>
+    <string name="mode_mali_present_dri3">dma-buf (fastest)</string>
+    <string name="mode_mali_present_noafbc">dma-buf, no AFBC</string>
+    <string name="mode_mali_present_shm">Shared memory</string>
+    <string name="mode_mali_ui_gpu">Steam interface on the GPU</string>
+    <string name="mode_mali_ui_gpu_on">On the GPU (fn64 driver)</string>
+    <string name="mode_mali_ui_gpu_off">On the CPU</string>
+    <string name="mode_mali_ui_gpu_blocked">On the CPU: only the fn64 driver may carry it</string>
+    <string name="mode_safe_mode">Safe mode</string>
+    <string name="mode_safe_mode_hint">Level %1$d: the phone restarted with a game running.</string>
+    <string name="mode_safe_mode_reset">Back to normal</string>
 </resources>

@@ -3,9 +3,14 @@ package com.droiddeck.launcher.core
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
+import org.junit.Rule
 import org.junit.Test
+import org.junit.rules.TemporaryFolder
+import java.io.StringWriter
 
 class LogRedactorTest {
+    @get:Rule val tmp = TemporaryFolder()
+
     @Test fun labelledJwtIsRedacted() {
         val out = LogRedactor.redact("Using JWT 25484942796017334")
         assertFalse(out.contains("25484942796017334"))
@@ -35,6 +40,83 @@ class LogRedactorTest {
 
     @Test fun emailIsRedacted() {
         assertEquals("login <redacted:email> ok", LogRedactor.redact("login someone@example.com ok"))
+    }
+
+    @Test fun onlyLoaderDiagnosticsKeepHidlSharedLibraryNames() {
+        val library = "android.hardware.graphics.mapper@4.0.so"
+        val line = "dlopen failed: library \"$library\" not found"
+        val pathLine = "dlopen failed: library \"/vendor/lib64/hw/$library\" not found"
+
+        assertEquals(line, LogRedactor.redact(line))
+        assertEquals(line, LogRedactor.redactForShare(line))
+        assertEquals(pathLine, LogRedactor.redact(pathLine))
+        assertEquals(pathLine, LogRedactor.redactForShare(pathLine))
+    }
+
+    @Test fun privacyRulesOverrideTheHidlSharedLibraryException() {
+        val library = "android.hardware.graphics.mapper@4.0.so"
+        assertEquals("token=<redacted:token>", LogRedactor.redact("token=$library"))
+        assertEquals("username=<redacted:account>", LogRedactor.redact("username=$library"))
+        assertEquals("{\"password\":\"<redacted:token>\"}", LogRedactor.redact("{\"password\":\"$library\"}"))
+        assertEquals("{\"password\":\"<redacted:token>\"}", LogRedactor.redactForShare("{\"password\":\"$library\"}"))
+        assertEquals("{\"password\":\"<redacted:token>\"}", LogRedactor.redact("{\"password\":\"don't-use-$library\"}"))
+        assertEquals("{\"password\":\"<redacted:token>\"}", LogRedactor.redactForShare("{\"password\":\"don't-use-$library\"}"))
+
+        val mixed = "dlopen failed: library \"$library\" not found; token=abcdef123456; contact=alice!$library; {\"password\":\"library \\\"$library\\\" not found\"}"
+        val expected = "dlopen failed: library \"$library\" not found; token=<redacted:token>; contact=alice!<redacted:email>; {\"password\":\"<redacted:token>\"}"
+        assertEquals(expected, LogRedactor.redact(mixed))
+        assertEquals(expected, LogRedactor.redactForShare(mixed))
+
+        val root = java.nio.file.Files.createTempDirectory("hidl-redactor").toFile()
+        val users = java.io.File(root, "loginusers.vdf")
+        users.writeText("\"AccountName\" \"$library\"")
+        try {
+            LogRedactor.learnAccounts(users)
+            assertEquals("<redacted:account>", LogRedactor.redact(library))
+        } finally {
+            LogRedactor.learnAccounts()
+            root.deleteRecursively()
+        }
+    }
+
+    @Test fun hidlSharedLibraryNamesAreRedactedOutsideLoaderDiagnostics() {
+        val library = "android.hardware.graphics.mapper@4.0.so"
+
+        assertEquals("<redacted:email>", LogRedactor.redact(library))
+        assertEquals("<redacted:email>", LogRedactor.redactForShare(library))
+        assertEquals("/vendor/lib64/hw/<redacted:email>", LogRedactor.redact("/vendor/lib64/hw/$library"))
+        for (punctuation in listOf("!", "#", "~", "/", "=")) {
+            val expected = "contact=alice$punctuation<redacted:email>"
+            assertEquals(expected, LogRedactor.redact("contact=alice$punctuation$library"))
+            assertEquals(expected, LogRedactor.redactForShare("contact=alice$punctuation$library"))
+        }
+        assertEquals("<redacted:email>", LogRedactor.redact("$library.evil"))
+        assertEquals("<redacted:email>", LogRedactor.redact("someone@company.so"))
+        assertEquals("<redacted:email>", LogRedactor.redact("not$library"))
+        assertEquals("<redacted:email>_debug", LogRedactor.redact("${library}_debug"))
+        assertEquals("<redacted:email>.1", LogRedactor.redact("${library}.1"))
+        assertEquals("<redacted:email>@attacker", LogRedactor.redact("${library}@attacker"))
+        assertEquals("<redacted:email>", LogRedactor.redact("android.hardware.graphics.mapper@4.0.software"))
+        assertEquals("<redacted:email>", LogRedactor.redact("android.hardware.graphics.mapper@4.0.so.evil"))
+    }
+
+    @Test fun loaderContextRequiresExactWordsAndABoundedAndroidPath() {
+        val library = "android.hardware.graphics.mapper@4.0.so"
+        val valid = "library \"/system/lib64/$library\" not found: needed by app"
+        assertEquals(valid, LogRedactor.redact(valid))
+        assertEquals(valid, LogRedactor.redactForShare(valid))
+        for (line in listOf(
+            "not_library \"$library\" not found",
+            "library \"$library\" not found_suffix",
+            "library \"/home/user/$library\" not found",
+            "library \"relative/$library\" not found",
+            "library \"/vendor/invalid!/$library\" not found",
+            "library \"/vendor/" + "a/".repeat(2050) + "$library\" not found",
+        )) {
+            val expected = line.replace(library, "<redacted:email>")
+            assertEquals(expected, LogRedactor.redact(line))
+            assertEquals(expected, LogRedactor.redactForShare(line))
+        }
     }
 
     @Test fun clockTimeIsNotAnAddress() {
@@ -118,6 +200,7 @@ class LogRedactorTest {
             "auth: login=maskeduser42&remember=1",
             "accountName: maskeduser42",
             "{\"username\": \"masked user 42\"}",
+            "[Clubs] {Main} Club membership subscription created: |accountId=maskeduser42",
         )
         for (line in lines) {
             val out = LogRedactor.redactForShare(line)
@@ -146,6 +229,157 @@ class LogRedactorTest {
         )) assertEquals(line, LogRedactor.redactForShare(line))
         val once = LogRedactor.redactForShare("resolver: 192.168.0.1")
         assertEquals(once, LogRedactor.redactForShare(once))
+    }
+
+    @Test fun anOversizedDirectInputIsWithheldBeforeRegex() {
+        val secret = "sessionid=abcdef123456"
+        val line = "x".repeat(LogRedactor.MAX_LINE_LENGTH) + secret
+        assertEquals(LogRedactor.OVERSIZED_LINE, LogRedactor.redact(line))
+        assertEquals(LogRedactor.OVERSIZED_LINE, LogRedactor.redactForShare(line))
+    }
+
+    @Test fun streamWithholdsAnOversizedLogicalLineWholeAndContinues() {
+        val secret = "sessionid=abcdef123456"
+        val src = tmp.newFile("oversized.log")
+        src.writeText(
+            "before\r" +
+                "x".repeat(LogRedactor.MAX_LINE_LENGTH - 3) + secret + "\r\n" +
+                "after $secret"
+        )
+        val out = StringWriter()
+
+        LogRedactor.scrubTo(src, out)
+
+        assertEquals(
+            "before\n${LogRedactor.OVERSIZED_LINE}\nafter sessionid=<redacted:token>\n",
+            out.toString(),
+        )
+        assertFalse(out.toString().contains("abcdef123456"))
+    }
+
+    @Test fun sharedStreamDistinguishesOversizedAndUnsupportedLines() {
+        val src = tmp.newFile("shared-lines.log")
+        src.writeText(
+            "x".repeat(LogRedactor.MAX_LINE_LENGTH + 1) + "\n" +
+                "private-prefix\u0000private-suffix\n" +
+                "after sessionid=abcdef123456\n"
+        )
+        val out = StringWriter()
+
+        assertTrue(LogRedactor.scrubForShare(src, out))
+
+        assertEquals(
+            "${LogRedactor.OVERSIZED_LINE}\n" +
+                "<unsupported or oversized line withheld>\n" +
+                "after sessionid=<redacted:token>\n",
+            out.toString(),
+        )
+    }
+
+    @Test fun aMaximumLengthLineBeforeCrLfIsStillScrubbed() {
+        val src = tmp.newFile("maximum.log")
+        val line = "x ".repeat(LogRedactor.MAX_LINE_LENGTH / 2)
+        src.writeText(line + "\r\n")
+        val out = StringWriter()
+
+        LogRedactor.scrubTo(src, out)
+
+        assertEquals(line + "\n", out.toString())
+        assertFalse(out.toString().contains(LogRedactor.OVERSIZED_LINE))
+    }
+
+    @Test fun streamingScrubStopsBetweenInputChunks() {
+        val src = tmp.newFile("cancelled.log")
+        src.writeText("first safe line\n" + "x".repeat(20_000) + " sessionid=abcdef123456\n")
+        val out = StringWriter()
+        var checks = 0
+
+        val complete = LogRedactor.scrubTo(src, out) { ++checks >= 4 }
+
+        assertFalse(complete)
+        assertFalse(out.toString().contains("abcdef123456"))
+        assertTrue(checks >= 4)
+    }
+
+    @Test fun manyLearnedAccountsKeepBoundariesAndLiteralNames() {
+        val users = tmp.newFile("loginusers.vdf")
+        users.writeText((0 until 40).joinToString("\n") {
+            "\"AccountName\" \"probe_account_$it\""
+        } + "\n\"PersonaName\" \"Player.+[40]\"\n")
+        try {
+            LogRedactor.learnAccounts(users)
+            assertEquals("owner=<redacted:account> persona=<redacted:account>",
+                LogRedactor.redact("owner=probe_account_39 persona=Player.+[40]"))
+            assertEquals("owner=probe_account_390", LogRedactor.redact("owner=probe_account_390"))
+        } finally {
+            LogRedactor.learnAccounts(tmp.root.resolve("missing-users"))
+        }
+    }
+
+    @Test fun oversizedAccountMetadataIsRejectedWithoutForgettingKnownNames() {
+        val users = tmp.newFile("known-loginusers.vdf")
+        val oversized = tmp.newFile("oversized-loginusers.vdf")
+        users.writeText("\"AccountName\" \"previous_player\"")
+        java.io.RandomAccessFile(oversized, "rw").use {
+            it.setLength(LogRedactor.MAX_LEARN_INPUT_BYTES.toLong() + 1)
+        }
+        try {
+            assertTrue(LogRedactor.learnAccounts(users))
+            assertFalse(LogRedactor.learnAccounts(oversized))
+            assertEquals("<redacted:account>", LogRedactor.redact("previous_player"))
+        } finally {
+            LogRedactor.learnAccounts()
+        }
+    }
+
+    @Test fun repeatedIncompleteAccountLearningKeepsOnlyABoundedRecentSet() {
+        val users = tmp.newFile("changing-loginusers.vdf")
+        val oversized = tmp.newFile("unreadable-loginusers.vdf")
+        java.io.RandomAccessFile(oversized, "rw").use {
+            it.setLength(LogRedactor.MAX_LEARN_INPUT_BYTES.toLong() + 1)
+        }
+        try {
+            LogRedactor.learnAccounts()
+            repeat(3) { batch ->
+                users.writeText((0 until 1024).joinToString("\n") {
+                    "\"AccountName\" \"round${batch}player${it.toString().padStart(4, '0')}\""
+                })
+                assertFalse(LogRedactor.learnAccounts(users, oversized))
+            }
+            assertEquals("<redacted:account>", LogRedactor.redact("round2player0000"))
+            assertEquals("<redacted:account>", LogRedactor.redact("round1player0000"))
+            assertEquals("round0player0000", LogRedactor.redact("round0player0000"))
+        } finally {
+            LogRedactor.learnAccounts()
+        }
+    }
+
+    @Test fun oversizedAddressMetadataIsRejectedWithoutForgettingKnownAddresses() {
+        val link = tmp.newFile("known-network")
+        val oversized = tmp.newFile("oversized-network")
+        link.writeText("addr 203.0.113.40 24\n")
+        java.io.RandomAccessFile(oversized, "rw").use {
+            it.setLength(LogRedactor.MAX_LEARN_INPUT_BYTES.toLong() + 1)
+        }
+        try {
+            assertTrue(LogRedactor.learnOwnAddresses(link))
+            assertFalse(LogRedactor.learnOwnAddresses(oversized))
+            assertEquals("<redacted:ip>", LogRedactor.redact("203.0.113.40"))
+        } finally {
+            LogRedactor.learnOwnAddresses(tmp.root.resolve("missing-network"))
+        }
+    }
+
+    @Test fun manyLearnedAddressesKeepOtherAddresses() {
+        val link = tmp.newFile("droiddeck-net")
+        link.writeText((1..40).joinToString("\n") { "addr 203.0.113.$it 24" })
+        try {
+            LogRedactor.learnOwnAddresses(link)
+            assertEquals("local=<redacted:ip> server=203.0.113.200",
+                LogRedactor.redact("local=203.0.113.40 server=203.0.113.200"))
+        } finally {
+            LogRedactor.learnOwnAddresses(tmp.root.resolve("missing-network"))
+        }
     }
 
     @Test fun learnedAccountsComeFromBothClients() {

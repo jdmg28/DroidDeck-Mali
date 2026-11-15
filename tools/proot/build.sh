@@ -22,38 +22,25 @@ if [[ ! -x "$CC" ]]; then
 fi
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
-# fetch <file> <sha256> <url> [<url> ...]: the first URL that answers wins, and a URL that
-# answers with an error page (504 from samba.org's front end, seen twice on 2026-10-22) is tried
-# again with the rest. --retry-all-errors covers the connection dying mid-transfer (curl 56),
-# which samba.org does often enough that three retries were not enough.
 fetch() {
-  file=$1; sum=$2; shift 2
-  for url in "$@"; do
-    for attempt in 1 2; do
-      if curl -fsSL --retry 5 --retry-all-errors --retry-delay 10 --connect-timeout 30 \
-           --max-time 900 -o "$WORK/$file" "$url"; then
-        break 2
-      fi
-      echo "== $file: $url did not answer (attempt $attempt), trying again" >&2
-      sleep $(( attempt * 10 ))
-    done
+  local name=$1 primary=$2 sha=$3 url fetched=0
+  shift 3
+  for url in "$primary" "$@"; do
+    if curl -fsSL --connect-timeout 15 --max-time 90 --retry 3 --retry-all-errors --retry-max-time 120 -o "$WORK/$name" "$url" &&
+        printf '%s  %s\n' "$sha" "$WORK/$name" | shasum -a 256 -c -; then
+      fetched=1
+      break
+    fi
   done
-  [ -s "$WORK/$file" ] || { echo "== $file could not be fetched from any URL" >&2; exit 1; }
-  echo "$sum  $WORK/$file" | shasum -a 256 -c -
-  mkdir -p "$WORK/${file%%.*}"
-  tar -xzf "$WORK/$file" -C "$WORK/${file%%.*}" --strip-components=1
+  [[ $fetched == 1 ]] || return 1
+  mkdir -p "$WORK/${name%%.*}"
+  tar -xzf "$WORK/$name" -C "$WORK/${name%%.*}" --strip-components=1
 }
-fetch proot.tar.gz "$PROOT_SHA256" \
-  "https://github.com/termux/proot/archive/${PROOT_COMMIT}.tar.gz" \
-  "https://codeload.github.com/termux/proot/tar.gz/${PROOT_COMMIT}"
-# samba.org serves talloc from two names for the same tree, and both go through the same front
-# end; the second one is there because a 504 on one has not meant a 504 on the other.
-fetch talloc.tar.gz "$TALLOC_SHA256" \
-  "https://www.samba.org/ftp/talloc/talloc-${TALLOC_VERSION}.tar.gz" \
-  "https://download.samba.org/pub/talloc/talloc-${TALLOC_VERSION}.tar.gz"
-# The statx patch includes "tracee/statx_mnt_id.h" and -I. is the proot source root: the header
-# has to be in the tree before make runs.
+fetch proot.tar.gz "https://github.com/termux/proot/archive/${PROOT_COMMIT}.tar.gz" "$PROOT_SHA256"
+fetch talloc.tar.gz "https://www.samba.org/ftp/talloc/talloc-${TALLOC_VERSION}.tar.gz" "$TALLOC_SHA256" \
+  "https://distfiles.macports.org/talloc/talloc-${TALLOC_VERSION}.tar.gz"
 cp "$HERE/statx_mnt_id.h" "$WORK/proot/src/tracee/statx_mnt_id.h"
+cp "$HERE/profile.h" "$WORK/proot/src/syscall/profile.h"
 for patch in "$HERE"/patches/*.patch; do
   patch -d "$WORK/proot" -p1 --forward --quiet < "$patch"
 done
@@ -65,12 +52,17 @@ cp "$HERE/talloc-config.h" "$WORK/talloc/config/config.h"
 "$TOOLCHAIN/llvm-ar" rcs "$WORK/libtalloc.a" "$WORK/talloc.o"
 mkdir -p "$WORK/bin"
 ln -s "$TOOLCHAIN/llvm-readelf" "$WORK/bin/readelf"
-# max-page-size 16384: proot is exec'd by the app, and 2026 SoCs (Dimensity 9500s and on)
-# boot Android 16 with 16 KB kernels. 16 KB alignment costs nothing on a 4 KB kernel.
+# loader-info.awk needs strtonum, which mawk (the default awk on some runners) lacks.
+if command -v gawk >/dev/null; then
+  ln -s "$(command -v gawk)" "$WORK/bin/awk"
+elif ! awk 'BEGIN { exit !(strtonum("0x10") == 16) }' 2>/dev/null; then
+  echo "gawk, or an awk with strtonum, is required to build the proot loader" >&2
+  exit 1
+fi
 PATH="$WORK/bin:$PATH" make -C "$WORK/proot/src" -j"$(getconf _NPROCESSORS_ONLN)" \
     CC="$CC" STRIP="$TOOLCHAIN/llvm-strip" OBJCOPY="$TOOLCHAIN/llvm-objcopy" OBJDUMP="$TOOLCHAIN/llvm-objdump" \
     CPPFLAGS="-D_FILE_OFFSET_BITS=64 -D_GNU_SOURCE -I. -I$WORK/talloc -DARG_MAX=131072 -Wno-error=implicit-function-declaration" \
-    LDFLAGS="$WORK/libtalloc.a -Wl,-z,noexecstack -Wl,-z,max-page-size=16384" \
+    LDFLAGS="$WORK/libtalloc.a -Wl,-z,noexecstack" \
     PROOT_UNBUNDLE_LOADER=/nonexistent proot loader
 install -m755 "$WORK/proot/src/proot" "$OUTDIR/libproot.so"
 install -m755 "$WORK/proot/src/loader/loader" "$OUTDIR/libproot-loader.so"
