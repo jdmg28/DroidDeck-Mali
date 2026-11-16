@@ -2,7 +2,7 @@
 
 Fecha: 2026-11-16 · Rama `arena/cd8ab18a-droiddeck-mali`
 Base: **0.7.1** (`cdff94e72`, 10-11-2026) de [Droid-Deck/DroidDeck](https://github.com/Droid-Deck/DroidDeck)
-Merge: `2b5cb7ce8` · Último commit de la ronda: `2f67356c1`
+Merge: `2b5cb7ce8` · Último commit de la ronda: `bd29b603e`
 
 La pregunta de esta ronda era una sola: **¿qué le falta al 0.7.1 oficial para ser el fork, sin
 perder nada del oficial?** La respuesta es este árbol: 95 ficheros y +7 188 líneas sobre la
@@ -13,10 +13,10 @@ El build de CI de esta ronda terminó **verde** en los dos workflows:
 
 | Workflow | Run | Resultado |
 |---|---|---|
-| Build APK (compilación + 3 874 tests de unidad + Python + nativos) | [43812541576](https://github.com/jdmg28/DroidDeck-Mali/actions/runs/43812541576) | ✅ |
-| Mali-G615 branch APK (APK firmado, «instala sobre el publicado») | [43812541626](https://github.com/jdmg28/DroidDeck-Mali/actions/runs/43812541626) | ✅ |
+| Build APK (compilación + 3 874 tests de unidad + Python + nativos) | [43815365695](https://github.com/jdmg28/DroidDeck-Mali/actions/runs/43815365695) | ✅ |
+| Mali-G615 branch APK (APK firmado, «instala sobre el publicado») | [43815365686](https://github.com/jdmg28/DroidDeck-Mali/actions/runs/43815365686) | ✅ |
 
-APK de la ronda (en `software-mode-latest`): `versionCode 450159`, paquete
+APK de la ronda (en `software-mode-latest`): `versionCode 450161`, paquete
 `com.droiddeck.launcher.mali.g615`, certificado `a40da80a…bf5dc`.
 
 ---
@@ -104,7 +104,7 @@ uno corregido en su propio commit:
 ## 7. Instalar
 
 ```bash
-adb install -r DroidDeck-Mali-G615-debug.apk   # versionCode 450159
+adb install -r DroidDeck-Mali-G615-debug.apk   # versionCode 450161
 ```
 
 Instala sobre el build publicado (mismo `applicationId` y mismo certificado) y conserva el runtime
