@@ -25,14 +25,17 @@ object MaliAutoSetup {
         if (done.getBoolean("done", false)) return
         Thread({
             try {
-                if (GpuSafety.profile(app) == GpuSafety.AUTO) GpuSafety.setProfile(app, GpuSafety.MALI)
                 val manager = LinuxVulkanDriverManager(app)
                 val installed = manager.enumerateInstalledDrivers().any { manager.isMaliRuntimeDriver(it) }
                 val chosen = SessionPrefs.linuxDriver(app)
                 // A driver already chosen, or a pair the release check found for this GPU, is
                 // what 0.7.1's Auto mode draws with: leave it alone.
                 val pair = DriverPairs.recommendedKey(GpuInfo.detect(), DriverPairs.from(TurnipReleases.cached(app)))
-                if (!installed && chosen.isEmpty() && pair == null) {
+                // The GPU is only handed to the guest once something can actually draw with it.
+                // Auto (no GPU node in the guest) is the safe state when nothing can, and it is
+                // what a phone that cannot download the package keeps.
+                var draws = installed || chosen.isNotEmpty() || pair != null
+                if (!draws) {
                     val entry = MaliReleases.byName(MaliReleases.PANVK) ?: return@Thread
                     val file = MaliReleases.download(app, entry) { }
                     val id = try {
@@ -43,10 +46,12 @@ object MaliAutoSetup {
                     SessionPrefs.setLinuxDriver(app, id)
                     SessionPrefs.setAndroidDriver(app, TurnipDriver.AUTO)
                     SessionPrefs.setMaliDownloaded(app, SessionPrefs.maliDownloaded(app) + entry.name)
+                    draws = true
                     Log.i(TAG, "the bundled driver setup installed and selected $id")
                 } else {
                     Log.i(TAG, "auto setup: leaving the driver to Auto (installed=$installed, chosen=$chosen, pair=$pair)")
                 }
+                if (draws && GpuSafety.profile(app) == GpuSafety.AUTO) GpuSafety.setProfile(app, GpuSafety.MALI)
                 done.edit().putBoolean("done", true).apply()
             } catch (e: Exception) {
                 // Undone on purpose: no network this start, or the release missing - the next
