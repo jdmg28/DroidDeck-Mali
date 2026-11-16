@@ -50,13 +50,6 @@ object DeviceSupport {
     fun canDraw(context: Context): Boolean = graphicsAvailable() || openDriverActive(context) || vkBridge(context) ||
         com.droiddeck.launcher.session.VenusComponent.wanted(context)
 
-    /** Detection is not proof that the stock kbase ABI/permissions allow PanVK. */
-    @JvmStatic
-    fun mali(): Boolean = !adreno() && (
-        File("/dev/mali0").exists() || File("/sys/class/misc/mali0").exists() ||
-        File("/vendor/lib64/hw/vulkan.mali.so").exists() ||
-        File("/vendor/lib64/egl/libGLES_mali.so").exists())
-
     /**
      * Every Mali device the driver could serve, not one SoC or one Android release: the session
      * draws through the imported PanVK ICD either way, and an unsupported generation is the
