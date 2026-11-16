@@ -197,18 +197,7 @@ public final class WaylandCompositor {
 
     public static native int nativeCompositorTid();
 
-    private static native String nativeCompositorFault();
-
     private static native String nativeDisplayDriver();
-
-    /** Why the compositor cannot present, or "" while it can (or before the library is loaded). */
-    public static String compositorFault() {
-        try {
-            return nativeCompositorFault();
-        } catch (Throwable t) {
-            return "";
-        }
-    }
 
     /** The driver that answered for the display, as it reports itself; "" when not known yet. */
     public static String displayDriver() {
