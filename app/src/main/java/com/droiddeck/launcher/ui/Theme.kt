@@ -106,7 +106,7 @@ object Themes {
             STEAM_PURPLE, R.string.theme_steam_purple, R.string.theme_steam_purple_detail,
             background = Color(0xFF000000), surface = Color(0xFF0B0713), surfaceVariant = Color(0xFF140D22), line = Color(0xFF3A2266), line2 = Color(0xFF6C3FC0),
             onBackground = Color(0xFFF3EFFA), onSurfaceVariant = Color(0xFFA798C9),
-            primary = Color(0xFFA855F7), primary2 = Color(0xFF8B2FD6), onPrimary = Color(0xFF0B0713), signal = Color(0xFFB44BFF),
+            primary = Color(0xFFB26BFF), primary2 = Color(0xFFA855F7), onPrimary = Color(0xFF0B0713), signal = Color(0xFFB44BFF),
             good = Color(0xFF4CD37F),
         ),
         Palette(
@@ -151,7 +151,7 @@ object Themes {
     fun byId(id: String): Palette {
         if (id == INNER_GAMER) return innerGamer(rgbHue)
         if (id == GRADIENT) return ThemeColors.palette(gradientColors.first, gradientColors.second, R.string.theme_gradient, R.string.theme_gradient_detail)
-        return all.firstOrNull { it.id == id } ?: all[0]
+        return all.firstOrNull { it.id == id } ?: all.first { it.id == GRAPHITE }
     }
 }
 

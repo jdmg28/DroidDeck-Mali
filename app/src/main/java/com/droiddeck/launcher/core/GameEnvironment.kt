@@ -39,8 +39,6 @@ object GameEnvironment {
         "WINE_SKIP_OPENGL_GPU_PROBE" to "1",
         "DISABLE_VK_LAYER_VALVE_steam_fossilize_1" to "1",
         "heap_memory_percent" to "0.12",
-        "VKD3D_FEATURE_LEVEL" to "12_2",
-        "VKD3D_SHADER_MODEL" to "6_9",
         "WINEVMEMMAXSIZE" to "4096",
         // FEX's translation tables grow by hundreds of MB on a JIT-heavy title; trim them unless
         // a game's own profile says otherwise.
