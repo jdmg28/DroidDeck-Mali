@@ -296,7 +296,7 @@ public final class TurnipDriver {
     }
 
     private String chooseByDevice() {
-        if (com.droiddeck.launcher.core.DeviceSupport.mali()) {
+        if (com.droiddeck.launcher.core.DeviceSupport.INSTANCE.mali()) {
             Log.i(TAG, "Mali experiment: no Turnip; use the Android system Vulkan compositor");
             return null;
         }
