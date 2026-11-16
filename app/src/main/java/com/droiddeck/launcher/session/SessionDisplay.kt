@@ -62,6 +62,54 @@ object SessionDisplay {
     private fun scaledDown(size: Pair<Int, Int>, scale: Float): Pair<Int, Int> =
         (Math.round(size.first / scale) and 1.inv()) to (Math.round(size.second / scale) and 1.inv())
 
+    const val UNFOLDED_MAX_GAME_SHARE = 0.8f
+
+    fun foldable(context: Context): Boolean =
+        context.packageManager.hasSystemFeature("android.hardware.sensor.hinge_angle")
+
+    const val UNFOLDED_MIN_DP = 600
+
+    fun unfoldedGameHeight(width: Int, height: Int, tabRow: Int = 0): Int =
+        (minOf(width * 9 / 16, (height * UNFOLDED_MAX_GAME_SHARE).toInt()) - tabRow.coerceAtLeast(0)).coerceAtLeast(0) and 1.inv()
+
+    fun unfoldedControlsWanted(
+        enabled: Boolean,
+        foldable: Boolean,
+        controllerConnected: Boolean,
+        keepWithController: Boolean,
+        gamepadAvailable: Boolean,
+        pip: Boolean,
+        width: Int,
+        height: Int,
+        smallestWidthDp: Int,
+    ): Boolean = enabled && (keepWithController || !controllerConnected) && gamepadAvailable &&
+        !pip && width > 0 && height > 0 &&
+        (height > width || (foldable && smallestWidthDp >= UNFOLDED_MIN_DP))
+
+
+    fun panelSize(context: Context): Pair<Int, Int> {
+        val manager = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
+        @Suppress("DEPRECATION")
+        val mode = manager.defaultDisplay.mode
+        return maxOf(mode.physicalWidth, mode.physicalHeight) to minOf(mode.physicalWidth, mode.physicalHeight)
+    }
+
+    fun resolve(panel: Pair<Int, Int>, cap: Int, shape: String, custom: Pair<Int, Int>? = null): Pair<Int, Int> {
+        custom?.let { return it }
+        val panelW = maxOf(panel.first, panel.second).toFloat()
+        val panelH = minOf(panel.first, panel.second).toFloat().coerceAtLeast(1f)
+        val aspect = when (shape) {
+            SessionPrefs.SHAPE_WIDE -> 16f / 9f
+            SessionPrefs.SHAPE_EXACT -> panelW / panelH
+            else -> maxOf(panelW / panelH, 16f / 9f)
+        }
+        val height = (if (cap <= 0) panelH else minOf(panelH, cap.toFloat())).toInt()
+        return ((height * aspect).toInt() and 1.inv()) to (height and 1.inv())
+    }
+
+    fun canStretch16x9(size: Pair<Int, Int>): Boolean =
+        (size.second * 16 + 4) / 9 / 2 * 2 > size.first || (size.first * 9 + 8) / 16 / 2 * 2 > size.second
+
     /**
      * [size] scaled down, keeping its shape, until neither side is over [maxWidth] x [maxHeight]:
      * the safe mode's last rung (RebootGuard), where a smaller swapchain is the point.
@@ -75,4 +123,4 @@ object SessionDisplay {
         val h = (size.second * scale + 0.5f).toInt() and 1.inv()
         return maxOf(w, 2) to maxOf(h, 2)
     }
-
+}
