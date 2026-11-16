@@ -35,7 +35,7 @@ internal class ComponentsMenu(private val activity: android.app.Activity, privat
             runCatching { ComponentsManager.applyQueued(activity) }
             val snap = runCatching { ComponentsManager.snapshot(activity) }.onFailure { Log.w(TAG, "components", it) }.getOrNull()
             val cat = runCatching { ComponentsManager.catalog(activity, false) }.getOrNull()
-            val needsCatalogRefresh = cat == null || cat.fetchedAt <= 0L || cat.items.none { it.comp == "wowbox64" }
+            val needsCatalogRefresh = cat == null || cat.fetchedAt <= 0L
             val chosen = snap?.let { s -> runCatching { ProtonDefault.selectedId(activity, s.protons.map { it.proton }) }.getOrNull() }
             runCatching { ComponentUpdater.settle(activity) }
             val modes = ComponentsManager.COMPONENTS.associateWith { SessionPrefs.componentMode(activity, it) }
