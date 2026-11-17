@@ -2113,11 +2113,23 @@ class SessionActivity : ComponentActivity(), SurfaceHolder.Callback {
 
     private fun installRuntime(): String? {
         val release = com.droiddeck.launcher.runtime.LinuxRuntimeInstaller.fetchRelease()
-            ?: return getString(R.string.session_runtime_catalog_unreachable)
+        if (release == null) {
+            SessionEvents.record("runtime.catalog_unreachable")
+            return getString(R.string.session_runtime_catalog_unreachable)
+        }
         runCatching { com.droiddeck.launcher.runtime.RuntimeInstallService.start(this, release) }
         val ok = com.droiddeck.launcher.runtime.LinuxRuntimeInstaller.install(this, release,
             progressFor(RUNTIME_LINES, release.size / 1_000_000))
-        return if (ok) null else getString(R.string.session_runtime_install_failed)
+        if (ok) return null
+        // "Did not install" on its own cannot be acted on, and this failure happens before the
+        // session folder has anything in it but three lines: say which step refused, and how much
+        // room was left when it did.
+        SessionEvents.record("runtime.install_failed", mapOf(
+            "release" to release.version,
+            "detail" to (com.droiddeck.launcher.runtime.LinuxRuntimeInstaller.lastFailure() ?: "no reason recorded"),
+            "freeBytes" to filesDir.usableSpace,
+        ))
+        return getString(R.string.session_runtime_install_failed)
     }
 
     private fun installDesktop(): String? {

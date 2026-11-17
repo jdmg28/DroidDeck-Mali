@@ -280,6 +280,25 @@ jobs:
             echo "cert_sha256=$cert"
           } >> "$GITHUB_OUTPUT"
 
+      # This APK is installed straight from a workflow run, and the pack releases are published
+      # from main only: the two packs a session cannot start without have to be inside the file,
+      # or "Jugar" stops at "the Linux runtime did not install" before anything runs. Checked here
+      # so the build says it, not the phone.
+      - name: The packs a session needs are inside the APK
+        run: |
+          set -euo pipefail
+          apk=app/build/outputs/apk/debug/app-debug.apk
+          entries=$(unzip -Z1 "$apk")
+          fail=0
+          for pack in proot directaudio; do
+            if ! grep -qx "assets/packs/$pack.tar.zst" <<<"$entries"; then
+              echo "::error::assets/packs/$pack.tar.zst is not in the apk: a session cannot start without it"
+              fail=1
+            fi
+          done
+          printf 'packs in the apk:\n%s\n' "$(grep '^assets/packs/' <<<"$entries" || echo '(none)')"
+          exit $fail
+
       - name: It installs over the published build
         env:
           THIS_PACKAGE: ${{ steps.identity.outputs.package }}

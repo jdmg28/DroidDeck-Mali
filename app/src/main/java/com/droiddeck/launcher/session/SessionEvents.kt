@@ -2,6 +2,7 @@ package com.droiddeck.launcher.session
 
 import android.content.Context
 import android.util.Log
+import com.droiddeck.launcher.core.SessionLogCapture
 import org.json.JSONObject
 import java.io.File
 import java.io.FileOutputStream
@@ -36,6 +37,9 @@ object SessionEvents {
             SessionState.firstFrameSeen = false
             SessionState.suspended = false
         }
+        // Before the service has a folder of its own, and before the runtime is even installed:
+        // a start that fails there used to leave no app log at all to say why.
+        Thread({ SessionLogCapture.start(File(dir, "app.log")) }, "session-log-early").start()
         record("session.created", mapOf("mode" to mode), dir)
     }
 

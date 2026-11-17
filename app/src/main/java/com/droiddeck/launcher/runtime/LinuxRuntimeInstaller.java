@@ -79,6 +79,23 @@ public final class LinuxRuntimeInstaller {
     private static Job running;
     private static volatile String removalError;
 
+    /**
+     * Why the last install returned false, for the session's own log and the artifact bundle: a
+     * failure here used to be a single "did not install" with nothing behind it, and the reason
+     * (a pack, the download, the unpack, the swap) is the only thing that says what to fix.
+     */
+    private static volatile String lastFailure;
+
+    /** The reason behind the last failed install, or null when the last one did not fail. */
+    public static String lastFailure() { return lastFailure; }
+
+    /** Records why the install is being abandoned and returns false, so a failure reads as one line. */
+    private static boolean fail(String reason) {
+        lastFailure = reason;
+        Log.w(TAG, "install failed: " + reason);
+        return false;
+    }
+
     private LinuxRuntimeInstaller() {}
 
     public static String installedVersion(Context context) {
@@ -126,7 +143,8 @@ public final class LinuxRuntimeInstaller {
         Job job;
         boolean owner;
         synchronized (JOB_LOCK) {
-            if (running != null && (running.removal || running.maintenance)) return false;
+            if (running != null && (running.removal || running.maintenance))
+                return fail(running.removal ? "the runtime is being removed" : "the runtime is being maintained");
             owner = running == null;
             if (owner) { running = new Job(false, context.getString(R.string.user_apps_starting)); removalError = null; }
             job = running;
@@ -319,6 +337,7 @@ public final class LinuxRuntimeInstaller {
     private static boolean installOnce(Context context, Release release, ProgressListener listener) {
         File archive = new File(context.getCacheDir(), archiveName(release));
         boolean keepPartial = false;
+        lastFailure = null;
         try {
             deleteOtherArchives(context.getCacheDir(), archive.getName());
             File pendingRemoval = removalDirectory(LinuxRuntime.rootDir(context));
@@ -329,8 +348,9 @@ public final class LinuxRuntimeInstaller {
             if (listener != null) listener.onProgress(Step.DOWNLOADING, downloading, 0);
             if (!LinuxRuntime.patchedProot(context) && !AddonPack.PROOT.await(context, () -> true, packProgress(listener, downloading))
                     && !SessionPrefs.allowStockProot(context))
-                throw new IOException("Cannot download proot");
-            if (!AddonPack.DIRECTAUDIO.await(context, () -> true, packProgress(listener, downloading))) throw new IOException("Cannot download DirectAudio");
+                throw new IOException("the proot pack is not installed and cannot be downloaded");
+            if (!AddonPack.DIRECTAUDIO.await(context, () -> true, packProgress(listener, downloading)))
+                throw new IOException("the DirectAudio pack is not installed and cannot be downloaded");
             boolean ok = Downloader.downloadFile(release.url, archive, true, release.sha256, (fraction) -> {
                 if (listener != null) {
                     listener.onProgress(Step.DOWNLOADING, downloading,
@@ -338,39 +358,37 @@ public final class LinuxRuntimeInstaller {
                 }
             });
             if (!ok) {
-                Log.w(TAG, "download failed");
                 keepPartial = true;
-                return false;
+                return fail("download failed from " + release.url);
             }
 
             if (listener != null) listener.onProgress(Step.VERIFYING, context.getString(R.string.rtinst_verifying), -1);
             String actual = Hashes.sha256(archive);
             if (!release.sha256.equalsIgnoreCase(actual)) {
-                Log.w(TAG, "checksum mismatch: wanted " + release.sha256 + ", got " + actual);
-                return false;
+                return fail("checksum mismatch: wanted " + release.sha256 + ", got " + actual);
             }
 
             File root = LinuxRuntime.rootDir(context);
             File staging = new File(root.getParentFile(), LinuxRuntime.DIR + ".new");
             File old = new File(root.getParentFile(), LinuxRuntime.DIR + ".old");
             recoverInterruptedSwap(root, staging, old);
-            if (!discard(staging, null) || !staging.mkdirs()) return false;
+            if (!discard(staging, null) || !staging.mkdirs()) return fail("cannot prepare " + staging);
             if (listener != null) listener.onProgress(context.getString(R.string.rtinst_extracting), -1);
             if (!extract(context, archive, staging, root, listener)) {
                 RuntimeFileTree.delete(staging, null);
-                return false;
+                return fail("the archive did not unpack");
             }
             FileUtils.writeString(new File(staging, VERSION_FILE), release.version);
 
             if (!discard(old, null)) {
                 discard(staging, null);
-                return false;
+                return fail("cannot clear the runtime it replaces");
             }
             java.util.List<String> carryPaths = root.isDirectory()
                     ? RuntimeFileTree.existingUserPaths(root, staging) : java.util.Collections.emptyList();
             if (root.isDirectory() && !root.renameTo(old)) {
                 RuntimeFileTree.delete(staging, null);
-                return false;
+                return fail("cannot move the current runtime aside");
             }
             File carryMarker = new File(staging, CARRY_MARKER);
             java.util.List<String> encodedPaths = new java.util.ArrayList<>();
@@ -379,7 +397,7 @@ public final class LinuxRuntimeInstaller {
                 if (old.isDirectory() && !old.renameTo(root))
                     Log.w(TAG, "could not restore the previous runtime; retained at " + old);
                 discard(staging, null);
-                return false;
+                return fail("cannot write the list of user files to carry over");
             }
 
             java.util.List<String> carried;
@@ -396,7 +414,7 @@ public final class LinuxRuntimeInstaller {
                 } else {
                     Log.w(TAG, "incomplete rollback; retaining user data in " + staging);
                 }
-                return false;
+                return fail("cannot carry the user data across the update: " + e.getMessage());
             }
 
             if (!staging.renameTo(root)) {
@@ -407,7 +425,7 @@ public final class LinuxRuntimeInstaller {
                     } catch (IOException e) { Log.w(TAG, "could not move all user data back after a failed swap", e); }
                     old.renameTo(root);
                 }
-                return false;
+                return fail("cannot move the new runtime into place");
             }
             new File(root, CARRY_MARKER).delete();
             try { RuntimeFileTree.dropStaleState(root); }
@@ -415,10 +433,15 @@ public final class LinuxRuntimeInstaller {
             discard(old, null);
             try { com.droiddeck.launcher.session.SessionFiles.INSTANCE.stage(context, root, false); }
             catch (Exception e) { Log.w(TAG, "could not stage the session files into the new runtime", e); }
-            return LinuxRuntime.isInstalled(context);
+            if (!LinuxRuntime.isInstalled(context)) {
+                return fail("the new runtime is incomplete: " + (!LinuxRuntime.hasRootfs(context)
+                        ? "gamescope or the session script is missing"
+                        : "the proot pack is not installed"));
+            }
+            return true;
         } catch (Exception e) {
             Log.e(TAG, "install", e);
-            return false;
+            return fail(e.getClass().getSimpleName() + ": " + e.getMessage());
         } finally {
             if (!keepPartial) archive.delete();
         }

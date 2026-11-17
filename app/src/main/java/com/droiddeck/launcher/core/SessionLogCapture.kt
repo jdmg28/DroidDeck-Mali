@@ -16,11 +16,17 @@ object SessionLogCapture {
 
     @Synchronized
     fun start(target: File) {
+        // Already capturing this very file: starting again would truncate the lines the failure
+        // needs most - the ones written before the session service had a folder of its own.
+        if (this.target?.absolutePath == target.absolutePath && writer != null) return
         stop()
         try {
-            val out = target.bufferedWriter()
-            out.write("The app's own log for this session (logcat, this process only).\n")
-            out.write("Lines the app wrote before the session folder existed are in logcat only.\n\n")
+            val fresh = !target.exists() || target.length() == 0L
+            val out = java.io.FileOutputStream(target, true).bufferedWriter()
+            if (fresh) {
+                out.write("The app's own log for this session (logcat, this process only).\n")
+                out.write("Lines the app wrote before the session folder existed are in logcat only.\n\n")
+            }
             out.flush()
             writer = out
             this.target = target

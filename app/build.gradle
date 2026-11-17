@@ -308,14 +308,20 @@ def stageGogNotices = tasks.register('stageGogNotices', Copy) {
 android.sourceSets.main.assets.srcDir(layout.buildDirectory.dir('gogNotices'))
 tasks.named('preBuild').configure { dependsOn(stageGogNotices) }
 
-if (!ciBuild) {
-    def stageLocalPacks = tasks.register('stageLocalPacks', Sync) {
-        from(layout.buildDirectory.dir('packs')) { include '*.tar.zst' }
-        into(layout.buildDirectory.dir('localPackAssets/packs'))
+// The two packs a session cannot start without travel inside every APK, CI builds included.
+// Their releases are published from main only (build.yml's packs job), and this branch's APK is
+// installed straight from a workflow run: without them the app cannot install proot or
+// DirectAudio, so start fails at "the Linux runtime did not install" before anything runs.
+// A local build still carries every pack it has built.
+def stageLocalPacks = tasks.register('stageLocalPacks', Sync) {
+    from(layout.buildDirectory.dir('packs')) {
+        if (ciBuild) include 'proot.tar.zst', 'directaudio.tar.zst'
+        else include '*.tar.zst'
     }
-    android.sourceSets.main.assets.srcDir(layout.buildDirectory.dir('localPackAssets'))
-    tasks.named('preBuild').configure { dependsOn(stageLocalPacks) }
+    into(layout.buildDirectory.dir('localPackAssets/packs'))
 }
+android.sourceSets.main.assets.srcDir(layout.buildDirectory.dir('localPackAssets'))
+tasks.named('preBuild').configure { dependsOn(stageLocalPacks) }
 
 def verifyRuntimeInputs = tasks.register('verifyRuntimeInputs', Exec) {
     mustRunAfter(stageSessionScripts, stageRuntimeAssets)
