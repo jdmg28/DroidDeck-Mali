@@ -118,3 +118,50 @@ primer arranque con red.
 2. Si no hay reinicios, publicar la **estable** (la etiqueta la crea `release.yml` con el APK de
    este build).
 3. Recuperar WOWBox64 sobre el `ComponentsManager` de 0.7.1 si se quiere de vuelta.
+
+## 9. Los logs de Blender: qué pasó de verdad (17-11)
+
+La carpeta `Blender` de Drive trae seis ficheros y ninguno es un log de sesión. `events.jsonl`
+tiene tres líneas y medio:
+
+```
+session.created   09:43:41.533
+runtime.installing 09:43:41.594
+session.failed    09:43:53.804  RUNTIME_INSTALL_FAILED  (status: null)
+```
+
+Es decir: la sesión se creó, el instalador del runtime arrancó y **murió 12,2 s después, antes de
+abrir su carpeta**. `crash.log` está vacío y `device.txt` dice «no wineserver started»: Blender no
+llegó a ejecutarse ni una vez. El motivo real sólo existía en el logcat del teléfono, que no se
+exportó, porque `SessionService.openSessionFolder()` —el que escribe `session.log`, `device.txt` y
+`app.log`— nunca llegó a correr: se falla en la comprobación `needRuntime`, antes de la sesión.
+
+**Dónde se cae.** Antes de descargar los 291 MB del rootfs, `installOnce` hace dos cosas de red que
+no se pueden saltar: el pack `proot` (96 KB) y el pack `DirectAudio` (22 KB), ambos desde las
+releases de GitHub. Con 12 s de margen, la descarga grande queda descartada: es la fase de packs.
+Y aquí está el problema de fondo: **las releases de los packs sólo las publica `main`**
+(`build.yml` → `publish-packs`), mientras que el APK de esta rama se instala directamente desde un
+workflow. El APK no llevaba ninguno de los dos packs empaquetado, así que el teléfono tenía que
+bajarlos de GitHub en tiempo de ejecución; si el teléfono no alcanza
+`release-assets.githubusercontent.com` (el APK llegó por Drive, no por GitHub), cada intento se
+queda esperando el TLS hasta el timeout y los dos suman los ~12 s observados.
+
+**Qué se cambió (commit `71f226d84`).**
+
+| Antes | Ahora |
+| --- | --- |
+| Los packs sólo viajaban en builds locales | `proot` y `DirectAudio` viajan dentro de **todo** APK, también los de CI |
+| El fallo se descubría en el teléfono | el workflow comprueba `assets/packs/proot.tar.zst` y `directaudio.tar.zst` **antes** de publicar |
+| `RUNTIME_INSTALL_FAILED` sin motivo | `runtime.install_failed` en `events.jsonl` con el paso que se negó, la release y el espacio libre |
+| `app.log` sólo lo abría el servicio | se abre en cuanto existe la carpeta de sesión, así que un fallo previo al runtime también deja log |
+
+Lo último es lo que convierte el próximo fallo en una respuesta en lugar de una conjetura: si
+vuelve a pasar, `events.jsonl` dirá `detail` («the DirectAudio pack is not installed and cannot be
+downloaded», «download failed from …», «checksum mismatch…») y `app.log` traerá el `Log.w`
+correspondiente.
+
+**Qué hacer con el teléfono.** Instalar el APK nuevo (mismo paquete y certificado, `adb install -r`
+conserva runtime y Steam) y arrancar una sesión con más de 1,5 GB libres — el rootfs son 291 MB
+comprimidos y se extrae a otro tanto. Si `events.jsonl` vuelve a decir «download failed from
+https://github.com/…», el problema es la red del teléfono hacia las releases de GitHub y no la app:
+probar otra Wi-Fi o una VPN. Con los packs dentro del APK, esa fase ya no depende de la red.
